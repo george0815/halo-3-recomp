@@ -1,0 +1,60 @@
+# XenonRecomp configuration for Halo 3 (Xbox 360).
+# Paths are relative to this file. Option reference:
+# thirdparty/XenonRecomp/README.md ("XenonRecomp" section).
+
+[main]
+file_path = "../../private/default.xex"
+
+# Uncomment once you have a title update (.xexp). XenonRecomp writes the
+# patched XEX on first run and reuses it after that.
+# patch_file_path = "../../private/default.xexp"
+# patched_file_path = "../../private/default_patched.xex"
+
+out_directory_path = "../ppc"
+
+# Produced by XenonAnalyse (tools/recompile.sh runs it if missing).
+switch_table_file_path = "halo3_switch_tables.toml"
+
+# Optimizations: leave OFF until the game boots. They make debugging much
+# harder because registers stop living in PPCContext.
+skip_lr = false
+skip_msr = false
+ctr_as_local = false
+xer_as_local = false
+reserved_as_local = false
+cr_as_local = false
+non_argument_as_local = false
+non_volatile_as_local = false
+
+# Register save/restore helpers. Run `h3xexinfo private/default.xex` and
+# paste the lines it prints here. 0 means "not found yet"; XenonRecomp will
+# complain until all eight are filled in.
+restgprlr_14_address = 0x0
+savegprlr_14_address = 0x0
+restfpr_14_address = 0x0
+savefpr_14_address = 0x0
+restvmx_14_address = 0x0
+savevmx_14_address = 0x0
+restvmx_64_address = 0x0
+savevmx_64_address = 0x0
+
+# Find these in Ghidra: longjmp usually calls RtlUnwind, and setjmp sits
+# right after it. Remove the lines if the game never uses them.
+# longjmp_address = 0x0
+# setjmp_address = 0x0
+
+# Manual function boundaries for anything XenonAnalyse gets wrong
+# (typically functions containing jump tables).
+functions = [
+]
+
+# Non-code bytes inside .text the recompiler should skip.
+invalid_instructions = [
+    { data = 0x00000000, size = 4 }, # Padding
+]
+
+# Mid-asm hooks go here as [[midasm_hook]] tables, e.g.:
+# [[midasm_hook]]
+# name = "ExampleMidAsmHook"
+# address = 0x82000000
+# registers = ["r3"]

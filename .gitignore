@@ -1,0 +1,30 @@
+# ---------------------------------------------------------------------------
+# Game data: NEVER commit anything from the retail game.
+# Users supply their own dump in private/ (see docs/DUMPING.md).
+# ---------------------------------------------------------------------------
+private/*
+!private/README.md
+*.xex
+*.xexp
+*.iso
+*.god
+*.stfs
+*.map
+*.xma
+*.bik
+
+# Recompiler output is derived from the game's code, so it stays local too.
+H3RecompLib/ppc/
+
+# Build output
+build/
+out/
+.cache/
+compile_commands.json
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
