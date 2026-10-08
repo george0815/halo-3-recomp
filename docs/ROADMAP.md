@@ -3,12 +3,12 @@
 Rough phases. Each one is a large amount of work; that's fine.
 
 ## 0. Ground truth
-- [ ] Own dump of `default.xex` in `private/`; SHA-1 recorded
-- [ ] `h3xexinfo` runs: sections, entry point, imports listed
+- [x] Own dump of `default.xex` in `private/`; SHA-1 recorded
+- [x] `h3xexinfo` runs: sections, entry point, imports listed
 - [ ] XEX loaded into Ghidra (XEX loader plugin) for manual analysis
 
 ## 1. Recompile
-- [ ] Fill save/restore helper addresses (`h3xexinfo` output)
+- [x] Fill save/restore helper addresses (`h3xexinfo` output)
 - [ ] Locate `setjmp`/`longjmp` in Ghidra (or confirm they're unused)
 - [ ] XenonAnalyse jump tables: check the results and fix missed patterns.
       XenonAnalyse's detection was tuned for Sonic Unleashed, so expect

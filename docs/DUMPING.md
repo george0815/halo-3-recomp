@@ -34,11 +34,13 @@ for retail discs).
 ## Getting `default.xex` out of an ISO
 
 ```sh
-extract-xiso -x Halo3.iso -d private/game
+python3 tools/xdvdfs_extract.py Halo3.iso private/game
 cp private/game/default.xex private/
 ```
 
-`extract-xiso` reads XGD2 images. `xdvdfs` is a newer alternative.
+`tools/xdvdfs_extract.py` reads full XGD2 images (video + game partition) and
+plain XISOs. Pass `--list` to print the file tree without extracting.
+`extract-xiso` and `xdvdfs` also work.
 
 You don't need to decrypt or decompress the XEX yourself. XenonRecomp does
 that when it loads the file.
@@ -54,6 +56,19 @@ sha1sum private/default.xex
 
 Write the hash in the project notes, so everyone working on the project knows
 they're on the same build.
+
+### Reference build
+
+The addresses in `H3RecompLib/config/halo3.toml` are for this executable:
+
+| Field      | Value                                      |
+|------------|--------------------------------------------|
+| SHA-1      | `927a8c49062a55179d84116e33f8a5a0b3db13c1` |
+| Title ID   | `4D5307E6`                                 |
+| Media ID   | `699E0227`                                 |
+| Version    | `0.0.0.42` (disc, no title update)         |
+| Image      | base `0x82000000`, size `0x012A0000`       |
+| Entry      | `0x82582A98`                               |
 
 ## Title updates (later)
 

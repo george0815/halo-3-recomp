@@ -137,7 +137,10 @@ int main(int argc, char* argv[])
     printf("Sections:\n");
     for (const auto& section : image.sections)
     {
-        printf("  %-10s 0x%08zX - 0x%08zX  %s%s\n", section.name.c_str(), section.base,
+        // PE section names are char[8] with no terminator when all 8 are used,
+        // and XenonRecomp's loader doesn't clamp them.
+        std::string_view name = std::string_view(section.name).substr(0, 8);
+        printf("  %-10.*s 0x%08zX - 0x%08zX  %s%s\n", int(name.size()), name.data(), section.base,
             section.base + section.size,
             (section.flags & SectionFlags_Code) ? "code " : "",
             (section.flags & SectionFlags_Data) ? "data" : "");

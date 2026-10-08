@@ -28,6 +28,7 @@ H3RecompLib/config/  XenonRecomp config + jump tables for Halo 3
 H3RecompLib/ppc/     generated C++ (ignored)
 tools/h3xexinfo/     XEX inspector: layout, imports, helper addresses, stubs
 tools/recompile.sh   full XEX -> C++ pipeline
+tools/xdvdfs_extract.py  disc image -> private/game
 thirdparty/          XenonRecomp (submodule)
 private/             your game files (ignored)
 docs/                dumping guide, roadmap

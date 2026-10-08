@@ -29,14 +29,14 @@ non_volatile_as_local = false
 # Register save/restore helpers. Run `h3xexinfo private/default.xex` and
 # paste the lines it prints here. 0 means "not found yet"; XenonRecomp will
 # complain until all eight are filled in.
-restgprlr_14_address = 0x0
-savegprlr_14_address = 0x0
-restfpr_14_address = 0x0
-savefpr_14_address = 0x0
-restvmx_14_address = 0x0
-savevmx_14_address = 0x0
-restvmx_64_address = 0x0
-savevmx_64_address = 0x0
+restgprlr_14_address = 0x8258E000
+savegprlr_14_address = 0x8258DFB0
+restfpr_14_address = 0x82593D5C
+savefpr_14_address = 0x82593D10
+restvmx_14_address = 0x826F4A38
+savevmx_14_address = 0x826F47A0
+restvmx_64_address = 0x826F4ACC
+savevmx_64_address = 0x826F4834
 
 # Find these in Ghidra: longjmp usually calls RtlUnwind, and setjmp sits
 # right after it. Remove the lines if the game never uses them.
