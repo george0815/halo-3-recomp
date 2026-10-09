@@ -6,11 +6,14 @@
 #include "kernel/modules.h"
 #include "kernel/thread.h"
 #include "kernel/vfs.h"
+#include "video/window.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <thread>
 
 // The recompiler's function lookup table lives right after the image and
 // must fit inside the 4 GiB guest range.
@@ -46,20 +49,34 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    if (!h3::video::CreateMainWindow())
+        return 1;
+
     h3::gpu::Initialize();
 
     if (!h3::kernel::LoadExecutable(xexPath))
         return 1;
 
-    // Halo 3's header asks for a 64 KiB main stack. Give it at least 1 MiB:
-    // the headroom is free, and an overflow would silently corrupt memory.
-    PPCContext ctx{};
-    h3::kernel::AdoptHostThread(ctx, std::max(h3::kernel::g_module.stackSize, 0x100000u));
+    // The guest's main thread runs beside the window's event loop, which SDL
+    // wants on the host main thread.
+    std::thread([]
+    {
+        // Halo 3's header asks for a 64 KiB main stack. Give it at least 1 MiB:
+        // the headroom is free, and an overflow would silently corrupt memory.
+        PPCContext ctx{};
+        h3::kernel::AdoptHostThread(ctx, std::max(h3::kernel::g_module.stackSize, 0x100000u));
 
-    printf("Entering guest at _xstart\n");
+        printf("Entering guest at _xstart\n");
+        fflush(stdout);
+        _xstart(ctx, h3::g_base);
+        printf("Guest returned\n");
+        h3::video::RequestQuit(0);
+    }).detach();
+
+    // Guest threads can't be stopped cleanly, so leave without running
+    // destructors once the window closes.
+    int exitCode = h3::video::RunEventLoop();
     fflush(stdout);
-    _xstart(ctx, h3::g_base);
-    printf("Guest returned\n");
-
-    return 0;
+    fflush(stderr);
+    std::_Exit(exitCode);
 }

@@ -62,6 +62,17 @@ namespace h3::kernel
     // stack back to the thread's entry point.
     [[noreturn]] void ExitCurrentThread(uint32_t exitCode);
 
+    // Interrupt exclusion. On the console an interrupt preempts its CPU, and
+    // code that shares state with an interrupt handler raises IRQL to
+    // DISPATCH_LEVEL to hold it off. Here interrupts run on their own host
+    // thread, so raising IRQL to DISPATCH_LEVEL or above takes one
+    // process-wide lock, and interrupt delivery takes the same lock
+    // (implemented with the IRQL exports in xboxkrnl_threading.cpp).
+    // Runs an interrupt handler: waits until no guest thread is at raised
+    // IRQL, and keeps them out until LeaveInterrupt.
+    void EnterInterrupt();
+    void LeaveInterrupt();
+
     // Process-wide dynamic TLS slot allocation.
     uint32_t TlsAlloc();  // 0xFFFFFFFF when none are left
     bool TlsFree(uint32_t slot);

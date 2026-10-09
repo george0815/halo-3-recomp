@@ -25,6 +25,8 @@ namespace h3
     //                            function table slots follow the executable's,
     //                            up to 0x9FFFFFFF (see kernel/modules.cpp)
     //   0xA0000000 - 0xBFFFFFFF  physical memory (MmAllocatePhysicalMemoryEx)
+    //   0xC0000000 - 0xDFFFFFFF  the same physical memory again
+    //   0xE0000000 - 0xFFFFFFFF  and again, starting 0x1000 in (memory.cpp)
     constexpr uint32_t kGpuRegisterBase = 0x7FC80000;
     constexpr uint32_t kPhysicalMemoryBase = 0xA0000000;
     constexpr uint32_t kPageSize4K = 0x1000;

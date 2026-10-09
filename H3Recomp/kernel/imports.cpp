@@ -51,3 +51,11 @@ namespace h3::kernel
         _Exit(1);
     }
 }
+
+// See H3RecompLib/debug/switch_check.h.
+void H3SwitchUnreachable(uint32_t address, uint32_t value)
+{
+    fprintf(stderr, "[recomp] jump table at 0x%08X indexed out of range (%u)\n", address, value);
+    fflush(stderr);
+    abort();
+}

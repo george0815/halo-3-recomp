@@ -38,7 +38,7 @@ docs/                dumping guide, roadmap
 
 ## Building
 
-Requires CMake 3.20+, Ninja and Clang 18+.
+Requires CMake 3.20+, Ninja, Clang 18+ and SDL3.
 
 ```sh
 git submodule update --init --recursive
@@ -69,6 +69,11 @@ Environment variables:
 | `H3_LOG_READS=1` | Log every file read (path, offset, length, destination) |
 | `H3_LOG_MEMORY=1` | Log physical memory allocations |
 | `H3_LOG_GPU=1` | Log ring buffer setup, the first use of each PM4 opcode, and frame counts |
+| `H3_GPU_CAPTURE=<frame>` | Write `gpu_capture.txt`: every draw, resolve and shader load in that frame (counted in swaps) with the render state |
+
+CMake option `-DH3_TRACE_D3D=ON` counts and samples calls into the game's
+statically linked D3D library and writes `d3d_trace.txt` at frame 150 (or
+`H3_TRACE_D3D_FRAME`), sampling the 50 frames before it.
 
 CMake option `-DH3_TRACE_MODULE_CALLS=ON` logs every function call in the
 recompiled DLLs with arguments and return values (very slow).
@@ -79,5 +84,8 @@ that last more than a second.
 ## Status
 
 Boots through kernel setup, the Waves audio DLLs, the intro video and map
-loading (`mainmenu.map`, `shared.map`), presenting frames through a
-stand-in GPU that draws nothing. See [docs/ROADMAP.md](docs/ROADMAP.md).
+loading (`mainmenu.map`, `shared.map`), and keeps running at 60 fps,
+presenting frames through a stand-in GPU that draws nothing. The window
+shows the intro movie by reading Bink's decoded frames straight from guest
+memory (a debug shortcut, `H3Recomp/video/bink_view.cpp`); otherwise it
+stays black. Its title shows frames presented. See [docs/ROADMAP.md](docs/ROADMAP.md).

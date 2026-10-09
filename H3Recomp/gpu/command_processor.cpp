@@ -4,18 +4,19 @@
 
 #include "../kernel/thread.h"
 #include "../memory.h"
+#include "../video/window.h"
+#include "frame_capture.h"
+#include "registers.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
+#include <iterator>
 #include <mutex>
 #include <thread>
-#include <tuple>
 #include <utility>
 
 namespace h3::gpu
@@ -49,7 +50,35 @@ namespace h3::gpu
             kOpInterrupt = 0x54,
             kOpEventWriteShd = 0x58,
             kOpEventWriteExt = 0x59,
+            kOpSetBinMask = 0x50,
+            kOpSetBinSelect = 0x51,
+            kOpSetBinMaskLo = 0x60,
+            kOpSetBinMaskHi = 0x61,
+            kOpSetBinSelectLo = 0x62,
+            kOpSetBinSelectHi = 0x63,
+            kOpDrawIndx = 0x22,
+            kOpImLoad = 0x27,
+            kOpImLoadImmediate = 0x2B,
+            kOpSetConstant = 0x2D,
+            kOpLoadAluConstant = 0x2F,
+            kOpDrawIndx2 = 0x36,
+            kOpSetConstant2 = 0x55,
+            kOpSetShaderConstants = 0x56,
         };
+
+        // SET_CONSTANT / LOAD_ALU_CONSTANT type field: register block.
+        constexpr uint32_t kConstantBases[] = { kRegShaderConstantAlu, kRegShaderConstantFetch, kRegShaderConstantBool,
+            kRegShaderConstantLoop, kRegContextRegisterBase };
+
+        // Predicated tiling. D3D replays a frame's commands once per EDRAM
+        // tile ("bin") and marks per-tile packets as predicated (type-3
+        // header bit 0); those only run when bin select & bin mask is
+        // nonzero. Skipping this runs every tile's packets on every pass,
+        // including D3D's GPU-to-CPU callbacks, which then re-trigger the
+        // replay forever. Command processor thread only. Reference: Xenia's
+        // ExecutePacketType3.
+        uint64_t g_binMask = ~0ull;
+        uint64_t g_binSelect = ~0ull;
 
         // Interrupt sources passed to the graphics interrupt callback.
         constexpr uint32_t kInterruptVblank = 0;
@@ -62,9 +91,6 @@ namespace h3::gpu
         std::atomic<uint32_t> g_interruptCallback{ 0 };
         std::atomic<uint32_t> g_interruptData{ 0 };
 
-        std::mutex g_interruptMutex;
-        std::condition_variable g_interruptCv;
-        std::deque<std::pair<uint32_t, uint32_t>> g_interrupts;  // source, cpu
 
         const bool g_log = getenv("H3_LOG_GPU") != nullptr;
 
@@ -158,12 +184,46 @@ namespace h3::gpu
             return ReadRegister(address);
         }
 
-        void QueueInterrupt(uint32_t source, uint32_t cpu)
+        // A guest thread's context for running the interrupt callback: the
+        // command processor and the vblank thread each have one.
+        struct InterruptContext
         {
-            std::lock_guard lock(g_interruptMutex);
-            g_interrupts.emplace_back(source, cpu);
-            g_interruptCv.notify_one();
+            PPCContext ctx{};
+            uint64_t stack = 0;
+        };
+
+        void InitInterruptContext(InterruptContext& context)
+        {
+            kernel::AdoptHostThread(context.ctx, 0x10000);
+            context.stack = context.ctx.r1.u64;
         }
+
+        // Runs the game's graphics interrupt callback on the calling thread.
+        void DeliverInterrupt(InterruptContext& context, uint32_t source, uint32_t cpu)
+        {
+            uint32_t callback = g_interruptCallback.load();
+            if (callback == 0)
+                return;
+            // The callback ignores a vblank unless the status register says
+            // one is pending.
+            if (source == kInterruptVblank)
+                WriteRegister(kRegVblankStatus, ReadRegister(kRegVblankStatus) | 1);
+            // The callback acknowledges the interrupt for the CPU it runs on
+            // (KPCR current processor), so run it "on" the target CPU.
+            *GuestPtr<uint8_t>(kernel::CurrentThread()->pcr + kernel::kPcrCurrentCpu) = uint8_t(cpu);
+            PPCContext& ctx = context.ctx;
+            ctx.r1.u64 = context.stack;
+            ctx.r3.u64 = source;
+            ctx.r4.u64 = g_interruptData.load();
+            // Like a real interrupt, never in the middle of guest code running
+            // at raised IRQL.
+            kernel::EnterInterrupt();
+            (PPC_LOOKUP_FUNC(g_base, callback))(ctx, g_base);
+            kernel::LeaveInterrupt();
+        }
+
+        // The command processor's own guest context (see CommandProcessorThread).
+        InterruptContext* g_cpInterruptContext = nullptr;
 
         void LogOpcode(uint32_t opcode, const char* what)
         {
@@ -202,8 +262,104 @@ namespace h3::gpu
             uint32_t start = reader.Remaining();
             auto consumed = [&] { return start - reader.Remaining(); };
 
+            if ((header & 1) && (g_binSelect & g_binMask) == 0)
+            {
+                reader.Skip(count);
+                return;
+            }
+
+            auto setLow = [](uint64_t& value, uint32_t low) { value = (value & 0xFFFFFFFF00000000ull) | low; };
+            auto setHigh = [](uint64_t& value, uint32_t high) { value = (value & 0xFFFFFFFFull) | (uint64_t(high) << 32); };
+
             switch (opcode)
             {
+            case kOpSetBinMask:
+            case kOpSetBinSelect:
+            {
+                uint64_t high = reader.Read();
+                uint64_t low = reader.Read();
+                (opcode == kOpSetBinMask ? g_binMask : g_binSelect) = (high << 32) | low;
+                break;
+            }
+            case kOpSetBinMaskLo:
+                setLow(g_binMask, reader.Read());
+                break;
+            case kOpSetBinMaskHi:
+                setHigh(g_binMask, reader.Read());
+                break;
+            case kOpSetBinSelectLo:
+                setLow(g_binSelect, reader.Read());
+                break;
+            case kOpSetBinSelectHi:
+                setHigh(g_binSelect, reader.Read());
+                break;
+            case kOpSetConstant:
+            {
+                // Type in bits 16-23 picks the block; the rest are the values.
+                uint32_t offsetType = reader.Read();
+                uint32_t type = (offsetType >> 16) & 0xFF;
+                if (type >= std::size(kConstantBases))
+                    break;
+                uint32_t index = kConstantBases[type] + (offsetType & 0x7FF);
+                for (uint32_t i = 0; i + 1 < count; i++)
+                    CpWriteRegister(index + i, reader.Read());
+                break;
+            }
+            case kOpSetConstant2:
+            case kOpSetShaderConstants:
+            {
+                uint32_t index = reader.Read() & 0xFFFF;
+                for (uint32_t i = 0; i + 1 < count; i++)
+                    CpWriteRegister(index + i, reader.Read());
+                break;
+            }
+            case kOpLoadAluConstant:
+            {
+                // The same blocks, loaded from (physical) memory.
+                uint32_t address = PhysicalToGuest(reader.Read() & 0x3FFFFFFF);
+                uint32_t offsetType = reader.Read();
+                uint32_t dwords = reader.Read() & 0xFFF;
+                uint32_t type = (offsetType >> 16) & 0xFF;
+                if (type >= std::size(kConstantBases))
+                    break;
+                uint32_t index = kConstantBases[type] + (offsetType & 0x7FF);
+                for (uint32_t i = 0; i < dwords; i++)
+                    CpWriteRegister(index + i, GuestRef<uint32_t>(address + i * 4));
+                break;
+            }
+            case kOpImLoad:
+            {
+                // Shader microcode by pointer: type in the low 2 bits.
+                uint32_t addressType = reader.Read();
+                uint32_t startSize = reader.Read();
+                capture::OnShaderLoad(addressType & 3, PhysicalToGuest(addressType & ~3u), startSize & 0xFFFF);
+                break;
+            }
+            case kOpImLoadImmediate:
+            {
+                // Shader microcode embedded in the packet.
+                uint32_t type = reader.Read();
+                uint32_t startSize = reader.Read();
+                capture::OnShaderLoad(type & 3, reader.ring ? 0 : reader.base + reader.index * 4, startSize & 0xFFFF);
+                break;
+            }
+            case kOpDrawIndx:
+            case kOpDrawIndx2:
+            {
+                // DRAW_INDX starts with a visibility query token.
+                if (opcode == kOpDrawIndx)
+                    reader.Read();
+                uint32_t initiator = reader.Read();
+                WriteRegister(kRegVgtDrawInitiator, initiator);
+                uint32_t indexBase = 0, indexWords = 0;
+                if (((initiator >> 6) & 3) == 0 && consumed() + 2 <= count)  // DMA (indexed)
+                {
+                    indexBase = PhysicalToGuest(reader.Read());
+                    indexWords = reader.Read() & 0xFFFFFF;
+                }
+                capture::OnDraw(initiator, indexBase, indexWords);
+                break;
+            }
             case kOpIndirectBuffer:
             case kOpIndirectBufferPfd:
             {
@@ -302,11 +458,14 @@ namespace h3::gpu
             case kOpInterrupt:
             {
                 LogOpcode(opcode, "interrupt");
+                // Delivered before the next packet runs, as Xenia does: the
+                // packets after an interrupt (D3D's GPU-to-CPU callback
+                // handshake) expect the handler to have run.
                 uint32_t cpuMask = reader.Read();
                 for (uint32_t cpu = 0; cpu < 6; cpu++)
                 {
                     if (cpuMask & (1u << cpu))
-                        QueueInterrupt(kInterruptCommandProcessor, cpu);
+                        DeliverInterrupt(*g_cpInterruptContext, kInterruptCommandProcessor, cpu);
                 }
                 break;
             }
@@ -314,6 +473,8 @@ namespace h3::gpu
             {
                 LogOpcode(opcode, "swap");
                 uint32_t frame = ++g_swapCounter;
+                capture::OnSwap(frame);
+                video::OnFramePresented(frame);
                 if (g_log && frame % 60 == 0)
                     fprintf(stderr, "[gpu] %u frames presented\n", frame);
                 break;
@@ -373,6 +534,11 @@ namespace h3::gpu
 
         void CommandProcessorThread()
         {
+            // A guest thread, so it can run the interrupt callback itself.
+            static InterruptContext context;
+            InitInterruptContext(context);
+            g_cpInterruptContext = &context;
+
             uint32_t readPointer = 0;
             for (;;)
             {
@@ -397,48 +563,20 @@ namespace h3::gpu
             }
         }
 
-        // Runs the game's graphics interrupt callback for queued interrupts
-        // and a 60 Hz vblank, on a guest thread of its own.
+        // Raises the 60 Hz vblank interrupt, on a guest thread of its own.
+        // Command processor interrupts run on the command processor thread.
         void InterruptThread()
         {
-            PPCContext ctx{};
-            kernel::AdoptHostThread(ctx, 0x10000);
-            uint64_t stack = ctx.r1.u64;
+            InterruptContext context;
+            InitInterruptContext(context);
 
             constexpr auto kVblankPeriod = std::chrono::nanoseconds(1'000'000'000 / 60);
             auto nextVblank = std::chrono::steady_clock::now() + kVblankPeriod;
             for (;;)
             {
-                uint32_t source = kInterruptVblank;
-                uint32_t cpu = 2;
-                {
-                    std::unique_lock lock(g_interruptMutex);
-                    g_interruptCv.wait_until(lock, nextVblank, [] { return !g_interrupts.empty(); });
-                    if (!g_interrupts.empty())
-                    {
-                        std::tie(source, cpu) = g_interrupts.front();
-                        g_interrupts.pop_front();
-                    }
-                    else
-                    {
-                        nextVblank += kVblankPeriod;
-                    }
-                }
-
-                uint32_t callback = g_interruptCallback.load();
-                if (callback == 0)
-                    continue;
-                // The callback ignores a vblank unless the status register
-                // says one is pending.
-                if (source == kInterruptVblank)
-                    WriteRegister(kRegVblankStatus, ReadRegister(kRegVblankStatus) | 1);
-                // The callback acknowledges the interrupt for the CPU it runs
-                // on (KPCR current processor), so run it "on" the target CPU.
-                *GuestPtr<uint8_t>(kernel::CurrentThread()->pcr + kernel::kPcrCurrentCpu) = uint8_t(cpu);
-                ctx.r1.u64 = stack;
-                ctx.r3.u64 = source;
-                ctx.r4.u64 = g_interruptData.load();
-                (PPC_LOOKUP_FUNC(g_base, callback))(ctx, g_base);
+                std::this_thread::sleep_until(nextVblank);
+                nextVblank += kVblankPeriod;
+                DeliverInterrupt(context, kInterruptVblank, 2);
             }
         }
     }

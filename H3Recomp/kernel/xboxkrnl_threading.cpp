@@ -1,4 +1,5 @@
-// xboxkrnl threading exports: TLS, critical sections, critical regions.
+// xboxkrnl threading exports: TLS, critical sections, critical regions,
+// interlocked singly linked lists, spin locks and IRQL.
 // Reference: Xenia's xboxkrnl_threading.cc and xboxkrnl_rtl.cc.
 
 #include <ppc_recomp_shared.h>
@@ -11,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <mutex>
 #include <thread>
 
 using namespace h3;
@@ -165,4 +167,177 @@ PPC_FUNC(__imp__RtlLeaveCriticalSection)
 
     GuestRef<uint32_t>(cs + kCsOwningThread) = 0;
     GuestAtomic(cs + kCsLockCount).store(ByteSwap(uint32_t(-1)));
+}
+
+// SLIST_HEADER (8 bytes, big-endian): next entry (0 when empty), depth,
+// sequence. Read as one big-endian 64-bit word: next in the high half, depth
+// in bits 16-31, sequence in bits 0-15. Titles push inline with ldarx/stdcx.
+// on the whole word, so pops and flushes must swap the same 64 bits.
+// SINGLE_LIST_ENTRY is just the next pointer.
+namespace
+{
+    std::atomic_ref<uint64_t> SListHeader(uint32_t address)
+    {
+        return std::atomic_ref<uint64_t>(*GuestPtr<uint64_t>(address));
+    }
+
+    uint64_t SListNext(uint64_t header) { return header >> 32; }
+    uint64_t SListDepth(uint64_t header) { return (header >> 16) & 0xFFFF; }
+    uint64_t SListSequence(uint64_t header) { return header & 0xFFFF; }
+
+    uint64_t MakeSListHeader(uint64_t next, uint64_t depth, uint64_t sequence)
+    {
+        return (next << 32) | ((depth & 0xFFFF) << 16) | (sequence & 0xFFFF);
+    }
+}
+
+// PSINGLE_LIST_ENTRY InterlockedPopEntrySList(PSLIST_HEADER list)
+PPC_FUNC(__imp__InterlockedPopEntrySList)
+{
+    auto header = SListHeader(ctx.r3.u32);
+    uint64_t raw = header.load();
+    for (;;)
+    {
+        uint64_t old = __builtin_bswap64(raw);
+        uint32_t entry = uint32_t(SListNext(old));
+        if (entry == 0)
+        {
+            ctx.r3.u64 = 0;
+            return;
+        }
+        uint64_t next = GuestRef<uint32_t>(entry);
+        uint64_t updated = MakeSListHeader(next, SListDepth(old) - 1, SListSequence(old) + 1);
+        if (header.compare_exchange_weak(raw, __builtin_bswap64(updated)))
+        {
+            ctx.r3.u64 = entry;
+            return;
+        }
+    }
+}
+
+// PSINGLE_LIST_ENTRY InterlockedFlushSList(PSLIST_HEADER list)
+PPC_FUNC(__imp__InterlockedFlushSList)
+{
+    auto header = SListHeader(ctx.r3.u32);
+    uint64_t raw = header.load();
+    for (;;)
+    {
+        uint64_t old = __builtin_bswap64(raw);
+        uint64_t updated = MakeSListHeader(0, 0, SListSequence(old) + 1);
+        if (header.compare_exchange_weak(raw, __builtin_bswap64(updated)))
+        {
+            ctx.r3.u64 = SListNext(old);
+            return;
+        }
+    }
+}
+
+// Spin locks hold the owner's KPCR address (as Xenia does), 0 when free.
+//
+// IRQL is tracked per thread. Crossing DISPATCH_LEVEL takes or releases the
+// interrupt lock (see EnterInterrupt in thread.h), which is what keeps the
+// GPU interrupt handler from running in the middle of code that raised IRQL
+// to exclude it. Only one thread at a time can be at raised IRQL, so spin
+// locks (always taken at DISPATCH_LEVEL) are never contended.
+namespace
+{
+    constexpr uint32_t kDispatchLevel = 2;
+    constexpr uint32_t kInterruptLevel = 4;  // what interrupt handlers run at
+
+    thread_local uint32_t t_irql = 0;
+    std::recursive_mutex g_interruptLock;
+
+    void SetIrql(uint32_t level)
+    {
+        bool wasRaised = t_irql >= kDispatchLevel;
+        bool raised = level >= kDispatchLevel;
+        if (!wasRaised && raised)
+            g_interruptLock.lock();
+        t_irql = level;
+        if (wasRaised && !raised)
+            g_interruptLock.unlock();
+    }
+
+    uint32_t RaiseIrql(uint32_t level)
+    {
+        uint32_t old = t_irql;
+        SetIrql(std::max(old, level));
+        return old;
+    }
+
+    void AcquireSpinLock(uint32_t lock)
+    {
+        auto word = GuestAtomic(lock);
+        uint32_t owner = __builtin_bswap32(CurrentThread()->pcr);
+        for (;;)
+        {
+            uint32_t expected = 0;
+            if (word.compare_exchange_weak(expected, owner))
+                return;
+            std::this_thread::yield();
+        }
+    }
+
+    void ReleaseSpinLock(uint32_t lock)
+    {
+        GuestAtomic(lock).store(0);
+    }
+}
+
+void h3::kernel::EnterInterrupt()
+{
+    g_interruptLock.lock();
+    t_irql = kInterruptLevel;
+}
+
+void h3::kernel::LeaveInterrupt()
+{
+    t_irql = 0;
+    g_interruptLock.unlock();
+}
+
+// KIRQL KfAcquireSpinLock(PKSPIN_LOCK lock)
+PPC_FUNC(__imp__KfAcquireSpinLock)
+{
+    uint32_t old = RaiseIrql(kDispatchLevel);
+    AcquireSpinLock(ctx.r3.u32);
+    ctx.r3.u64 = old;
+}
+
+// void KfReleaseSpinLock(PKSPIN_LOCK lock, KIRQL oldIrql)
+PPC_FUNC(__imp__KfReleaseSpinLock)
+{
+    ReleaseSpinLock(ctx.r3.u32);
+    SetIrql(ctx.r4.u8);
+}
+
+// void KeAcquireSpinLockAtRaisedIrql(PKSPIN_LOCK lock)
+PPC_FUNC(__imp__KeAcquireSpinLockAtRaisedIrql)
+{
+    AcquireSpinLock(ctx.r3.u32);
+}
+
+// BOOLEAN KeTryToAcquireSpinLockAtRaisedIrql(PKSPIN_LOCK lock)
+PPC_FUNC(__imp__KeTryToAcquireSpinLockAtRaisedIrql)
+{
+    uint32_t expected = 0;
+    ctx.r3.u64 = GuestAtomic(ctx.r3.u32).compare_exchange_strong(expected, __builtin_bswap32(CurrentThread()->pcr));
+}
+
+// void KeReleaseSpinLockFromRaisedIrql(PKSPIN_LOCK lock)
+PPC_FUNC(__imp__KeReleaseSpinLockFromRaisedIrql)
+{
+    ReleaseSpinLock(ctx.r3.u32);
+}
+
+// KIRQL KeRaiseIrqlToDpcLevel()
+PPC_FUNC(__imp__KeRaiseIrqlToDpcLevel)
+{
+    ctx.r3.u64 = RaiseIrql(kDispatchLevel);
+}
+
+// void KfLowerIrql(KIRQL newIrql)
+PPC_FUNC(__imp__KfLowerIrql)
+{
+    SetIrql(ctx.r3.u8);
 }

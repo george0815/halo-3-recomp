@@ -5,24 +5,73 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <fcntl.h>
 #include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 namespace h3
 {
     uint8_t* g_base = nullptr;
 
+    namespace
+    {
+        // Physical memory is visible through three views, as on the console:
+        // 0xA0000000 (64 KiB pages), 0xC0000000 (16 MiB pages) and
+        // 0xE0000000 (4 KiB pages). Titles and D3D use whichever view an
+        // allocation's page size implies, and also build addresses in one
+        // view from another, so all three must alias the same memory. The
+        // 0xE0000000 view starts 0x1000 into physical memory (Xenia's
+        // memory.cc maps it the same way).
+        constexpr uint32_t kPhysicalSize = 0x20000000;
+        constexpr uint32_t kPhysicalViewC = 0xC0000000;
+        constexpr uint32_t kPhysicalViewE = 0xE0000000;
+        constexpr uint32_t kViewEOffset = 0x1000;
+
+#ifndef _WIN32
+        int g_physicalFd = -1;
+
+        bool MapPhysicalView(uint32_t guest, uint64_t offset, uint64_t size)
+        {
+            void* view = mmap(g_base + guest, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, g_physicalFd, offset);
+            return view != MAP_FAILED;
+        }
+#endif
+
+        // Physical offset of a guest address in one of the views, or -1.
+        int64_t PhysicalOffset(uint32_t address)
+        {
+            if (address >= kPhysicalViewE)
+                return int64_t(address - kPhysicalViewE) + kViewEOffset;
+            if (address >= kPhysicalMemoryBase)
+                return (address - kPhysicalMemoryBase) & (kPhysicalSize - 1);
+            return -1;
+        }
+    }
+
     bool InitGuestMemory()
     {
         // Pages are committed lazily by the OS, so reserving the whole range
         // up front costs nothing until the guest touches it.
 #ifdef _WIN32
+        // TODO: the physical views aren't aliased on Windows yet (needs a
+        // section mapped with MapViewOfFile3 into placeholders).
         void* memory = VirtualAlloc(nullptr, kGuestMemorySize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 #else
         void* memory = mmap(nullptr, kGuestMemorySize, PROT_READ | PROT_WRITE,
             MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
         if (memory == MAP_FAILED)
-            memory = nullptr;
+            return false;
+        g_base = static_cast<uint8_t*>(memory);
+
+        // Physical memory is a sparse memfd mapped at each view.
+        g_physicalFd = memfd_create("h3-physical", 0);
+        if (g_physicalFd < 0 || ftruncate(g_physicalFd, kPhysicalSize) != 0)
+            return false;
+        if (!MapPhysicalView(kPhysicalMemoryBase, 0, kPhysicalSize) ||
+            !MapPhysicalView(kPhysicalViewC, 0, kPhysicalSize) ||
+            !MapPhysicalView(kPhysicalViewE, kViewEOffset, kPhysicalSize - kViewEOffset))
+            return false;
 #endif
         g_base = static_cast<uint8_t*>(memory);
         return g_base != nullptr;
@@ -35,8 +84,13 @@ namespace h3
         VirtualFree(g_base + address, size, MEM_DECOMMIT);
         VirtualAlloc(g_base + address, size, MEM_COMMIT, PAGE_READWRITE);
 #else
-        // Private anonymous pages read back as zero after MADV_DONTNEED.
-        madvise(g_base + address, size, MADV_DONTNEED);
+        // Shared (physical) pages keep their contents after MADV_DONTNEED;
+        // punching a hole in the memfd frees them and reads back zero.
+        if (int64_t offset = PhysicalOffset(address); offset >= 0)
+            fallocate(g_physicalFd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, size);
+        else
+            // Private anonymous pages read back as zero after MADV_DONTNEED.
+            madvise(g_base + address, size, MADV_DONTNEED);
 #endif
     }
 

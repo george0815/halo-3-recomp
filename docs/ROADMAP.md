@@ -17,7 +17,12 @@ Rough phases. Each one is a large amount of work; that's fine.
       XenonRecomp turns into `return`.
 - [x] Manual `functions = [...]` boundaries for anything misanalysed
       (`tools/h3analysis.py functions`)
-- [x] Missing PPC instructions in XenonRecomp (12 added; not yet in a fork)
+- [x] Missing PPC instructions in XenonRecomp (12 added; not yet in a fork),
+      plus `blrl`, `vupkd3d128` float16/short4 formats and `vpkd3d128`
+      float16_2/normpacked32
+- [x] Jump table entries that tail-call another function (both
+      `h3analysis.py` and XenonRecomp); out-of-range table indexes abort
+      with the table address (`H3RecompLib/debug/switch_check.h`)
 - [x] `tools/recompile.sh` completes; `H3Recomp` links
 
 ## 2. Boot (kernel/XAM)
@@ -36,15 +41,29 @@ Rough phases. Each one is a large amount of work; that's fine.
       host fibers in `H3Recomp/hooks/fibers.cpp`)
 - [x] Reach the first map load: `mainmenu.map` and `shared.map` load and
       verify
+- [x] Interlocked SLists, spin locks, IRQL (raised IRQL holds off the GPU
+      interrupt, as on the console)
+- [x] Physical memory aliased at 0xA0000000, 0xC0000000 and 0xE0000000
+- [x] Runs past loading at a steady 60 fps (nothing drawn yet)
 
 ## 3. Graphics
 - [x] Stand-in command processor (`H3Recomp/gpu/`): consumes the PM4 ring
       buffer, performs fences, waits, scratch/memory writes and interrupts,
       60 Hz vblank. Draws nothing, but the game presents frames
-- [ ] Hook the game's D3D9-on-Xenos layer. Replacing it at the API level is
-      far easier than emulating raw PM4 GPU command packets.
-- [ ] Shaders via XenosRecomp
-- [ ] Render-target / EDRAM resolve semantics
+- [x] PM4 predication (bin mask/select) for D3D's predicated tiling, and
+      command processor interrupts delivered synchronously (as Xenia does);
+      without them the main menu's tiled frames replay forever
+- [x] Intro movie shown by reading Bink's decoded frames (debug shortcut)
+- [x] Command stream state: constants (SET_CONSTANT, LOAD_ALU_CONSTANT),
+      shader loads (IM_LOAD), draws (DRAW_INDX) and resolves tracked;
+      `H3_GPU_CAPTURE` dumps a frame. (Hooking D3D was dropped: its setters
+      only write Xenos register shadows and its draws are inlined into the
+      game, so rendering works from the command stream instead.)
+- [ ] Host backend (SDL_GPU / Vulkan) presenting the swap's front buffer
+- [ ] Xenos microcode -> GLSL -> SPIR-V shader translator (Xenia's ucode.h
+      as the reference); vertex fetch from fetch constants
+- [ ] EDRAM render targets and resolves (Halo 3 renders 1152x640 in four
+      predicated tiles, deferred: G-buffer, shadow maps, post-processing)
 - [ ] Menu renders → mainmenu.map renders → a campaign level renders
 
 ## 4. Audio, input, saves

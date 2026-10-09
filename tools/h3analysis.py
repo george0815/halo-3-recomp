@@ -64,7 +64,8 @@ class Image:
             if i >> 26 == 18 and i & 1:
                 self.bl_targets.add((sext(i & 0x3FFFFFC, 26) + (0 if i & 2 else a)) & 0xFFFFFFFF)
         # Known entry points: .pdata functions and bl targets.
-        self.entries = sorted(set(self.pdata) | self.bl_targets)
+        self.entry_set = set(self.pdata) | self.bl_targets
+        self.entries = sorted(self.entry_set)
 
     def u32(self, a):
         return struct.unpack_from(">I", self.data, a - self.base)[0]
@@ -102,12 +103,14 @@ class Image:
             return None
         table = bctr + 4
 
-        # The table runs until a label or anything outside the function.
+        # The table runs until a label or anything outside the function. An
+        # entry may also be another function's start: a tail call (the
+        # recompiler calls it and returns).
         lo, hi = self.enclosing(bctr)
         labels, p = [], table
         while p < hi:
             w = self.u32(p)
-            if not lo <= w < hi or table <= w <= p or p in labels:
+            if not (lo <= w < hi or w in self.entry_set) or table <= w <= p or p in labels:
                 break
             labels.append(w)
             p += 4

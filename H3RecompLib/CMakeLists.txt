@@ -7,6 +7,8 @@ set(H3_PPC_COMPILE_OPTIONS
     -fno-strict-aliasing
     # Generated code is noisy; warnings here aren't actionable.
     -w
+    # Report jump table indexes outside their table (debug/switch_check.h).
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/debug/switch_check.h"
 )
 
 file(GLOB H3_PPC_SOURCES CONFIGURE_DEPENDS

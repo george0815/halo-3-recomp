@@ -54,3 +54,30 @@ PPC_FUNC(__imp__XamLoaderLaunchTitle)
     fprintf(stderr, "[xam] title asked to launch %s\n", path);
     GuestFatal("XamLoaderLaunchTitle", ctx);
 }
+
+// --- Input -------------------------------------------------------------------
+//
+// No controllers yet (XInput -> SDL gamepad is roadmap phase 4). Reporting
+// them as unplugged matters: answering success without filling in the state
+// lets the game read stack garbage as button presses (which skips the intro
+// movie, among other things).
+
+constexpr uint32_t kErrorDeviceNotConnected = 0x48F;
+
+// DWORD XamInputGetCapabilities(DWORD userIndex, DWORD flags, PXINPUT_CAPABILITIES caps)
+PPC_FUNC(__imp__XamInputGetCapabilities)
+{
+    ctx.r3.u64 = kErrorDeviceNotConnected;
+}
+
+// DWORD XamInputGetState(DWORD userIndex, DWORD flags, PXINPUT_STATE state)
+PPC_FUNC(__imp__XamInputGetState)
+{
+    ctx.r3.u64 = kErrorDeviceNotConnected;
+}
+
+// DWORD XamInputSetState(DWORD userIndex, DWORD flags, PXINPUT_VIBRATION vibration)
+PPC_FUNC(__imp__XamInputSetState)
+{
+    ctx.r3.u64 = kErrorDeviceNotConnected;
+}

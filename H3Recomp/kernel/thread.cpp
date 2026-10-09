@@ -77,6 +77,11 @@ namespace h3::kernel
         // Leave room for the back chain and LR save area above r1.
         ctx.r1.u64 = thread->stackBase - 0x100;
         ctx.r13.u64 = thread->pcr;
+        // The recompiled code keeps its own copy of the host FP control
+        // register and writes it back whole when it changes the flush mode.
+        // Left at zero, that write would unmask every FP exception (SIGFPE on
+        // the next inexact result), so start from the host's real value.
+        ctx.fpscr.csr = ctx.fpscr.getcsr();
         t_currentThread = thread;
     }
 
