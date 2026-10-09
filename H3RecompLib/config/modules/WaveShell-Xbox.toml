@@ -1,0 +1,59 @@
+# XenonRecomp configuration for WaveShell-Xbox.dll, a DLL that Halo 3 loads at runtime
+# with XexLoadImage. Same options as halo3.toml; see the comments there.
+
+[main]
+file_path = "../../../private/game/WaveShell-Xbox.dll"
+out_directory_path = "../../modules/WaveShell-Xbox"
+switch_table_file_path = "WaveShell-Xbox_switch_tables.toml"
+
+# Keeps _xstart and the save/restore helpers from clashing with the other
+# modules' when everything links into one program.
+symbol_prefix = "WaveShell_Xbox_"
+
+skip_lr = false
+skip_msr = false
+ctr_as_local = false
+xer_as_local = false
+reserved_as_local = false
+cr_as_local = false
+non_argument_as_local = false
+non_volatile_as_local = false
+
+# From `h3xexinfo private/game/WaveShell-Xbox.dll`. Helpers the DLL doesn't contain are
+# left out.
+restgprlr_14_address = 0x88072960
+savegprlr_14_address = 0x88072910
+
+# Functions with an exception handler are preceded by two words: the handler
+# (__C_specific_handler or __CxxFrameHandler) and its data. Skip them so the
+# function sweep doesn't decode them as code.
+invalid_instructions = [
+    { data = 0x00000000, size = 4 }, # Padding
+    { data = 0x88079468, size = 8 },
+    { data = 0x88083A44, size = 8 },
+]
+
+# Leaf functions with jump tables and no .pdata entry, sized by
+# tools/h3analysis.py functions (see halo3.toml).
+functions = [
+    { address = 0x880366B8, size = 0x328 },
+    { address = 0x8805CC80, size = 0xC0 },
+    { address = 0x8805E1F0, size = 0x18 },
+    { address = 0x880620B8, size = 0x1CC },
+    { address = 0x88064F78, size = 0x150 },
+    { address = 0x880650C8, size = 0x158 },
+    { address = 0x88065220, size = 0xFC },
+    { address = 0x88065600, size = 0x214 },
+    { address = 0x88065918, size = 0x1E0 },
+    { address = 0x88065AF8, size = 0xD8 },
+    { address = 0x88065BD0, size = 0xD0 },
+    { address = 0x88065CE8, size = 0xD0 },
+    { address = 0x88066080, size = 0xF4 },
+    { address = 0x880699A8, size = 0x244 },
+    { address = 0x8806E1A0, size = 0x244 },
+    { address = 0x8806F4E8, size = 0x94 },
+    { address = 0x88070700, size = 0xA4 },
+    { address = 0x880719A0, size = 0xC4 },
+    { address = 0x88071B08, size = 0xF0 },
+    { address = 0x88071BF8, size = 0x15C },
+]

@@ -26,9 +26,11 @@ and GPU behaviour.
 H3Recomp/            runtime: entry point, guest memory, kernel imports
 H3RecompLib/config/  XenonRecomp config + jump tables for Halo 3
 H3RecompLib/ppc/     generated C++ (ignored)
+H3RecompLib/modules/ generated C++ for the DLLs the game loads (ignored)
 tools/h3xexinfo/     XEX inspector: layout, imports, helper addresses, stubs
 tools/recompile.sh   full XEX -> C++ pipeline
 tools/xdvdfs_extract.py  disc image -> private/game
+tools/h3analysis.py  jump table / function boundary fixups
 thirdparty/          XenonRecomp (submodule)
 private/             your game files (ignored)
 docs/                dumping guide, roadmap
@@ -53,9 +55,29 @@ cmake --build --preset release
 build/release/H3Recomp/H3Recomp private/default.xex
 ```
 
-Set `H3_STRICT_IMPORTS=1` to abort on the first unimplemented kernel import
-instead of logging it and returning 0.
+The game's hard drive (cache partitions, saves) is created in `private/hdd/`.
+Delete that folder to start from a clean console.
+
+### Debugging
+
+Environment variables:
+
+| Variable | Effect |
+|---|---|
+| `H3_STRICT_IMPORTS=1` | Abort on the first unimplemented import instead of logging it |
+| `H3_LOG_FILES=1` | Log file opens, attribute queries and symbolic links |
+| `H3_LOG_READS=1` | Log every file read (path, offset, length, destination) |
+| `H3_LOG_MEMORY=1` | Log physical memory allocations |
+| `H3_LOG_GPU=1` | Log ring buffer setup, the first use of each PM4 opcode, and frame counts |
+
+CMake option `-DH3_TRACE_MODULE_CALLS=ON` logs every function call in the
+recompiled DLLs with arguments and return values (very slow).
+
+The runtime also reports locks held for more than two seconds and GPU waits
+that last more than a second.
 
 ## Status
 
-Skeleton. See [docs/ROADMAP.md](docs/ROADMAP.md).
+Boots through kernel setup, the Waves audio DLLs, the intro video and map
+loading (`mainmenu.map`, `shared.map`), presenting frames through a
+stand-in GPU that draws nothing. See [docs/ROADMAP.md](docs/ROADMAP.md).

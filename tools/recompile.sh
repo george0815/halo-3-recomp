@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Runs the whole recompilation pipeline against the XEX in private/:
 #   1. build the tools
-#   2. XenonAnalyse -> jump table TOML (only if it doesn't exist yet)
+#   2. XenonAnalyse -> jump table TOML (only if it doesn't exist yet),
+#      corrected by h3analysis.py
 #   3. XenonRecomp  -> H3RecompLib/ppc/*.cpp
 #   4. h3xexinfo    -> H3RecompLib/ppc/import_stubs.cpp
-#   5. reconfigure so the game targets show up
+#   5. the same for each DLL in H3RecompLib/config/modules/ (the game loads
+#      them at runtime) -> H3RecompLib/modules/<name>/
+#   6. reconfigure so the game targets show up
 #
 # Usage: tools/recompile.sh [preset]   (default: release)
 set -euo pipefail
@@ -61,6 +64,8 @@ fi
 if [[ ! -s "$SWITCH_TABLES" ]]; then
     echo "== Analysing jump tables"
     "$XENON_ANALYSE" "$TARGET_XEX" "$SWITCH_TABLES"
+    "$H3XEXINFO" "$TARGET_XEX" --dump "$ROOT/private/image.bin" >/dev/null
+    python3 "$ROOT/tools/h3analysis.py" tables "$ROOT/private/image.bin" "$SWITCH_TABLES"
 fi
 
 echo "== Recompiling"
@@ -68,6 +73,33 @@ echo "== Recompiling"
 
 echo "== Generating import stubs"
 "$H3XEXINFO" "$TARGET_XEX" --stubs "$PPC_DIR/import_stubs.cpp" | tail -n 1
+
+# DLLs the game loads with XexLoadImage. Each config's file_path points at the
+# DLL under private/game/.
+for MODULE_CONFIG in "$CONFIG_DIR"/modules/*.toml; do
+    [[ "$MODULE_CONFIG" == *_switch_tables.toml ]] && continue
+    NAME="$(basename "$MODULE_CONFIG" .toml)"
+    MODULE_TABLES="$CONFIG_DIR/modules/${NAME}_switch_tables.toml"
+    MODULE_DIR="$ROOT/H3RecompLib/modules/$NAME"
+    MODULE_FILE="$(sed -n 's/^file_path = "\(.*\)"$/\1/p' "$MODULE_CONFIG")"
+    MODULE_XEX="$(cd "$CONFIG_DIR/modules" && realpath -m "$MODULE_FILE")"
+    MODULE_IMAGE="$ROOT/private/modules/$NAME.bin"
+
+    if [[ ! -f "$MODULE_XEX" ]]; then
+        echo "Missing $MODULE_XEX (needed by $NAME). Copy the disc contents to private/game/." >&2
+        exit 1
+    fi
+
+    echo "== Module $NAME"
+    mkdir -p "$MODULE_DIR" "$ROOT/private/modules"
+    if [[ ! -s "$MODULE_TABLES" ]]; then
+        "$XENON_ANALYSE" "$MODULE_XEX" "$MODULE_TABLES"
+        "$H3XEXINFO" "$MODULE_XEX" --dump "$MODULE_IMAGE" >/dev/null
+        python3 "$ROOT/tools/h3analysis.py" tables "$MODULE_IMAGE" "$MODULE_TABLES"
+    fi
+    "$XENON_RECOMP" "$MODULE_CONFIG" "$PPC_CONTEXT"
+    "$H3XEXINFO" "$MODULE_XEX" --stubs "$MODULE_DIR/import_stubs.cpp" | tail -n 1
+done
 
 echo "== Reconfiguring"
 cmake --preset "$PRESET" >/dev/null

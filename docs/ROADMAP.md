@@ -10,20 +10,37 @@ Rough phases. Each one is a large amount of work; that's fine.
 ## 1. Recompile
 - [x] Fill save/restore helper addresses (`h3xexinfo` output)
 - [ ] Locate `setjmp`/`longjmp` in Ghidra (or confirm they're unused)
-- [ ] XenonAnalyse jump tables: check the results and fix missed patterns.
-      XenonAnalyse's detection was tuned for Sonic Unleashed, so expect
-      Halo 3 to need work here.
-- [ ] Manual `functions = [...]` boundaries for anything misanalysed
-- [ ] `tools/recompile.sh` completes; `H3Recomp` links
+- [x] XenonAnalyse jump tables: check the results and fix missed patterns.
+      `tools/h3analysis.py tables` re-reads every inline table (23 misread,
+      156 missed by XenonAnalyse). 9 tables still log errors: their
+      unreachable cases point at the padding word after the function, which
+      XenonRecomp turns into `return`.
+- [x] Manual `functions = [...]` boundaries for anything misanalysed
+      (`tools/h3analysis.py functions`)
+- [x] Missing PPC instructions in XenonRecomp (12 added; not yet in a fork)
+- [x] `tools/recompile.sh` completes; `H3Recomp` links
 
 ## 2. Boot (kernel/XAM)
-- [ ] KPCR / TLS setup (`r13`), main thread state
-- [ ] Memory: `NtAllocateVirtualMemory`, `MmAllocatePhysicalMemoryEx`, heaps
-- [ ] Threads, events, critical sections, `KeWaitFor*`
-- [ ] File I/O redirected into `private/game/`
-- [ ] Reach the first map load
+- [x] KPCR / TLS setup (`r13`), main thread state
+- [x] Memory: `NtAllocateVirtualMemory`, `MmAllocatePhysicalMemoryEx`, heaps
+- [x] Threads, events, critical sections, `KeWaitFor*`, XAM tasks
+- [x] Kernel variable imports (`KeTimeStampBundle`, `VdHSIOCalibrationLock`, ...)
+- [x] DLLs loaded with `XexLoadImage`: the four Waves audio DLLs are
+      recompiled separately (`H3RecompLib/config/modules/`) and linked in;
+      boot gets past Waves init
+- [x] File I/O: disc (`d:`, `game:`) read-only from `private/game/`, hard
+      drive (`cache0:`, `cache1:`, saves) writable in `private/hdd/`;
+      completion ports, directory listing, symbolic links
+- [x] XeCrypt: SHA-1, RSA public-key and PKCS#1 checks (map signatures)
+- [x] User APCs (Bink's file reads), fibers (map decompression; native
+      host fibers in `H3Recomp/hooks/fibers.cpp`)
+- [x] Reach the first map load: `mainmenu.map` and `shared.map` load and
+      verify
 
 ## 3. Graphics
+- [x] Stand-in command processor (`H3Recomp/gpu/`): consumes the PM4 ring
+      buffer, performs fences, waits, scratch/memory writes and interrupts,
+      60 Hz vblank. Draws nothing, but the game presents frames
 - [ ] Hook the game's D3D9-on-Xenos layer. Replacing it at the API level is
       far easier than emulating raw PM4 GPU command packets.
 - [ ] Shaders via XenosRecomp

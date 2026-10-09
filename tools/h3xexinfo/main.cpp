@@ -1,19 +1,26 @@
 // h3xexinfo: inspect an Xbox 360 XEX and produce the bits of the XenonRecomp
 // config that can be found mechanically.
 //
-//   h3xexinfo <xex> [--imports] [--stubs <out.cpp>]
+//   h3xexinfo <xex> [--imports] [--stubs <out.cpp>] [--dump <out.bin>]
 //
 // Always prints the image layout and scans code sections for the register
 // save/restore helpers, printing ready-to-paste TOML lines. --imports lists
 // every kernel/XAM import. --stubs writes weak stub definitions for every
-// import so the runtime links before the real implementations exist.
+// import so the runtime links before the real implementations exist; imports
+// from other title modules (DLLs) get stubs that call into the loaded module.
+// --dump writes the decrypted, decompressed image (loaded at the image base)
+// for analysis scripts, plus its layout as <out.bin>.json. It's game code:
+// keep it in private/.
 
 #include <file.h>
 #include <image.h>
+#include <xex.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -70,7 +77,39 @@ namespace
         return imports;
     }
 
-    bool WriteStubs(const std::vector<const Symbol*>& imports, const char* path)
+    // Thunk address -> library name, for imports from libraries other than
+    // the kernel and XAM. XenonUtils names those __imp__<module>_<ordinal>.
+    std::map<size_t, std::string> ModuleImportLibraries(const uint8_t* xex)
+    {
+        std::map<size_t, std::string> libraries;
+        auto* header = static_cast<const Xex2ImportHeader*>(getOptHeaderPtr(xex, XEX_HEADER_IMPORT_LIBRARIES));
+        if (header == nullptr)
+            return libraries;
+
+        std::vector<std::string_view> names;
+        auto* strings = reinterpret_cast<const char*>(header + 1);
+        for (size_t offset = 0; names.size() < header->numImports;)
+        {
+            names.emplace_back(strings + offset);
+            offset += (names.back().size() + 1 + 3) & ~size_t(3);
+        }
+
+        auto* library = reinterpret_cast<const Xex2ImportLibrary*>(strings + header->sizeOfStringTable);
+        for (std::string_view name : names)
+        {
+            auto* descriptors = reinterpret_cast<const Xex2ImportDescriptor*>(library + 1);
+            if (name != "xboxkrnl.exe" && name != "xam.xex")
+            {
+                for (uint32_t i = 0; i < library->numberOfImports; i++)
+                    libraries.emplace(descriptors[i].firstThunk, name);
+            }
+            library = reinterpret_cast<const Xex2ImportLibrary*>(descriptors + library->numberOfImports);
+        }
+        return libraries;
+    }
+
+    bool WriteStubs(const std::vector<const Symbol*>& imports, const std::map<size_t, std::string>& moduleImports,
+        const char* path)
     {
         std::ofstream out(path);
         if (!out)
@@ -84,8 +123,18 @@ namespace
         for (const Symbol* symbol : imports)
         {
             std::string_view name = std::string_view(symbol->name).substr(kImportPrefix.size());
-            out << "PPC_WEAK_FUNC(" << symbol->name << ") { h3::kernel::UnimplementedImport(\""
-                << name << "\", ctx); }\n";
+            auto library = moduleImports.find(symbol->address);
+            if (library != moduleImports.end())
+            {
+                std::string_view ordinal = name.substr(name.rfind('_') + 1);
+                out << "PPC_WEAK_FUNC(" << symbol->name << ") { h3::kernel::CallModuleImport(\""
+                    << library->second << "\", " << ordinal << ", ctx, base); }\n";
+            }
+            else
+            {
+                out << "PPC_WEAK_FUNC(" << symbol->name << ") { h3::kernel::UnimplementedImport(\""
+                    << name << "\", ctx); }\n";
+            }
         }
         return true;
     }
@@ -95,13 +144,14 @@ int main(int argc, char* argv[])
 {
     if (argc < 2)
     {
-        fprintf(stderr, "Usage: h3xexinfo <xex> [--imports] [--stubs <out.cpp>]\n");
+        fprintf(stderr, "Usage: h3xexinfo <xex> [--imports] [--stubs <out.cpp>] [--dump <out.bin>]\n");
         return 1;
     }
 
     const char* xexPath = argv[1];
     bool listImports = false;
     const char* stubsPath = nullptr;
+    const char* dumpPath = nullptr;
 
     for (int i = 2; i < argc; i++)
     {
@@ -109,6 +159,8 @@ int main(int argc, char* argv[])
             listImports = true;
         else if (strcmp(argv[i], "--stubs") == 0 && i + 1 < argc)
             stubsPath = argv[++i];
+        else if (strcmp(argv[i], "--dump") == 0 && i + 1 < argc)
+            dumpPath = argv[++i];
         else
         {
             fprintf(stderr, "Unknown argument: %s\n", argv[i]);
@@ -171,9 +223,47 @@ int main(int argc, char* argv[])
         }
     }
 
+    if (dumpPath != nullptr)
+    {
+        // The loader's buffer can be shorter than image.size (trailing BSS);
+        // the rest is zero.
+        std::vector<char> flat(image.size);
+        memcpy(flat.data(), image.data.get(), std::min<size_t>(image.dataSize, flat.size()));
+
+        std::ofstream out(dumpPath, std::ios::binary);
+        out.write(flat.data(), flat.size());
+        if (!out)
+        {
+            fprintf(stderr, "Failed to write %s\n", dumpPath);
+            return 1;
+        }
+
+        // Layout for tools/h3analysis.py, which can't recover it from the
+        // flat image (XenonRecomp's loader doesn't keep the PE headers).
+        std::ofstream layout(std::string(dumpPath) + ".json");
+        layout << "{\n  \"base\": " << image.base << ",\n  \"size\": " << image.size << ",\n  \"sections\": [";
+        const char* separator = "\n";
+        for (const auto& section : image.sections)
+        {
+            std::string_view name = std::string_view(section.name).substr(0, 8);
+            name = name.substr(0, name.find('\0'));
+            layout << separator << "    { \"name\": \"" << name << "\", \"base\": " << section.base
+                   << ", \"size\": " << section.size << ", \"code\": "
+                   << ((section.flags & SectionFlags_Code) ? "true" : "false") << " }";
+            separator = ",\n";
+        }
+        layout << "\n  ]\n}\n";
+        if (!layout)
+        {
+            fprintf(stderr, "Failed to write %s.json\n", dumpPath);
+            return 1;
+        }
+        printf("\nWrote image (0x%08X bytes) to %s\n", image.size, dumpPath);
+    }
+
     if (stubsPath != nullptr)
     {
-        if (!WriteStubs(imports, stubsPath))
+        if (!WriteStubs(imports, ModuleImportLibraries(file.data()), stubsPath))
         {
             fprintf(stderr, "Failed to write %s\n", stubsPath);
             return 1;

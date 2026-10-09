@@ -15,6 +15,7 @@ private/*
 
 # Recompiler output is derived from the game's code, so it stays local too.
 H3RecompLib/ppc/
+H3RecompLib/modules/
 
 # Build output
 build/
@@ -28,3 +29,5 @@ compile_commands.json
 *.swp
 .DS_Store
 Thumbs.db
+
+__pycache__/
