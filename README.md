@@ -55,8 +55,9 @@ cmake --build --preset release
 build/release/H3Recomp/H3Recomp private/default.xex
 ```
 
-The game's hard drive (cache partitions, saves) is created in `private/hdd/`.
-Delete that folder to start from a clean console.
+The game's hard drive (cache partitions, saves) is created in `private/hdd/`,
+and compiled host shaders are cached in `private/shadercache/` (safe to delete).
+Delete `private/hdd/` to start from a clean console.
 
 ### Controls
 
@@ -102,6 +103,12 @@ Environment variables:
 | `H3_LOG_RESOLVES=1` | Log every resolve (source, rectangle, destination, format) |
 | `H3_LOG_USER=1`, `H3_LOG_CONTENT=1`, `H3_LOG_NOTIFY=1` | Log profile, content and notification calls |
 | `H3_GPU_CAPTURE=<frame>` | Write `gpu_capture.txt`: every draw, resolve and shader load in that frame (counted in swaps) with the render state |
+| `H3_DUMP_DRAWS=<first>-<last>` | With `H3_DUMP_FRAME`: save color target 0 after each of those draws (numbered like the capture's `draw #n`) |
+| `H3_SNAPSHOT_EVERY=<n>` | Save every n-th presented frame as `frame_<n>.png` |
+| `H3_LOG_CLEARS=1` | Log D3D clears (screen-space rectangle draws) with their rectangles, color and surface |
+| `H3_LOG_FPS=1` | Log presented frames per second and the slowest frame, once a second |
+| `H3_PROFILE=<first>-<last>` | Sample host CPU time between those frames into `profile.txt`; `tools/h3profile.py` symbolizes it |
+| `H3_TRAP_ON_STUCK=1` | Raise SIGTRAP when a thread is stuck on a critical section (for an attached debugger) |
 
 CMake option `-DH3_TRACE_D3D=ON` counts and samples calls into the game's
 statically linked D3D library and writes `d3d_trace.txt` at frame 150 (or

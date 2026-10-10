@@ -65,6 +65,35 @@ namespace h3::kernel
                 PPC_LOOKUP_FUNC(g_base, mapping->guest) = mapping->host;
         }
 
+        // 0x822010D0 is a one-instruction thunk, `b 0x82200E38`, that is also
+        // a jump table case of the function before it, so that function's
+        // boundaries (halo3.toml) take it in and it gets no function of its
+        // own. A function pointer table calls it directly (at the end of the
+        // opening cinematic).
+        void Thunk_822010D0(PPCContext& ctx, uint8_t* base)
+        {
+            sub_82200E38(ctx, base);
+        }
+
+        // Fills the executable's empty function table slots, so an indirect
+        // call to code that wasn't recompiled reports where it went instead
+        // of jumping to address 0. Indirect calls go through CTR.
+        void MissingFunction(PPCContext& ctx, uint8_t*)
+        {
+            fprintf(stderr, "[loader] indirect call to 0x%08X, which wasn't recompiled as a function (lr=0x%08X)\n",
+                ctx.ctr.u32, uint32_t(ctx.lr));
+            GuestFatal("call to code that wasn't recompiled", ctx);
+        }
+
+        void RegisterExecutableFunctions()
+        {
+            RegisterFunctions(PPCFuncMappings);
+            PPC_LOOKUP_FUNC(g_base, 0x822010D0) = Thunk_822010D0;
+            for (uint64_t address = PPC_CODE_BASE; address < PPC_CODE_BASE + PPC_CODE_SIZE; address += 4)
+                if (PPC_LOOKUP_FUNC(g_base, address) == nullptr)
+                    PPC_LOOKUP_FUNC(g_base, address) = MissingFunction;
+        }
+
         // X_LDR_DATA_TABLE_ENTRY, with a guest copy of the XEX headers it
         // points at. Only the fields a title is likely to read are filled in.
         uint32_t CreateLdrEntry(const Module& module)
@@ -225,7 +254,7 @@ namespace h3::kernel
 
         LoadModuleInfo(file.data());
         CopyImage(image);
-        RegisterFunctions(PPCFuncMappings);
+        RegisterExecutableFunctions();
 
         g_modules.push_back(CreateModule(std::filesystem::path(path).filename().string(), image, file));
         return ResolveImports(image, *g_modules.back(), nullptr);

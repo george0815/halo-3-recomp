@@ -2,6 +2,7 @@
 
 #include "memory.h"
 #include "gpu/command_processor.h"
+#include "gpu/renderer.h"
 #include "kernel/module.h"
 #include "kernel/modules.h"
 #include "kernel/thread.h"
@@ -42,6 +43,9 @@ int main(int argc, char* argv[])
         std::filesystem::create_directories(xexDir / "hdd" / cache);
         h3::kernel::AddSymbolicLink("cache" + std::to_string(i) + ":", "\\Device\\Harddisk0\\" + cache);
     }
+
+    // Compiled host shaders, kept between runs.
+    h3::gpu::renderer::SetShaderCacheDirectory(xexDir / "shadercache");
 
     if (!h3::InitGuestMemory())
     {

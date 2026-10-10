@@ -21,6 +21,8 @@ namespace h3::gpu::texture
         uint32_t pitch = 0;        // texels per row
         bool tiled = false;
         bool packedMips = false;
+        uint32_t mipAddress = 0;   // physical, level 1 on
+        uint32_t mipMin = 0, mipMax = 0;  // levels the sampler may use
         uint32_t dimension = 0;    // 0 1D, 1 2D, 2 3D/stacked, 3 cube
         uint32_t clampX = 0, clampY = 0, clampZ = 0;
         uint32_t magFilter = 0, minFilter = 0;
@@ -52,4 +54,10 @@ namespace h3::gpu::texture
     inline uint32_t FaceStride(const FetchConstant& fetch) { return (GuestSize(fetch) + 4095) & ~4095u; }
 
     bool Decode(const FetchConstant& fetch, const uint8_t* guest, Decoded& out);
+
+    // The largest level the sampler may use, as a base level of its own:
+    // the fetch constant itself, or (when the sampler is limited to smaller
+    // levels, as for textures whose full size is still streaming in) that
+    // level's address and size in the mip chain.
+    FetchConstant LargestUsableLevel(const FetchConstant& fetch);
 }

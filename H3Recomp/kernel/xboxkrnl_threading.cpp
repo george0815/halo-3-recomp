@@ -5,12 +5,16 @@
 #include <ppc_recomp_shared.h>
 
 #include "imports.h"
+#include "objects.h"
 #include "thread.h"
 #include "../memory.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <csignal>
+#include <cstdlib>
 #include <cstdio>
 #include <mutex>
 #include <thread>
@@ -59,15 +63,28 @@ PPC_FUNC(__imp__KeLeaveCriticalRegion)
 //   0x14 recursion count
 //   0x18 owning thread    (KTHREAD pointer, 0 when free)
 //
-// For now this is a yielding spin lock: lock count is -1 or 0 and waiters
-// aren't counted. That keeps every field consistent for guest code that
-// peeks at them, and it's correct while the guest only has one thread.
-// Real blocking waits come with the dispatcher object work.
+// Lock count is -1 or 0 and waiters aren't counted in the guest structure,
+// which keeps every field consistent for guest code that peeks at them.
+// Contended entries spin briefly, then sleep on a host condition variable
+// (hashed by address) that the leaving thread signals.
 namespace
 {
     constexpr uint32_t kCsLockCount = 0x10;
     constexpr uint32_t kCsRecursionCount = 0x14;
     constexpr uint32_t kCsOwningThread = 0x18;
+
+    struct CsWaitBucket
+    {
+        std::mutex mutex;
+        std::condition_variable condition;
+        std::atomic<uint32_t> waiters{ 0 };
+    };
+
+    CsWaitBucket& WaitBucket(uint32_t cs)
+    {
+        static CsWaitBucket buckets[64];
+        return buckets[(cs >> 3) % 64];
+    }
 
     std::atomic_ref<uint32_t> GuestAtomic(uint32_t address)
     {
@@ -137,17 +154,37 @@ PPC_FUNC(__imp__RtlEnterCriticalSection)
     // always a deadlock, and here it's often a kernel bug.
     auto start = std::chrono::steady_clock::now();
     bool reported = false;
-    for (uint32_t spins = 1; !TryEnterCriticalSection(cs, thread); spins++)
+    SetThreadWait(thread, "critical section", cs, uint32_t(GuestRef<uint32_t>(cs + kCsOwningThread)), uint32_t(ctx.lr));
+    for (uint32_t spins = 1; spins < 64; spins++)
     {
-        if (!reported && (spins & 0x3FF) == 0 && std::chrono::steady_clock::now() - start > std::chrono::seconds(2))
+        if (TryEnterCriticalSection(cs, thread))
+        {
+            ClearThreadWait(thread);
+            return;
+        }
+        std::this_thread::yield();
+    }
+
+    CsWaitBucket& bucket = WaitBucket(cs);
+    std::unique_lock lock(bucket.mutex);
+    bucket.waiters++;
+    while (!TryEnterCriticalSection(cs, thread))
+    {
+        bucket.condition.wait_for(lock, std::chrono::milliseconds(50));
+        if (!reported && std::chrono::steady_clock::now() - start > std::chrono::seconds(2))
         {
             fprintf(stderr, "[kernel] thread %08X stuck entering critical section %08X (owner %08X, recursion %d, lr=0x%08X)\n",
                 thread, cs, uint32_t(GuestRef<uint32_t>(cs + kCsOwningThread)),
                 int32_t(GuestRef<int32_t>(cs + kCsRecursionCount)), uint32_t(ctx.lr));
+            DumpThreadWaits();
+            if (getenv("H3_TRAP_ON_STUCK"))  // debugging: stop in an attached debugger
+                raise(SIGTRAP);
             reported = true;
         }
-        std::this_thread::yield();
     }
+    bucket.waiters--;
+    lock.unlock();
+    ClearThreadWait(thread);
 }
 
 // BOOL RtlTryEnterCriticalSection(PRTL_CRITICAL_SECTION cs)
@@ -167,6 +204,13 @@ PPC_FUNC(__imp__RtlLeaveCriticalSection)
 
     GuestRef<uint32_t>(cs + kCsOwningThread) = 0;
     GuestAtomic(cs + kCsLockCount).store(ByteSwap(uint32_t(-1)));
+
+    CsWaitBucket& bucket = WaitBucket(cs);
+    if (bucket.waiters.load() != 0)
+    {
+        std::lock_guard lock(bucket.mutex);
+        bucket.condition.notify_all();
+    }
 }
 
 // SLIST_HEADER (8 bytes, big-endian): next entry (0 when empty), depth,

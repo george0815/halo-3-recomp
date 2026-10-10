@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 
 struct SDL_GPUDevice;
 struct SDL_GPUTexture;
@@ -19,6 +20,9 @@ namespace h3::gpu::renderer
     // Main thread, once the window's device exists. Returns false (and
     // rendering stays off) if the device can't be used.
     bool Initialize(SDL_GPUDevice* device);
+
+    // Where compiled SPIR-V is kept between runs (before Initialize).
+    void SetShaderCacheDirectory(const std::filesystem::path& directory);
 
     // H3_RENDER=0 turns host rendering off (the command processor still runs).
     bool IsEnabled();

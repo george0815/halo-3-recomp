@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -62,12 +63,15 @@ namespace h3::gpu::renderer
 
         shaderc_compiler_t g_compiler = nullptr;
         SDL_GPUSampler* g_sampler = nullptr;
-        bool g_noTextures = false;
+        bool g_noTextures = false;  // H3_NO_TEXTURES: placeholders instead of textures from memory
         bool g_noWriteBack = false;  // H3_NO_WRITEBACK: small resolves stay on the GPU
 
         // Swaps seen, and resolves within the current frame (for dumps).
         uint32_t g_swaps = 0;
-        uint32_t g_frameResolves = 0;  // H3_NO_TEXTURES: placeholders instead of textures from memory
+        uint32_t g_frameResolves = 0;
+        // Draw packets (draws and resolves) this frame, numbered like
+        // H3_GPU_CAPTURE's "draw #n".
+        uint32_t g_frameDraws = 0;
         SDL_GPUTexture* g_placeholder2D = nullptr;
         SDL_GPUTexture* g_placeholder3D = nullptr;
         SDL_GPUTexture* g_placeholderCube = nullptr;
@@ -104,6 +108,58 @@ namespace h3::gpu::renderer
         Shader* g_vertexShader = nullptr;
         Shader* g_pixelShader = nullptr;
 
+        // Translated GLSL compiles to the same SPIR-V every run, and shaderc
+        // with the optimizer takes milliseconds per shader: a level load
+        // brings hundreds, which stalls the command processor (and the game
+        // threads waiting on its fences). Keep the results on disk.
+        std::filesystem::path g_shaderCacheDirectory;
+
+        std::vector<uint8_t> CompileCached(bool vertex, const std::string& glsl)
+        {
+            std::filesystem::path path;
+            if (!g_shaderCacheDirectory.empty())
+            {
+                char name[32];
+                snprintf(name, sizeof(name), "%016llx.spv", (unsigned long long)Hash(glsl.data(), glsl.size(), vertex ? 1 : 2));
+                path = g_shaderCacheDirectory / name;
+                std::ifstream file(path, std::ios::binary);
+                if (file)
+                {
+                    std::vector<uint8_t> spirv((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+                    if (!spirv.empty() && spirv.size() % 4 == 0)
+                        return spirv;
+                }
+            }
+
+            shaderc_compile_options_t options = shaderc_compile_options_initialize();
+            shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_1);
+            shaderc_compile_options_set_optimization_level(options, shaderc_optimization_level_performance);
+            shaderc_compilation_result_t result = shaderc_compile_into_spv(g_compiler, glsl.data(), glsl.size(),
+                vertex ? shaderc_vertex_shader : shaderc_fragment_shader, "xenos", "main", options);
+            shaderc_compile_options_release(options);
+            std::vector<uint8_t> spirv;
+            if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success)
+            {
+                LogOnce(std::string("shader compilation failed: ") + shaderc_result_get_error_message(result));
+            }
+            else
+            {
+                const uint8_t* bytes = reinterpret_cast<const uint8_t*>(shaderc_result_get_bytes(result));
+                spirv.assign(bytes, bytes + shaderc_result_get_length(result));
+                if (!path.empty())
+                {
+                    // Write then rename, so a killed run never leaves half a file.
+                    std::filesystem::path temporary = path;
+                    temporary += ".tmp";
+                    std::ofstream(temporary, std::ios::binary).write(reinterpret_cast<const char*>(spirv.data()), spirv.size());
+                    std::error_code error;
+                    std::filesystem::rename(temporary, path, error);
+                }
+            }
+            shaderc_result_release(result);
+            return spirv;
+        }
+
         Shader* LoadShader(bool vertex, const uint32_t* dwords, uint32_t count)
         {
             uint64_t key = Hash(dwords, count * 4, vertex ? 1 : 2);
@@ -119,21 +175,12 @@ namespace h3::gpu::renderer
             }
             else
             {
-                shaderc_compile_options_t options = shaderc_compile_options_initialize();
-                shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_1);
-                shaderc_compile_options_set_optimization_level(options, shaderc_optimization_level_performance);
-                shaderc_compilation_result_t result = shaderc_compile_into_spv(g_compiler, translated.glsl.data(),
-                    translated.glsl.size(), vertex ? shaderc_vertex_shader : shaderc_fragment_shader, "xenos", "main", options);
-                shaderc_compile_options_release(options);
-                if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success)
-                {
-                    LogOnce(std::string("shader compilation failed: ") + shaderc_result_get_error_message(result));
-                }
-                else
+                std::vector<uint8_t> spirv = CompileCached(vertex, translated.glsl);
+                if (!spirv.empty())
                 {
                     SDL_GPUShaderCreateInfo info{};
-                    info.code_size = shaderc_result_get_length(result);
-                    info.code = reinterpret_cast<const Uint8*>(shaderc_result_get_bytes(result));
+                    info.code_size = spirv.size();
+                    info.code = spirv.data();
                     info.entrypoint = "main";
                     info.format = SDL_GPU_SHADERFORMAT_SPIRV;
                     info.stage = vertex ? SDL_GPU_SHADERSTAGE_VERTEX : SDL_GPU_SHADERSTAGE_FRAGMENT;
@@ -146,7 +193,6 @@ namespace h3::gpu::renderer
                     entry->info = translated.info;
                     entry->ok = entry->shader != nullptr;
                 }
-                shaderc_result_release(result);
             }
             Shader* shader = entry.get();
             g_shaders.emplace(key, std::move(entry));
@@ -197,12 +243,14 @@ namespace h3::gpu::renderer
             DepthBytes = 1,
             FloatTo7e3 = 2,
             LinearToGamma = 3,
+            GammaToLinear = 4,
+            Fill = 5,  // writes scale (a color) to every pixel
         };
         std::unordered_map<uint32_t, SDL_GPUGraphicsPipeline*> g_copyPipelines;  // target format -> pipeline
 
         void ConvertCopy(SDL_GPUTexture* source, SDL_GPUTexture* destination, SDL_GPUTextureFormat destinationFormat,
             uint32_t destinationWidth, uint32_t destinationHeight, int32_t sx, int32_t sy, int32_t dx, int32_t dy, uint32_t w,
-            uint32_t h, CopyMode mode, bool depthFloat = false, float scale = 1.0f);
+            uint32_t h, CopyMode mode, bool depthFloat = false, float scale = 1.0f, int32_t samplesX = 1, int32_t samplesY = 1);
         SDL_GPUSampler* g_pointSampler = nullptr;
 
         SDL_GPUGraphicsPipeline* CopyPipeline(SDL_GPUTextureFormat format)
@@ -221,8 +269,8 @@ void main()
 layout(set = 2, binding = 0) uniform sampler2D xe_source;
 layout(set = 3, binding = 0) uniform XeCopy
 {
-    ivec4 offset;  // xy: source - destination
-    ivec4 mode;    // x: copy mode, y: depth is 20e4 float
+    ivec4 offset;  // xy: destination origin, zw: source origin (samples)
+    ivec4 mode;    // x: copy mode, y: depth is 20e4 float, zw: source samples per pixel
     vec4 scale;    // x: 2^RB_COPY_DEST_INFO exp bias, for color
 };
 layout(location = 0) out vec4 xe_out;
@@ -257,7 +305,18 @@ float xe_float_to_7e3(float f)
 
 void main()
 {
-    vec4 v = texelFetch(xe_source, ivec2(gl_FragCoord.xy) + offset.xy, 0);
+    if (mode.x == 5)
+    {
+        xe_out = scale;
+        return;
+    }
+    // Average the pixel's samples (one texel each for 1x sources).
+    ivec2 origin = (ivec2(gl_FragCoord.xy) - offset.xy) * mode.zw + offset.zw;
+    vec4 v = vec4(0.0);
+    for (int y = 0; y < mode.w; y++)
+        for (int x = 0; x < mode.z; x++)
+            v += texelFetch(xe_source, origin + ivec2(x, y), 0);
+    v /= float(mode.z * mode.w);
     if (mode.x != 1)
         v.rgb *= scale.x;
     if (mode.x == 1)
@@ -267,6 +326,8 @@ void main()
     }
     else if (mode.x == 3)
         xe_out = vec4(sqrt(clamp(v.rgb, 0.0, 1.0)), v.a);  // gamma render targets: Halo decodes by squaring
+    else if (mode.x == 4)
+        xe_out = vec4(v.rgb * v.rgb, v.a);
     else if (mode.x == 2)
         xe_out = vec4(xe_float_to_7e3(v.r), xe_float_to_7e3(v.g), xe_float_to_7e3(v.b), round(clamp(v.a, 0.0, 1.0) * 3.0) / 3.0);
     else
@@ -305,8 +366,10 @@ void main()
         // --- Render targets and resolved textures ---------------------
 
         // Large enough for any EDRAM surface Halo 3 uses (1152 or 1280 wide).
-        constexpr uint32_t kRenderTargetWidth = 1280;
-        constexpr uint32_t kRenderTargetHeight = 1024;
+        // EDRAM in 1x sample space: a 4x surface's pixel covers 2x2 host
+        // texels, so every view of the same EDRAM lines up.
+        constexpr uint32_t kRenderTargetWidth = 2560;
+        constexpr uint32_t kRenderTargetHeight = 1280;
 
         struct RenderTarget
         {
@@ -315,6 +378,11 @@ void main()
             uint32_t xenosFormat = 0;
         };
         std::unordered_map<uint64_t, RenderTarget> g_renderTargets;  // (base, format, depth) -> texture
+
+        // Samples per pixel along x and y for RB_SURFACE_INFO's MSAA mode:
+        // 1x, 2x (one above the other), 4x (2x2).
+        uint32_t SamplesX(uint32_t msaa) { return msaa == 2 ? 2 : 1; }
+        uint32_t SamplesY(uint32_t msaa) { return msaa == 0 ? 1 : 2; }
 
         SDL_GPUTextureFormat ColorTargetFormat(uint32_t xenosFormat)
         {
@@ -933,8 +1001,9 @@ void main()
             return Hash(data + words * 8, size - words * 8, hash);
         }
 
-        SDL_GPUTexture* MemoryTexture(const texture::FetchConstant& fetch)
+        SDL_GPUTexture* MemoryTexture(const texture::FetchConstant& constant)
         {
+            const texture::FetchConstant fetch = texture::LargestUsableLevel(constant);
             // Cube maps: six 2D faces one after another.
             bool cube = fetch.dimension == 3;
             uint32_t faces = cube ? 6 : 1;
@@ -1237,7 +1306,7 @@ void main()
         // through CopyPipeline. Not inside a render pass.
         void ConvertCopy(SDL_GPUTexture* source, SDL_GPUTexture* destination, SDL_GPUTextureFormat destinationFormat,
             uint32_t destinationWidth, uint32_t destinationHeight, int32_t sx, int32_t sy, int32_t dx, int32_t dy, uint32_t w,
-            uint32_t h, CopyMode mode, bool depthFloat, float scale)
+            uint32_t h, CopyMode mode, bool depthFloat, float scale, int32_t samplesX, int32_t samplesY)
         {
             SDL_GPUGraphicsPipeline* pipeline = CopyPipeline(destinationFormat);
             if (!pipeline)
@@ -1259,7 +1328,37 @@ void main()
                 int32_t offset[4];
                 int32_t mode[4];
                 float scale[4];
-            } constants = { { sx - dx, sy - dy, 0, 0 }, { int32_t(mode), depthFloat ? 1 : 0, 0, 0 }, { scale, 1.0f, 1.0f, 1.0f } };
+            } constants = { { dx, dy, sx, sy }, { int32_t(mode), depthFloat ? 1 : 0, samplesX, samplesY }, { scale, 1.0f, 1.0f, 1.0f } };
+            SDL_PushGPUFragmentUniformData(Commands(), 0, &constants, sizeof(constants));
+            SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+            SDL_EndGPURenderPass(pass);
+        }
+
+        // Fills a rectangle of a render target with one color.
+        void FillRect(SDL_GPUTexture* destination, SDL_GPUTextureFormat format, int32_t x, int32_t y, uint32_t w, uint32_t h,
+            const float color[4])
+        {
+            SDL_GPUGraphicsPipeline* pipeline = CopyPipeline(format);
+            if (!pipeline || !w || !h)
+                return;
+            SDL_GPUColorTargetInfo target{};
+            target.texture = destination;
+            target.load_op = SDL_GPU_LOADOP_LOAD;
+            target.store_op = SDL_GPU_STOREOP_STORE;
+            SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(Commands(), &target, 1, nullptr);
+            SDL_BindGPUGraphicsPipeline(pass, pipeline);
+            SDL_GPUViewport viewport{ 0.0f, 0.0f, float(kRenderTargetWidth), float(kRenderTargetHeight), 0.0f, 1.0f };
+            SDL_SetGPUViewport(pass, &viewport);
+            SDL_Rect scissor{ x, y, int(w), int(h) };
+            SDL_SetGPUScissor(pass, &scissor);
+            SDL_GPUTextureSamplerBinding binding{ g_placeholder2D, g_pointSampler };
+            SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+            struct
+            {
+                int32_t offset[4];
+                int32_t mode[4];
+                float scale[4];
+            } constants = { { 0, 0, 0, 0 }, { int32_t(CopyMode::Fill), 0, 1, 1 }, { color[0], color[1], color[2], color[3] } };
             SDL_PushGPUFragmentUniformData(Commands(), 0, &constants, sizeof(constants));
             SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
             SDL_EndGPURenderPass(pass);
@@ -1292,9 +1391,15 @@ void main()
             if (current && current != target)
             {
                 Flush();
+                // 8_8_8_8_GAMMA keeps linear values on the host, other
+                // 8-bit formats the stored (encoded) ones.
+                bool fromGamma = current->xenosFormat == 1, toGamma = target->xenosFormat == 1;
                 if (Is7e3(current->xenosFormat) && !IsFloatHostFormat(target->format))
                     ConvertCopy(current->texture, target->texture, target->format, kRenderTargetWidth, kRenderTargetHeight, 0, 0, 0,
                         0, kRenderTargetWidth, kRenderTargetHeight, CopyMode::FloatTo7e3);
+                else if (fromGamma != toGamma && !IsFloatHostFormat(target->format) && !IsFloatHostFormat(current->format))
+                    ConvertCopy(current->texture, target->texture, target->format, kRenderTargetWidth, kRenderTargetHeight, 0, 0, 0,
+                        0, kRenderTargetWidth, kRenderTargetHeight, fromGamma ? CopyMode::LinearToGamma : CopyMode::GammaToLinear);
                 else
                 {
                     SDL_GPUBlitInfo blit{};
@@ -1503,6 +1608,13 @@ void main()
         return true;
     }
 
+    void SetShaderCacheDirectory(const std::filesystem::path& directory)
+    {
+        std::error_code error;
+        std::filesystem::create_directories(directory, error);
+        g_shaderCacheDirectory = error ? std::filesystem::path() : directory;
+    }
+
     bool IsEnabled()
     {
         return g_enabled;
@@ -1516,7 +1628,100 @@ void main()
         (type == 0 ? g_vertexShader : g_pixelShader) = shader;
     }
 
+    namespace
+    {
+        void DrawImpl(uint32_t initiator, uint32_t indexBase, uint32_t dmaSize);
+        void ResolveImpl();
+
+
+        // H3_DUMP_DRAWS=<first>-<last> (with H3_DUMP_FRAME): save color
+        // target 0 (or H3_DUMP_TARGET=<n>) after each of those draws as
+        // draw_<frame>_<n>.png.
+        void DumpAfterDraw()
+        {
+            static const char* setting = getenv("H3_DUMP_DRAWS");
+            static uint32_t first = 0, last = 0;
+            static bool parsed = setting && sscanf(setting, "%u-%u", &first, &last) == 2;
+            static const uint32_t dumpFrame = EnvNumber("H3_DUMP_FRAME");
+            static const uint32_t index = std::min(EnvNumber("H3_DUMP_TARGET"), 3u);  // which color target
+            if (!parsed || g_swaps + 1 != dumpFrame || g_frameDraws < first || g_frameDraws > last || !g_targets.color[index])
+                return;
+            Flush();
+            char path[64];
+            snprintf(path, sizeof(path), "draw_%u_%04u.png", dumpFrame, g_frameDraws);
+            DumpTexture(g_targets.color[index], 1152, 640, path, g_targets.colorFormat[index]);
+        }
+    }
+
     void OnDraw(uint32_t initiator, uint32_t indexBase, uint32_t dmaSize)
+    {
+        DrawImpl(initiator, indexBase, dmaSize);
+        DumpAfterDraw();
+        g_frameDraws++;
+    }
+
+    void OnResolve()
+    {
+        ResolveImpl();
+        g_frameDraws++;
+    }
+
+    namespace
+    {
+    // D3D's fast clear: the bulk of a color buffer is cleared by drawing
+    // depth-only rectangles through a 4x MSAA view whose depth buffer sits
+    // at the color buffer's EDRAM base, so the depth/stencil writes land in
+    // the color memory (four samples per pixel: 4x the fill rate). Only the
+    // edges are cleared through the color path. Host targets are kept per
+    // format, so do the color part here: fill the rectangles of the color
+    // target at that base with the clear color, which D3D's clear vertices
+    // carry (x, y, z, then r, g, b, a).
+    void ClearColorUnderDepth(uint32_t initiator)
+    {
+        uint32_t depthBase = ReadRegister(kRegRbDepthInfo) & 0xFFF;
+        auto current = g_colorAtBase.find(depthBase);
+        if (current == g_colorAtBase.end() || !current->second)
+            return;
+        uint32_t w0 = ReadRegister(kRegShaderConstantFetch), w1 = ReadRegister(kRegShaderConstantFetch + 1);
+        uint32_t sizeDwords = (w1 >> 2) & 0xFFFFFF;
+        constexpr uint32_t kStride = 7;
+        uint32_t count = initiator >> 16;
+        if ((w0 & 3) != 3 || count < 3 || sizeDwords < count * kStride)
+            return;
+        const uint8_t* data = GuestPtr<uint8_t>(PhysicalToGuest(w0 & ~3u));
+        auto value = [&](uint32_t i) {
+            uint32_t raw;
+            memcpy(&raw, data + i * 4, 4);
+            raw = (w1 & 3) == 2 ? __builtin_bswap32(raw) : (w1 & 3) == 3 ? (raw << 16 | raw >> 16) : raw;
+            float f;
+            memcpy(&f, &raw, 4);
+            return f;
+        };
+        float color[4] = { value(3), value(4), value(5), value(6) };
+        for (float c : color)
+            if (!std::isfinite(c))
+                return;
+
+        uint32_t surfaceMsaa = (ReadRegister(kRegRbSurfaceInfo) >> 16) & 3;
+        int32_t gridX = int32_t(SamplesX(surfaceMsaa)), gridY = int32_t(SamplesY(surfaceMsaa));
+        RenderTarget* target = current->second;
+        Flush();
+        for (uint32_t v = 0; v + 2 < count; v += 3)
+        {
+            float xs[3] = { value(v * kStride), value((v + 1) * kStride), value((v + 2) * kStride) };
+            float ys[3] = { value(v * kStride + 1), value((v + 1) * kStride + 1), value((v + 2) * kStride + 1) };
+            // Corners sit on pixel edges (-0.5 offsets).
+            int32_t x0 = int32_t(std::floor(std::min({ xs[0], xs[1], xs[2] }) + 0.5f)) * gridX;
+            int32_t y0 = int32_t(std::floor(std::min({ ys[0], ys[1], ys[2] }) + 0.5f)) * gridY;
+            int32_t x1 = int32_t(std::floor(std::max({ xs[0], xs[1], xs[2] }) + 0.5f)) * gridX;
+            int32_t y1 = int32_t(std::floor(std::max({ ys[0], ys[1], ys[2] }) + 0.5f)) * gridY;
+            x0 = std::clamp(x0, 0, int32_t(kRenderTargetWidth)), x1 = std::clamp(x1, x0, int32_t(kRenderTargetWidth));
+            y0 = std::clamp(y0, 0, int32_t(kRenderTargetHeight)), y1 = std::clamp(y1, y0, int32_t(kRenderTargetHeight));
+            FillRect(target->texture, target->format, x0, y0, uint32_t(x1 - x0), uint32_t(y1 - y0), color);
+        }
+    }
+
+    void DrawImpl(uint32_t initiator, uint32_t indexBase, uint32_t dmaSize)
     {
         uint32_t primitive = initiator & 0x3F;
         // 0x10-0x12 are tessellation patches here (Halo's water): not
@@ -1524,6 +1729,8 @@ void main()
         uint32_t mode = ReadRegister(kRegRbModeControl) & 7;
         if (mode != kEdramModeColorDepth && mode != kEdramModeDepthOnly)
             return;
+        if (mode == kEdramModeDepthOnly && primitive == kPrimRectangleList && (ReadRegister(kRegPaClVteCntl) & 0x300) == 0x300)
+            ClearColorUnderDepth(initiator);
 
         uint32_t colorMask = ReadRegister(kRegRbColorMask);
         uint32_t depthControl = ReadRegister(kRegRbDepthControl);
@@ -1610,11 +1817,17 @@ void main()
         // D3D-style pixel centers sit on integers; the host's are at +0.5.
         if (!(ReadRegister(kRegPaSuVtxCntl) & 1))
             windowX += 0.5f, windowY += 0.5f;
+
+        // Render targets are in 1x sample space: scale by this surface's
+        // samples per pixel (D3D clears 1x surfaces through a 4x view; the
+        // menu draws its G-buffer at 4x and lights it at 1x).
+        uint32_t surfaceMsaa = (ReadRegister(kRegRbSurfaceInfo) >> 16) & 3;
+        float gridX = float(SamplesX(surfaceMsaa)), gridY = float(SamplesY(surfaceMsaa));
         float width = float(kRenderTargetWidth), height = float(kRenderTargetHeight);
-        system.ndcScale[0] = xScale * 2.0f / width;
-        system.ndcOffset[0] = (xOffset + windowX) * 2.0f / width - 1.0f;
-        system.ndcScale[1] = -yScale * 2.0f / height;
-        system.ndcOffset[1] = 1.0f - (yOffset + windowY) * 2.0f / height;
+        system.ndcScale[0] = xScale * gridX * 2.0f / width;
+        system.ndcOffset[0] = (xOffset + windowX) * gridX * 2.0f / width - 1.0f;
+        system.ndcScale[1] = -yScale * gridY * 2.0f / height;
+        system.ndcOffset[1] = 1.0f - (yOffset + windowY) * gridY * 2.0f / height;
         system.ndcScale[2] = zScale;
         system.ndcOffset[2] = zOffset;
         draw->viewport = { 0.0f, 0.0f, width, height, 0.0f, 1.0f };
@@ -1628,6 +1841,8 @@ void main()
             int32_t ox = Signed15(windowOffset & 0x7FFF), oy = Signed15((windowOffset >> 16) & 0x7FFF);
             x0 += ox, x1 += ox, y0 += oy, y1 += oy;
         }
+        x0 = int32_t(float(x0) * gridX), x1 = int32_t(std::min(float(x1) * gridX, 32767.0f));
+        y0 = int32_t(float(y0) * gridY), y1 = int32_t(std::min(float(y1) * gridY, 32767.0f));
         x0 = std::clamp(x0, 0, int32_t(kRenderTargetWidth));
         x1 = std::clamp(x1, x0, int32_t(kRenderTargetWidth));
         y0 = std::clamp(y0, 0, int32_t(kRenderTargetHeight));
@@ -1648,6 +1863,30 @@ void main()
             if (seen[key]++ == 0)
                 fprintf(stderr, "[render] depth: mode %u prim %u depthcontrol %08X z scale %g offset %g vte %03X depth info %08X\n",
                     mode, primitive, depthControl, zScale, zOffset, vte, ReadRegister(kRegRbDepthInfo));
+        }
+        // H3_LOG_CLEARS: screen-space rectangle lists (D3D's clears) with
+        // their rectangles, target bases and surface layout.
+        static const bool logClears = getenv("H3_LOG_CLEARS") != nullptr;
+        if (logClears && primitive == kPrimRectangleList && (vte & 0x300) == 0x300)
+        {
+            uint32_t w0 = ReadRegister(kRegShaderConstantFetch), w1 = ReadRegister(kRegShaderConstantFetch + 1);
+            uint32_t stride = 7, count = (initiator >> 16);
+            const uint8_t* data = GuestPtr<uint8_t>(PhysicalToGuest(w0 & ~3u));
+            auto value = [&](uint32_t i) {
+                uint32_t raw;
+                memcpy(&raw, data + i * 4, 4);
+                raw = (w1 & 3) == 2 ? __builtin_bswap32(raw) : raw;
+                float f;
+                memcpy(&f, &raw, 4);
+                return f;
+            };
+            fprintf(stderr, "[clear] f%u d%u mode %u color %08X/%08X depth %08X surface %08X dc %08X mask %08X rects:", g_swaps + 1,
+                g_frameDraws, mode, ReadRegister(kRegColorInfo[0]), ReadRegister(kRegColorInfo[1]), ReadRegister(kRegRbDepthInfo),
+                ReadRegister(kRegRbSurfaceInfo), depthControl, colorMask);
+            for (uint32_t v = 0; v + 2 < count && v < 12; v += 3)
+                fprintf(stderr, " (%g,%g %g,%g %g,%g)", value(v * stride), value(v * stride + 1), value((v + 1) * stride),
+                    value((v + 1) * stride + 1), value((v + 2) * stride), value((v + 2) * stride + 1));
+            fprintf(stderr, " color %g %g %g %g\n", value(3), value(4), value(5), value(6));
         }
         // Position formats: VTX_XY_FMT, VTX_Z_FMT, VTX_W0_FMT (bits 8-10).
         system.flags |= ((vte >> 8) & 7) << 2;
@@ -1693,7 +1932,7 @@ void main()
         g_pending.push_back(std::move(draw));
     }
 
-    void OnResolve()
+    void ResolveImpl()
     {
         if (!g_enabled)
             return;
@@ -1729,10 +1968,14 @@ void main()
             int32_t ox = Signed15(windowOffset & 0x7FFF), oy = Signed15((windowOffset >> 16) & 0x7FFF);
             x0 += ox, x1 += ox, y0 += oy, y1 += oy;
         }
-        x0 = std::clamp(x0 & ~7, 0, int32_t(kRenderTargetWidth));
-        y0 = std::clamp(y0 & ~7, 0, int32_t(kRenderTargetHeight));
-        x1 = std::clamp((x1 + 7) & ~7, x0, int32_t(kRenderTargetWidth));
-        y1 = std::clamp((y1 + 7) & ~7, y0, int32_t(kRenderTargetHeight));
+        // The rectangle is in the surface's pixels; the render target holds
+        // its samples.
+        uint32_t surfaceMsaa = (ReadRegister(kRegRbSurfaceInfo) >> 16) & 3;
+        int32_t samplesX = int32_t(SamplesX(surfaceMsaa)), samplesY = int32_t(SamplesY(surfaceMsaa));
+        x0 = std::clamp(x0 & ~7, 0, int32_t(kRenderTargetWidth) / samplesX);
+        y0 = std::clamp(y0 & ~7, 0, int32_t(kRenderTargetHeight) / samplesY);
+        x1 = std::clamp((x1 + 7) & ~7, x0, int32_t(kRenderTargetWidth) / samplesX);
+        y1 = std::clamp((y1 + 7) & ~7, y0, int32_t(kRenderTargetHeight) / samplesY);
         if (x1 <= x0 || y1 <= y0)
             return;
 
@@ -1828,21 +2071,24 @@ void main()
                 x1, y1, destBase, destPitchReg, destFormat, destInfo, texture->base, texture->pitch, texture->height, destX, destY);
         Flush();
         uint32_t textureWidth = std::max(texture->pitch, 32u), textureHeight = std::max(texture->height, 32u);
+        int32_t sampleX0 = x0 * samplesX, sampleY0 = y0 * samplesY;
+        auto copy = [&](CopyMode copyMode, float scale) {
+            ConvertCopy(target->texture, texture->texture, texture->hostFormat, textureWidth, textureHeight, sampleX0, sampleY0,
+                int32_t(destX), int32_t(destY), w, h, copyMode, depthFloat, scale, samplesX, samplesY);
+        };
+        int32_t expBias = int32_t((destInfo >> 16) << 26) >> 26;
         if (depthSource)
         {
-            ConvertCopy(target->texture, texture->texture, texture->hostFormat, textureWidth, textureHeight, x0, y0, int32_t(destX),
-                int32_t(destY), w, h, CopyMode::Value);
+            copy(CopyMode::Value, 1.0f);
             texture->depthFloat = depthFloat;
         }
         else if (target->xenosFormat == 1 && !IsFloatHostFormat(texture->hostFormat))  // k_8_8_8_8_GAMMA
-            ConvertCopy(target->texture, texture->texture, texture->hostFormat, textureWidth, textureHeight, x0, y0, int32_t(destX),
-                int32_t(destY), w, h, CopyMode::LinearToGamma);
-        else if (int32_t expBias = int32_t((destInfo >> 16) << 26) >> 26)
+            copy(CopyMode::LinearToGamma, 1.0f);
+        else if (expBias != 0 || samplesX != 1 || samplesY != 1)
         {
             // RB_COPY_DEST_INFO exp bias: the copy scales colors by 2^bias
             // (Halo copies its tone-mapped 7e3 image out with -5).
-            ConvertCopy(target->texture, texture->texture, texture->hostFormat, textureWidth, textureHeight, x0, y0, int32_t(destX),
-                int32_t(destY), w, h, CopyMode::Value, false, std::ldexp(1.0f, expBias));
+            copy(CopyMode::Value, std::ldexp(1.0f, expBias));
         }
         else
         {
@@ -1875,8 +2121,11 @@ void main()
         }
     }
 
+    }  // namespace
+
     void OnSwap(uint32_t frontbuffer, uint32_t width, uint32_t height)
     {
+        g_frameDraws = 0;
         if (!g_enabled)
             return;
         Flush();
@@ -1891,10 +2140,13 @@ void main()
         }
         // H3_DUMP_FRAME=<n>: save the n-th presented frame as frame_<n>.png
         // (or, with H3_DUMP_ADDRESS, the resolved texture at that address).
+        // H3_SNAPSHOT_EVERY=<n>: save every n-th presented frame.
         g_swaps++;
         g_frameResolves = 0;
         static const uint32_t dumpFrame = EnvNumber("H3_DUMP_FRAME");
-        if (dumpFrame != 0 && g_swaps == dumpFrame && !getenv("H3_DUMP_RESOLVE") && frame.texture)
+        static const uint32_t snapshotEvery = EnvNumber("H3_SNAPSHOT_EVERY");
+        bool snapshot = snapshotEvery != 0 && g_swaps % snapshotEvery == 0;
+        if (((dumpFrame != 0 && g_swaps == dumpFrame) || snapshot) && !getenv("H3_DUMP_RESOLVE") && frame.texture)
         {
             uint32_t w = frame.width, h = frame.height;
             SDL_GPUTexture* texture = frame.texture;

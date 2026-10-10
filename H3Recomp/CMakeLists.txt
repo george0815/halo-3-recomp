@@ -7,6 +7,7 @@ add_executable(H3Recomp
     gpu/texture.cpp
     input/input.cpp
     debug/first_calls.cpp
+    debug/profiler.cpp
     hooks/fibers.cpp
     kernel/imports.cpp
     kernel/module.cpp

@@ -53,7 +53,9 @@ savevmx_64_address = 0x826F4834
 #       H3RecompLib/ppc/ppc_func_mapping.cpp <recompile log>
 functions = [
     # .pdata says 0x298, one instruction short: a jump table case at 0x822010D0
-    # is a single `b` back into the loop.
+    # is a single `b` back into the loop. That instruction is also a function
+    # of its own (a thunk a function pointer table calls); the runtime
+    # registers it by hand (H3Recomp/kernel/modules.cpp).
     { address = 0x82200E38, size = 0x29C },
     { address = 0x82093358, size = 0x80 },
     { address = 0x820A2788, size = 0x84 },

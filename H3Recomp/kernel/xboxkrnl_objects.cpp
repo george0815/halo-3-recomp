@@ -69,7 +69,11 @@ namespace
                 return kStatusInvalidHandle;
         }
         auto thread = alertable ? CurrentThreadObject() : nullptr;
-        uint32_t status = WaitForObjects(objects, waitAll, DeadlineFromGuest(timeoutPtr), CurrentKThread(), thread.get());
+        uint32_t kthread = CurrentKThread();
+        SetThreadWait(kthread, objects.size() > 1 ? (waitAll ? "all of" : "any of") : "object", objects[0]->guestHeader,
+            uint32_t(objects[0]->type) | uint32_t(objects.size()) << 8, uint32_t(ctx.lr));
+        uint32_t status = WaitForObjects(objects, waitAll, DeadlineFromGuest(timeoutPtr), kthread, thread.get());
+        ClearThreadWait(kthread);
         if (status == kStatusUserApc)
             DeliverUserApcs(ctx);
         return status;

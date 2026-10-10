@@ -5,6 +5,8 @@
 
 #include <condition_variable>
 #include <cstdio>
+#include <map>
+#include <mutex>
 #include <unordered_map>
 
 namespace h3::kernel
@@ -93,6 +95,36 @@ namespace h3::kernel
             else if (g_dispatcherCv.wait_until(lock, *deadline) == std::cv_status::timeout)
                 return kStatusTimeout;
         }
+    }
+
+    namespace
+    {
+        struct ThreadWait
+        {
+            const char* what;
+            uint32_t object, detail, lr;
+        };
+        std::mutex g_threadWaitMutex;
+        std::map<uint32_t, ThreadWait> g_threadWaits;
+    }
+
+    void SetThreadWait(uint32_t thread, const char* what, uint32_t object, uint32_t detail, uint32_t lr)
+    {
+        std::lock_guard lock(g_threadWaitMutex);
+        g_threadWaits[thread] = { what, object, detail, lr };
+    }
+
+    void ClearThreadWait(uint32_t thread)
+    {
+        std::lock_guard lock(g_threadWaitMutex);
+        g_threadWaits.erase(thread);
+    }
+
+    void DumpThreadWaits()
+    {
+        std::lock_guard lock(g_threadWaitMutex);
+        for (const auto& [thread, wait] : g_threadWaits)
+            fprintf(stderr, "[kernel]   thread %08X waits on %s %08X (%08X) lr=0x%08X\n", thread, wait.what, wait.object, wait.detail, wait.lr);
     }
 
     Deadline DeadlineFromGuest(uint32_t timeoutPtr)

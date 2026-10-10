@@ -257,6 +257,9 @@ namespace h3::gpu::texture
         fetch.address = words[1] & 0xFFFFF000;
         fetch.dimension = (words[5] >> 9) & 3;
         fetch.packedMips = (words[5] >> 11) & 1;
+        fetch.mipAddress = words[5] & 0xFFFFF000;
+        fetch.mipMin = (words[4] >> 2) & 0xF;
+        fetch.mipMax = (words[4] >> 6) & 0xF;
         switch (fetch.dimension)
         {
         case 0:
@@ -338,5 +341,33 @@ namespace h3::gpu::texture
             }
         }
         return true;
+    }
+
+    FetchConstant LargestUsableLevel(const FetchConstant& fetch)
+    {
+        if (fetch.mipMin == 0 || fetch.mipAddress == 0 || fetch.dimension != 1)
+            return fetch;
+        // Levels 1 on start at the mip address, each with power-of-two
+        // dimensions and 4 KB aligned. Levels of 16 texels or less share a
+        // packed tile; stop above those.
+        auto levelSize = [&](uint32_t size, uint32_t level) { return std::max(1u, (1u << Log2Ceil(size)) >> level); };
+        uint32_t level = fetch.mipMin;
+        while (level > 1 && fetch.packedMips && std::min(levelSize(fetch.width, level), levelSize(fetch.height, level)) <= 16)
+            level--;
+        if (fetch.packedMips && std::min(levelSize(fetch.width, level), levelSize(fetch.height, level)) <= 16)
+            return fetch;
+
+        FetchConstant result = fetch;
+        result.packedMips = false;
+        result.mipMin = 0;
+        result.address = fetch.mipAddress;
+        for (uint32_t l = 1; l <= level; l++)
+        {
+            result.width = result.pitch = levelSize(fetch.width, l);
+            result.height = levelSize(fetch.height, l);
+            if (l < level)
+                result.address += (GuestSize(result) + 4095) & ~4095u;
+        }
+        return result;
     }
 }

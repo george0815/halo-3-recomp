@@ -10,12 +10,14 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <unordered_map>
 
 namespace h3::debug
 {
     extern std::atomic<uint32_t> g_traceFrame;
     void UpdateTraceWindow(uint32_t frame);
+    void UpdateProfiler(uint32_t frame);
 }
 
 namespace h3::video
@@ -206,7 +208,31 @@ namespace h3::video
     void OnFramePresented(uint32_t frame)
     {
         g_framesPresented.store(frame);
+
+        // H3_LOG_FPS: frames presented per second, and the slowest frame.
+        static const bool logFps = getenv("H3_LOG_FPS") != nullptr;
+        if (logFps)
+        {
+            using Clock = std::chrono::steady_clock;
+            static Clock::time_point windowStart = Clock::now(), last = windowStart;
+            static uint32_t windowFrames = 0;
+            static double slowest = 0;
+            Clock::time_point now = Clock::now();
+            slowest = std::max(slowest, std::chrono::duration<double, std::milli>(now - last).count());
+            last = now;
+            windowFrames++;
+            double elapsed = std::chrono::duration<double>(now - windowStart).count();
+            if (elapsed >= 1.0)
+            {
+                fprintf(stderr, "[fps] frame %u: %.1f fps, slowest %.1f ms\n", frame, windowFrames / elapsed, slowest);
+                windowStart = now;
+                windowFrames = 0;
+                slowest = 0;
+            }
+        }
+
         debug::g_traceFrame.store(frame);
         debug::UpdateTraceWindow(frame);
+        debug::UpdateProfiler(frame);
     }
 }

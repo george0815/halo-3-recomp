@@ -161,6 +161,12 @@ namespace h3::kernel
     uint32_t WaitForObjects(const std::vector<std::shared_ptr<KernelObject>>& objects, bool waitAll,
         Deadline deadline, uint32_t thread, const Thread* alertableThread = nullptr);
 
+    // What each guest thread is blocked on, for diagnosing hangs: set before
+    // a blocking wait, cleared after; DumpThreadWaits prints them all.
+    void SetThreadWait(uint32_t thread, const char* what, uint32_t object, uint32_t detail, uint32_t lr);
+    void ClearThreadWait(uint32_t thread);
+    void DumpThreadWaits();
+
     // Queues a user APC on a thread and wakes it if it's in an alertable wait.
     void QueueUserApc(Thread& thread, const Thread::UserApc& apc);
 
