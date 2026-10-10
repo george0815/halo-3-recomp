@@ -28,6 +28,15 @@ namespace h3::kernel
     // starting at r1 + 0x50, with the 32-bit value in the low half.
     uint32_t StackArgument(const PPCContext& ctx, uint32_t index);
 
+    // Finishes an XOVERLAPPED (result, length, extended error; signals its
+    // event). Returns ERROR_IO_PENDING, what an async call returns for it,
+    // or `result` itself when there's no XOVERLAPPED.
+    uint32_t CompleteOverlapped(uint32_t overlapped, uint32_t result, uint32_t length = 0);
+
+    // The local profile signed in on user 0 (xam_user.cpp); offline XUIDs
+    // start with 0xE.
+    constexpr uint64_t kLocalUserXuid = 0xE000000048330001ull;
+
     // NTSTATUS values returned to the guest.
     constexpr uint32_t kStatusSuccess = 0x00000000;
     constexpr uint32_t kStatusUnsuccessful = 0xC0000001;

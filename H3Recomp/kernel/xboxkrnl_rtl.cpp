@@ -100,3 +100,82 @@ PPC_FUNC(__imp__RtlImageXexHeaderField)
         return;
     }
 }
+
+// --- Time --------------------------------------------------------------------
+//
+// LARGE_INTEGER times count 100 ns since 1601-01-01. TIME_FIELDS is eight
+// SHORTs: Year, Month, Day, Hour, Minute, Second, Milliseconds, Weekday
+// (0 = Sunday).
+
+namespace
+{
+    constexpr int64_t kTicksPerMillisecond = 10000;
+    constexpr int64_t kTicksPerDay = 86400000ll * kTicksPerMillisecond;
+    // Days from 1601-01-01 to 1970-01-01.
+    constexpr int64_t kDaysTo1970 = 134774;
+
+    // Howard Hinnant's civil_from_days / days_from_civil (days since 1970).
+    void CivilFromDays(int64_t z, int64_t& y, unsigned& m, unsigned& d)
+    {
+        z += 719468;
+        int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+        unsigned doe = unsigned(z - era * 146097);
+        unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        y = int64_t(yoe) + era * 400;
+        unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        unsigned mp = (5 * doy + 2) / 153;
+        d = doy - (153 * mp + 2) / 5 + 1;
+        m = mp < 10 ? mp + 3 : mp - 9;
+        y += m <= 2;
+    }
+
+    int64_t DaysFromCivil(int64_t y, unsigned m, unsigned d)
+    {
+        y -= m <= 2;
+        int64_t era = (y >= 0 ? y : y - 399) / 400;
+        unsigned yoe = unsigned(y - era * 400);
+        unsigned doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+        unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        return era * 146097 + int64_t(doe) - 719468;
+    }
+}
+
+// void RtlTimeToTimeFields(PLARGE_INTEGER time, PTIME_FIELDS fields)
+PPC_FUNC(__imp__RtlTimeToTimeFields)
+{
+    int64_t ticks = int64_t(uint64_t(GuestRef<uint64_t>(ctx.r3.u32)));
+    uint32_t fields = ctx.r4.u32;
+    int64_t days = ticks / kTicksPerDay;
+    int64_t rest = ticks % kTicksPerDay / kTicksPerMillisecond;
+    int64_t year;
+    unsigned month, day;
+    CivilFromDays(days - kDaysTo1970, year, month, day);
+    GuestRef<uint16_t>(fields + 0) = uint16_t(year);
+    GuestRef<uint16_t>(fields + 2) = uint16_t(month);
+    GuestRef<uint16_t>(fields + 4) = uint16_t(day);
+    GuestRef<uint16_t>(fields + 6) = uint16_t(rest / 3600000);
+    GuestRef<uint16_t>(fields + 8) = uint16_t(rest / 60000 % 60);
+    GuestRef<uint16_t>(fields + 10) = uint16_t(rest / 1000 % 60);
+    GuestRef<uint16_t>(fields + 12) = uint16_t(rest % 1000);
+    GuestRef<uint16_t>(fields + 14) = uint16_t((days + 1) % 7);  // 1601-01-01 was a Monday
+}
+
+// BOOLEAN RtlTimeFieldsToTime(PTIME_FIELDS fields, PLARGE_INTEGER time)
+PPC_FUNC(__imp__RtlTimeFieldsToTime)
+{
+    uint32_t fields = ctx.r3.u32;
+    int64_t year = int16_t(uint16_t(GuestRef<uint16_t>(fields)));
+    unsigned month = GuestRef<uint16_t>(fields + 2), day = GuestRef<uint16_t>(fields + 4);
+    unsigned hour = GuestRef<uint16_t>(fields + 6), minute = GuestRef<uint16_t>(fields + 8);
+    unsigned second = GuestRef<uint16_t>(fields + 10), millisecond = GuestRef<uint16_t>(fields + 12);
+    if (year < 1601 || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59 ||
+        millisecond > 999)
+    {
+        ctx.r3.u64 = 0;
+        return;
+    }
+    int64_t days = DaysFromCivil(year, month, day) + kDaysTo1970;
+    int64_t ms = ((int64_t(hour) * 60 + minute) * 60 + second) * 1000 + millisecond;
+    GuestRef<uint64_t>(ctx.r4.u32) = uint64_t(days * kTicksPerDay + ms * kTicksPerMillisecond);
+    ctx.r3.u64 = 1;
+}

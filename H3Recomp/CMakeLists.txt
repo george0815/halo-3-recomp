@@ -3,6 +3,10 @@ add_executable(H3Recomp
     memory.cpp
     gpu/command_processor.cpp
     gpu/frame_capture.cpp
+    gpu/renderer.cpp
+    gpu/texture.cpp
+    input/input.cpp
+    debug/first_calls.cpp
     hooks/fibers.cpp
     kernel/imports.cpp
     kernel/module.cpp
@@ -12,6 +16,10 @@ add_executable(H3Recomp
     kernel/variables.cpp
     kernel/vfs.cpp
     kernel/xam.cpp
+    kernel/xam_user.cpp
+    kernel/xam_content.cpp
+    kernel/xam_notify.cpp
+    kernel/xnet.cpp
     kernel/xboxkrnl.cpp
     kernel/xboxkrnl_crypt.cpp
     kernel/xboxkrnl_io.cpp
@@ -33,6 +41,8 @@ add_executable(H3Recomp
 
 target_include_directories(H3Recomp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 find_package(SDL3 REQUIRED CONFIG)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(SHADERC REQUIRED IMPORTED_TARGET shaderc)
 
 # Counts and samples calls into the statically linked D3D library (to name
 # its functions). Writes d3d_trace.txt at frame 150.
@@ -41,4 +51,4 @@ if (H3_TRACE_D3D)
     target_sources(H3Recomp PRIVATE debug/d3d_trace.cpp debug/d3d_trace_hooks.cpp)
 endif()
 
-target_link_libraries(H3Recomp PRIVATE H3RecompLib SDL3::SDL3 ${H3_MODULES} ${H3_MODULE_STUBS})
+target_link_libraries(H3Recomp PRIVATE H3RecompLib H3Shader PkgConfig::SHADERC SDL3::SDL3 ${H3_MODULES} ${H3_MODULE_STUBS})

@@ -737,10 +737,19 @@ PPC_FUNC(__imp__NtQueryVolumeInformationFile)
     constexpr uint32_t kBytesPerSector = 0x200;
     constexpr uint32_t kSectorsPerUnit = 0x20;
     constexpr uint64_t kUnitSize = kBytesPerSector * kSectorsPerUnit;
+    // Sizes of a console volume, not the host disk's: a real cache
+    // partition is 2 GB, and titles size their caches from these numbers
+    // (a host disk's hundreds of GB overflow 32-bit math). Free space is
+    // what the folder doesn't use yet.
+    constexpr uint64_t kVolumeBytes = 2ull << 30;
     std::error_code error;
-    auto space = std::filesystem::space(file->hostPath, error);
-    uint64_t totalUnits = space.capacity / kUnitSize;
-    uint64_t freeUnits = file->writable ? space.available / kUnitSize : 0;
+    uint64_t used = 0;
+    if (file->writable)
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(file->hostPath, error))
+            if (entry.is_regular_file(error))
+                used += entry.file_size(error);
+    uint64_t totalUnits = kVolumeBytes / kUnitSize;
+    uint64_t freeUnits = file->writable ? (kVolumeBytes - std::min(used, kVolumeBytes)) / kUnitSize : 0;
     std::string_view fsName = file->writable ? "FATX" : "GDFX";
 
     uint32_t size;

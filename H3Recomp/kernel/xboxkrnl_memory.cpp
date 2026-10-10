@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 using namespace h3;
 using namespace h3::kernel;
@@ -286,4 +287,33 @@ PPC_FUNC(__imp__MmCreateKernelStack)
 PPC_FUNC(__imp__MmDeleteKernelStack)
 {
     SystemHeap().Free(ctx.r4.u32);
+}
+
+// NTSTATUS MmQueryStatistics(PMM_STATISTICS stats)
+// MM_STATISTICS (0x68 bytes, the caller sets Length): page counts for a
+// 512 MB console. Title usage is what the physical heap has handed out.
+PPC_FUNC(__imp__MmQueryStatistics)
+{
+    uint32_t stats = ctx.r3.u32;
+    if (stats == 0 || GuestRef<uint32_t>(stats) != 0x68)
+    {
+        ctx.r3.u64 = kStatusInvalidParameter;
+        return;
+    }
+    constexpr uint32_t kTotalPages = 0x20000;  // 512 MB of 4 KB pages
+    constexpr uint32_t kKernelPages = 0x100;
+    constexpr uint32_t kSystemPages = 0x800;
+    uint32_t titlePages = uint32_t(PhysicalHeap().AllocatedBytes() / 4096);
+    uint32_t available = kTotalPages - kKernelPages - kSystemPages - std::min(titlePages, kTotalPages - kKernelPages - kSystemPages);
+    memset(GuestPtr<uint8_t>(stats + 4), 0, 0x64);
+    GuestRef<uint32_t>(stats + 0x04) = kTotalPages;
+    GuestRef<uint32_t>(stats + 0x08) = kKernelPages;
+    GuestRef<uint32_t>(stats + 0x0C) = available;               // title available pages
+    GuestRef<uint32_t>(stats + 0x10) = 0x2FFE0000;              // title total virtual bytes
+    GuestRef<uint32_t>(stats + 0x14) = titlePages * 4096;       // title reserved virtual bytes
+    GuestRef<uint32_t>(stats + 0x18) = titlePages;              // title physical pages
+    GuestRef<uint32_t>(stats + 0x38) = kSystemPages;            // system available pages
+    GuestRef<uint32_t>(stats + 0x44) = kSystemPages;            // system physical pages
+    GuestRef<uint32_t>(stats + 0x64) = kTotalPages - 1;         // highest physical page
+    ctx.r3.u64 = kStatusSuccess;
 }

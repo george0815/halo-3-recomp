@@ -73,6 +73,8 @@ namespace h3
         bool Find(uint32_t address, uint32_t* allocBase, uint32_t* allocSize) const;
 
         bool Contains(uint32_t address) const { return address >= m_base && address < m_end; }
+        // Bytes in live allocations.
+        uint64_t AllocatedBytes() const;
         uint32_t PageSize() const { return m_pageSize; }
 
     private:

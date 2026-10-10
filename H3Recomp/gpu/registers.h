@@ -22,6 +22,7 @@ namespace h3::gpu
     constexpr uint32_t kRegRbDepthClear = 0x231D;
     constexpr uint32_t kRegRbColorClear = 0x231E;
     constexpr uint32_t kRegRbColorClearLo = 0x231F;
+    constexpr uint32_t kRegRbSampleCountAddr = 0x2325;  // occlusion query reports
 
     // RB_MODECONTROL edram_mode values.
     constexpr uint32_t kEdramModeNone = 0;

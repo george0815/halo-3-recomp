@@ -214,10 +214,23 @@ PPC_FUNC(__imp__VdInitializeScalerCommandBuffer)
 // The game reserves 64 dwords in the ring buffer for the swap commands.
 // Like Xenia, fill them with one private packet the command processor
 // recognizes as a swap.
+//
+// The second argument is the front buffer's texture fetch constant (6 dwords):
+// base address in dword 1 bits 12-31, width - 1 and height - 1 in dword 2
+// (13 bits each). The packet carries base, width and height (Xenia's VdSwap).
 PPC_FUNC(__imp__VdSwap)
 {
     uint32_t buffer = ctx.r3.u32;
+    uint32_t fetch = ctx.r4.u32;
     memset(GuestPtr<uint8_t>(buffer), 0, gpu::kSwapPacketDwords * 4);
     GuestRef<uint32_t>(buffer) = gpu::MakePacketType3(gpu::kOpcodeHostSwap, gpu::kSwapPacketDwords - 1);
+    if (fetch != 0)
+    {
+        uint32_t word1 = GuestRef<uint32_t>(fetch + 4);
+        uint32_t word2 = GuestRef<uint32_t>(fetch + 8);
+        GuestRef<uint32_t>(buffer + 4) = word1 & 0xFFFFF000;
+        GuestRef<uint32_t>(buffer + 8) = (word2 & 0x1FFF) + 1;
+        GuestRef<uint32_t>(buffer + 12) = ((word2 >> 13) & 0x1FFF) + 1;
+    }
     ctx.r3.u64 = 0;
 }

@@ -25,6 +25,11 @@ target_link_libraries(H3RecompLib PUBLIC XenonUtils)
 
 target_compile_options(H3RecompLib PRIVATE ${H3_PPC_COMPILE_OPTIONS})
 
+option(H3_TRACE_FIRST_CALLS "Write first_calls.txt: each executable function's first call and its frame (debugging)" OFF)
+if (H3_TRACE_FIRST_CALLS)
+    target_compile_options(H3RecompLib PRIVATE "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/debug/first_calls.h")
+endif()
+
 # --- DLLs the game loads with XexLoadImage ----------------------------------
 #
 # Each one is recompiled separately into modules/<name>/ (tools/recompile.sh)

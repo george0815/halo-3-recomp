@@ -59,17 +59,40 @@ Rough phases. Each one is a large amount of work; that's fine.
       `H3_GPU_CAPTURE` dumps a frame. (Hooking D3D was dropped: its setters
       only write Xenos register shadows and its draws are inlined into the
       game, so rendering works from the command stream instead.)
-- [ ] Host backend (SDL_GPU / Vulkan) presenting the swap's front buffer
-- [ ] Xenos microcode -> GLSL -> SPIR-V shader translator (Xenia's ucode.h
-      as the reference); vertex fetch from fetch constants
-- [ ] EDRAM render targets and resolves (Halo 3 renders 1152x640 in four
+- [x] Host backend (SDL_GPU / Vulkan, `H3Recomp/gpu/renderer.cpp`): draws,
+      EDRAM render targets, resolves into host textures, presents the swap's
+      front buffer. The main menu renders
+- [x] Xenos microcode -> GLSL -> SPIR-V shader translator
+      (`H3Recomp/gpu/shader/`, test with `tools/h3shader`); vertex fetch from
+      fetch constants; rectangle lists in the vertex shader
+- [x] 2D textures from memory, base level (`H3Recomp/gpu/texture.cpp`:
+      untiling, endian swaps, DXT/DXN/CTX1 and packed formats; fetch
+      constant swizzle, sign and exponent in the shader). The main menu's
+      text and logos render
+- [x] Cube textures from memory; depth resolves (sampled as 24_8 or as the
+      depth word's bytes); fetch offsets; resolve exponent bias; gamma render
+      targets (encoded on resolve, decoded on fetch, both approximated as
+      gamma 2); render target exponent bias; alpha test; blend constants
+- [ ] Mipmaps, 3D textures, exact piecewise-linear gamma
+- [ ] Culling, MSAA, point sizes
+- [ ] Batch draws better (one render pass per render target change today)
+- [x] EDRAM render targets and resolves (Halo 3 renders 1152x640 in four
       predicated tiles, deferred: G-buffer, shadow maps, post-processing)
-- [ ] Menu renders → mainmenu.map renders → a campaign level renders
+- [x] EDRAM aliasing between formats at one base: 7e3 read as 2_10_10_10
+      is reinterpreted bit for bit, other formats convert by value
+- [ ] EDRAM tile layout: surfaces of different pitches at one base don't
+      alias the way they do in tiled EDRAM
+- [x] Menu renders → mainmenu.map renders → a campaign level runs
+- [ ] In-game frames are washed out (stale render target contents where
+      nothing draws; see private notes)
 
 ## 4. Audio, input, saves
 - [ ] XMA decoding, XAudio
-- [ ] XInput → SDL gamepad
-- [ ] Content/profile/save emulation (XAM content APIs)
+- [x] XInput → keyboard and SDL gamepad (`H3Recomp/input/`); no rumble
+- [x] Local profile signed in on user 0 (`kernel/xam_user.cpp`), profile
+      setting defaults, notifications, content packages as host folders
+      (`kernel/xam_content.cpp`), offline XNet basics (`kernel/xnet.cpp`)
+- [ ] Persist profile settings; Xbox Live features
 
 ## 5. Native improvements
 - [ ] Resolution/framerate unlocks (engine tick vs render decoupling)

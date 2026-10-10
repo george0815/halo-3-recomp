@@ -200,6 +200,15 @@ namespace h3
         ZeroPages(start, uint32_t(AlignUp(uint64_t(address) + size, m_pageSize) - start));
     }
 
+    uint64_t GuestHeap::AllocatedBytes() const
+    {
+        std::lock_guard lock(m_mutex);
+        uint64_t total = 0;
+        for (const auto& [base, size] : m_allocations)
+            total += size;
+        return total;
+    }
+
     bool GuestHeap::Find(uint32_t address, uint32_t* allocBase, uint32_t* allocSize) const
     {
         std::lock_guard lock(m_mutex);

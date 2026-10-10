@@ -1,6 +1,8 @@
 #include "video/window.h"
 
 #include "video/bink_view.h"
+#include "gpu/renderer.h"
+#include "input/input.h"
 
 #include <SDL3/SDL.h>
 
@@ -8,6 +10,13 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <unordered_map>
+
+namespace h3::debug
+{
+    extern std::atomic<uint32_t> g_traceFrame;
+    void UpdateTraceWindow(uint32_t frame);
+}
 
 namespace h3::video
 {
@@ -19,6 +28,7 @@ namespace h3::video
 
         SDL_Window* g_window = nullptr;
         SDL_Renderer* g_renderer = nullptr;
+        SDL_GPUDevice* g_device = nullptr;
         SDL_Texture* g_binkTexture = nullptr;
 
         std::atomic<uint32_t> g_framesPresented{ 0 };
@@ -27,6 +37,40 @@ namespace h3::video
 
     namespace
     {
+        // The renderer's latest frame, through an SDL texture wrapping its
+        // GPU texture (one per GPU texture).
+        bool DrawGameFrame()
+        {
+            gpu::renderer::Frame frame;
+            if (!gpu::renderer::AcquireFrame(frame))
+                return false;
+            static std::unordered_map<SDL_GPUTexture*, SDL_Texture*> wrapped;
+            SDL_Texture*& texture = wrapped[frame.texture];
+            if (!texture)
+            {
+                SDL_PropertiesID props = SDL_CreateProperties();
+                SDL_SetPointerProperty(props, SDL_PROP_TEXTURE_CREATE_GPU_TEXTURE_POINTER, frame.texture);
+                SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_FORMAT_NUMBER, SDL_PIXELFORMAT_ABGR8888);
+                SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, frame.textureWidth);
+                SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, frame.textureHeight);
+                texture = SDL_CreateTextureWithProperties(g_renderer, props);
+                SDL_DestroyProperties(props);
+                if (!texture)
+                {
+                    fprintf(stderr, "[video] can't wrap the frame texture: %s\n", SDL_GetError());
+                    return false;
+                }
+            }
+            int windowWidth = 0, windowHeight = 0;
+            SDL_GetCurrentRenderOutputSize(g_renderer, &windowWidth, &windowHeight);
+            float scale = std::min(float(windowWidth) / frame.width, float(windowHeight) / frame.height);
+            SDL_FRect source{ float(frame.x), float(frame.y), float(frame.width), float(frame.height) };
+            SDL_FRect dest{ (windowWidth - frame.width * scale) / 2, (windowHeight - frame.height * scale) / 2,
+                frame.width * scale, frame.height * scale };
+            SDL_RenderTexture(g_renderer, texture, &source, &dest);
+            return true;
+        }
+
         void DrawBinkFrame()
         {
             BinkFrame frame;
@@ -65,20 +109,43 @@ namespace h3::video
 
     bool CreateMainWindow()
     {
-        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS))
+        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMEPAD))
         {
             fprintf(stderr, "[video] SDL_Init failed: %s\n", SDL_GetError());
             return false;
         }
 
-        if (!SDL_CreateWindowAndRenderer("Halo 3 Recomp", kDefaultWidth, kDefaultHeight, SDL_WINDOW_RESIZABLE,
-                &g_window, &g_renderer))
+        g_window = SDL_CreateWindow("Halo 3 Recomp", kDefaultWidth, kDefaultHeight, SDL_WINDOW_RESIZABLE);
+        if (!g_window)
         {
-            fprintf(stderr, "[video] SDL_CreateWindowAndRenderer failed: %s\n", SDL_GetError());
+            fprintf(stderr, "[video] SDL_CreateWindow failed: %s\n", SDL_GetError());
             return false;
         }
-        SDL_SetRenderVSync(g_renderer, 1);
 
+        // One SDL_GPU (Vulkan) device: the command processor renders the
+        // game with it, and the window's SDL renderer sits on top of it to
+        // present frames (and the Bink debug view).
+        g_device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, nullptr);
+        if (g_device)
+            g_renderer = SDL_CreateGPURenderer(g_device, g_window);
+        if (!g_renderer)
+        {
+            fprintf(stderr, "[video] no GPU device (%s); falling back to the default renderer\n", SDL_GetError());
+            if (g_device)
+                SDL_DestroyGPUDevice(g_device);
+            g_device = nullptr;
+            g_renderer = SDL_CreateRenderer(g_window, nullptr);
+            if (!g_renderer)
+            {
+                fprintf(stderr, "[video] SDL_CreateRenderer failed: %s\n", SDL_GetError());
+                return false;
+            }
+        }
+        SDL_SetRenderVSync(g_renderer, 1);
+        if (g_device && !gpu::renderer::Initialize(g_device))
+            fprintf(stderr, "[video] host rendering is off\n");
+
+        input::Initialize();
         g_quitEvent = SDL_RegisterEvents(1);
         return true;
     }
@@ -100,7 +167,9 @@ namespace h3::video
                     return exitCode;
                 if (event.type == g_quitEvent)
                     return event.user.code;
+                input::HandleEvent(event);
             }
+            input::Update(g_framesPresented.load());
 
             // Twice a second: frames presented and the rate since last time.
             auto now = Clock::now();
@@ -120,7 +189,8 @@ namespace h3::video
             // decoding. Vsync paces the loop.
             SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
             SDL_RenderClear(g_renderer);
-            DrawBinkFrame();
+            if (!DrawGameFrame())
+                DrawBinkFrame();
             SDL_RenderPresent(g_renderer);
         }
     }
@@ -136,5 +206,7 @@ namespace h3::video
     void OnFramePresented(uint32_t frame)
     {
         g_framesPresented.store(frame);
+        debug::g_traceFrame.store(frame);
+        debug::UpdateTraceWindow(frame);
     }
 }

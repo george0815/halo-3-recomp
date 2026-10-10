@@ -16,6 +16,12 @@ namespace h3::gpu
         // A draw packet. indexBase/indexWords are 0 for auto-indexed draws.
         void OnDraw(uint32_t initiator, uint32_t indexBase, uint32_t indexWords);
 
+        // Predication state changed (SET_BIN_MASK / SET_BIN_SELECT).
+        void OnBinState(uint64_t mask, uint64_t select);
+
+        // A packet was skipped by predication.
+        void OnPredicatedSkip(uint32_t opcode);
+
         // A swap: ends the frame.
         void OnSwap(uint32_t frame);
     }

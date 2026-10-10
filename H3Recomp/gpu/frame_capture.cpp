@@ -2,10 +2,12 @@
 
 #include "gpu/command_processor.h"
 #include "gpu/registers.h"
+#include "memory.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 
 namespace h3::gpu::capture
 {
@@ -63,8 +65,28 @@ namespace h3::gpu::capture
     void OnShaderLoad(uint32_t type, uint32_t guestAddress, uint32_t dwords)
     {
         (type == 0 ? g_vertexShader : g_pixelShader) = guestAddress;
-        if (FILE* out = Out())
-            fprintf(out, "  %s shader at %08X, %u dwords\n", type == 0 ? "vertex" : "pixel", guestAddress, dwords);
+        FILE* out = Out();
+        if (!out)
+            return;
+
+        // The microcode itself (big-endian dwords, as in guest memory), once
+        // per distinct shader, for working on the shader translator offline.
+        if (guestAddress == 0 || dwords == 0)
+            return;
+        const uint8_t* code = GuestPtr<uint8_t>(guestAddress);
+        uint64_t hash = 0xCBF29CE484222325ull;  // FNV-1a
+        for (uint32_t i = 0; i < dwords * 4; i++)
+            hash = (hash ^ code[i]) * 0x100000001B3ull;
+        std::filesystem::create_directories("gpu_shaders");
+        char path[64];
+        snprintf(path, sizeof(path), "gpu_shaders/%s_%016llx.bin", type == 0 ? "vs" : "ps", (unsigned long long)hash);
+        fprintf(out, "  %s shader at %08X, %u dwords (%s)\n", type == 0 ? "vertex" : "pixel", guestAddress, dwords, path);
+        if (!std::filesystem::exists(path))
+            if (FILE* file = fopen(path, "wb"))
+            {
+                fwrite(code, 4, dwords, file);
+                fclose(file);
+            }
     }
 
     void OnDraw(uint32_t initiator, uint32_t indexBase, uint32_t indexWords)
@@ -99,9 +121,41 @@ namespace h3::gpu::capture
         fprintf(out, "  vs %08X ps %08X program cntl %08X color info %08X depth info %08X modecontrol %08X\n",
             g_vertexShader, g_pixelShader, ReadRegister(kRegSqProgramCntl), ReadRegister(kRegRbColorInfo),
             ReadRegister(kRegRbDepthInfo), ReadRegister(kRegRbModeControl));
+        fprintf(out, "  window offset %08X mode cntl %08X vte cntl %08X depthcontrol %08X colormask %08X\n",
+            ReadRegister(kRegPaScWindowOffset), ReadRegister(0x2205), ReadRegister(0x2206), ReadRegister(0x2200),
+            ReadRegister(0x2104));
         fprintf(out, "  viewport scale %g,%g,%g offset %g,%g,%g\n", RegFloat(kRegPaClVportXScale),
             RegFloat(kRegPaClVportYScale), RegFloat(kRegPaClVportZScale), RegFloat(kRegPaClVportXOffset),
             RegFloat(kRegPaClVportYOffset), RegFloat(kRegPaClVportZOffset));
+        // Pixel shader constants c0-c7 and c255 (ALU constants 256 on).
+        fprintf(out, "  ps constants");
+        for (uint32_t c : { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 255u })
+            fprintf(out, " c%u(%g %g %g %g)", c, RegFloat(kRegShaderConstantAlu + (256 + c) * 4), RegFloat(kRegShaderConstantAlu + (256 + c) * 4 + 1),
+                RegFloat(kRegShaderConstantAlu + (256 + c) * 4 + 2), RegFloat(kRegShaderConstantAlu + (256 + c) * 4 + 3));
+        fprintf(out, "\n");
+        // Texture fetch constants of type texture: slot:base:format:signs:exp.
+        fprintf(out, "  textures");
+        for (uint32_t t = 0; t < 32; t++)
+        {
+            uint32_t w0 = ReadRegister(kRegShaderConstantFetch + t * 6), w1 = ReadRegister(kRegShaderConstantFetch + t * 6 + 1);
+            uint32_t w3 = ReadRegister(kRegShaderConstantFetch + t * 6 + 3);
+            if ((w0 & 3) != 2 || (w1 & 0xFFFFF000) == 0)
+                continue;
+            fprintf(out, " %u:%08X:%u:%02X:%d", t, w1 & 0xFFFFF000, w1 & 0x3F, (w0 >> 2) & 0xFF, int32_t(w3 << 13) >> 26);
+        }
+        fprintf(out, "\n");
+    }
+
+    void OnBinState(uint64_t mask, uint64_t select)
+    {
+        if (FILE* out = Out())
+            fprintf(out, "  bin mask %016llX select %016llX\n", (unsigned long long)mask, (unsigned long long)select);
+    }
+
+    void OnPredicatedSkip(uint32_t opcode)
+    {
+        if (FILE* out = Out())
+            fprintf(out, "  skipped predicated opcode %02X\n", opcode);
     }
 
     void OnSwap(uint32_t frame)

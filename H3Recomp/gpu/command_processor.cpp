@@ -6,6 +6,7 @@
 #include "../memory.h"
 #include "../video/window.h"
 #include "frame_capture.h"
+#include "renderer.h"
 #include "registers.h"
 
 #include <algorithm>
@@ -18,6 +19,7 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace h3::gpu
 {
@@ -49,7 +51,8 @@ namespace h3::gpu
             kOpCondWrite = 0x45,
             kOpInterrupt = 0x54,
             kOpEventWriteShd = 0x58,
-            kOpEventWriteExt = 0x59,
+            kOpEventWriteExt = 0x5A,  // screen extents (0x59 is EVENT_WRITE_CFL)
+            kOpEventWriteZpd = 0x5B,
             kOpSetBinMask = 0x50,
             kOpSetBinSelect = 0x51,
             kOpSetBinMaskLo = 0x60,
@@ -264,6 +267,7 @@ namespace h3::gpu
 
             if ((header & 1) && (g_binSelect & g_binMask) == 0)
             {
+                capture::OnPredicatedSkip(opcode);
                 reader.Skip(count);
                 return;
             }
@@ -279,19 +283,24 @@ namespace h3::gpu
                 uint64_t high = reader.Read();
                 uint64_t low = reader.Read();
                 (opcode == kOpSetBinMask ? g_binMask : g_binSelect) = (high << 32) | low;
+                capture::OnBinState(g_binMask, g_binSelect);
                 break;
             }
             case kOpSetBinMaskLo:
                 setLow(g_binMask, reader.Read());
+                capture::OnBinState(g_binMask, g_binSelect);
                 break;
             case kOpSetBinMaskHi:
                 setHigh(g_binMask, reader.Read());
+                capture::OnBinState(g_binMask, g_binSelect);
                 break;
             case kOpSetBinSelectLo:
                 setLow(g_binSelect, reader.Read());
+                capture::OnBinState(g_binMask, g_binSelect);
                 break;
             case kOpSetBinSelectHi:
                 setHigh(g_binSelect, reader.Read());
+                capture::OnBinState(g_binMask, g_binSelect);
                 break;
             case kOpSetConstant:
             {
@@ -331,16 +340,26 @@ namespace h3::gpu
             {
                 // Shader microcode by pointer: type in the low 2 bits.
                 uint32_t addressType = reader.Read();
-                uint32_t startSize = reader.Read();
-                capture::OnShaderLoad(addressType & 3, PhysicalToGuest(addressType & ~3u), startSize & 0xFFFF);
+                uint32_t dwords = reader.Read() & 0xFFFF;
+                uint32_t address = PhysicalToGuest(addressType & ~3u);
+                capture::OnShaderLoad(addressType & 3, address, dwords);
+                std::vector<uint32_t> code(dwords);
+                for (uint32_t i = 0; i < dwords; i++)
+                    code[i] = GuestRef<uint32_t>(address + i * 4);
+                renderer::OnShaderLoad(addressType & 3, code.data(), dwords);
                 break;
             }
             case kOpImLoadImmediate:
             {
                 // Shader microcode embedded in the packet.
                 uint32_t type = reader.Read();
-                uint32_t startSize = reader.Read();
-                capture::OnShaderLoad(type & 3, reader.ring ? 0 : reader.base + reader.index * 4, startSize & 0xFFFF);
+                uint32_t dwords = std::min(reader.Read() & 0xFFFF, count - 2);
+                uint32_t address = reader.ring ? 0 : reader.base + reader.index * 4;
+                std::vector<uint32_t> code(dwords);
+                for (uint32_t i = 0; i < dwords; i++)
+                    code[i] = reader.Read();
+                capture::OnShaderLoad(type & 3, address, dwords);
+                renderer::OnShaderLoad(type & 3, code.data(), dwords);
                 break;
             }
             case kOpDrawIndx:
@@ -351,13 +370,19 @@ namespace h3::gpu
                     reader.Read();
                 uint32_t initiator = reader.Read();
                 WriteRegister(kRegVgtDrawInitiator, initiator);
-                uint32_t indexBase = 0, indexWords = 0;
+                uint32_t indexBase = 0, dmaSize = 0;
                 if (((initiator >> 6) & 3) == 0 && consumed() + 2 <= count)  // DMA (indexed)
                 {
                     indexBase = PhysicalToGuest(reader.Read());
-                    indexWords = reader.Read() & 0xFFFFFF;
+                    dmaSize = reader.Read();
+                    WriteRegister(kRegVgtDmaBase, indexBase);
+                    WriteRegister(kRegVgtDmaSize, dmaSize);
                 }
-                capture::OnDraw(initiator, indexBase, indexWords);
+                capture::OnDraw(initiator, indexBase, dmaSize & 0xFFFFFF);
+                if ((ReadRegister(kRegRbModeControl) & 7) == kEdramModeCopy)
+                    renderer::OnResolve();
+                else
+                    renderer::OnDraw(initiator, indexBase, dmaSize);
                 break;
             }
             case kOpIndirectBuffer:
@@ -442,6 +467,26 @@ namespace h3::gpu
                 WriteMemory(address, (initiator >> 31) ? g_swapCounter.load() : value);
                 break;
             }
+            case kOpEventWriteZpd:
+            {
+                // Occlusion query snapshot: D3D subtracts the report at a
+                // query's start from the one at its end (Total, ZFail, ZPass,
+                // StencilFail, each split in A and B lanes, little-endian).
+                // Predicated tiling uses these to decide which tiles draw an
+                // object, so as in Xenia's fake mode, every interval reports
+                // samples passing: a running counter that advances per event.
+                LogOpcode(opcode, "event write (z pass)");
+                uint32_t initiator = reader.Read();
+                WriteRegister(kRegVgtEventInitiator, initiator & 0x3F);
+                uint32_t address = ReadRegister(kRegRbSampleCountAddr);
+                if (address == 0)
+                    break;
+                static uint32_t passed = 0;
+                passed += 1000;
+                uint32_t counts[8] = { passed - (passed >> 1), passed >> 1, 0, 0, passed - (passed >> 1), passed >> 1, 0, 0 };
+                memcpy(GuestPtr<uint8_t>(PhysicalToGuest(address & ~3u)), counts, sizeof(counts));
+                break;
+            }
             case kOpEventWriteExt:
             {
                 // Screen extents, as six 16-bit values; Xenia reports a full
@@ -450,7 +495,7 @@ namespace h3::gpu
                 uint32_t initiator = reader.Read();
                 uint32_t address = reader.Read();
                 WriteRegister(kRegVgtEventInitiator, initiator & 0x3F);
-                constexpr uint16_t kExtents[] = { 0, 2560 >> 3, 0, 2560 >> 3, 0, 1 };
+                constexpr uint16_t kExtents[] = { 0, 8192 >> 3, 0, 8192 >> 3, 0, 1 };
                 for (uint32_t i = 0; i < 6; i++)
                     GuestRef<uint16_t>(PhysicalToGuest(address & ~3u) + i * 2) = kExtents[i];
                 break;
@@ -474,6 +519,11 @@ namespace h3::gpu
                 LogOpcode(opcode, "swap");
                 uint32_t frame = ++g_swapCounter;
                 capture::OnSwap(frame);
+                // VdSwap's payload: front buffer (physical), width, height.
+                uint32_t frontbuffer = reader.Read();
+                uint32_t width = reader.Read();
+                uint32_t height = reader.Read();
+                renderer::OnSwap(frontbuffer, width, height);
                 video::OnFramePresented(frame);
                 if (g_log && frame % 60 == 0)
                     fprintf(stderr, "[gpu] %u frames presented\n", frame);

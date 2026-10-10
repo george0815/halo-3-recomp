@@ -13,8 +13,14 @@ endif()
 # Recompiler toolchain: XenonAnalyse, XenonRecomp, XenonUtils.
 add_subdirectory(thirdparty/XenonRecomp)
 
+# Xenos shader microcode -> GLSL translator, used by the runtime and by
+# tools/h3shader (which needs no game build).
+add_library(H3Shader STATIC H3Recomp/gpu/shader/translator.cpp)
+target_include_directories(H3Shader PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/H3Recomp)
+
 # Our own tooling.
 add_subdirectory(tools/h3xexinfo)
+add_subdirectory(tools/h3shader)
 
 # The game library and runtime only exist once the recompiler has produced
 # code from the user's own XEX (see tools/recompile.sh).

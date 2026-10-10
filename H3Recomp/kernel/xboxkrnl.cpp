@@ -10,8 +10,11 @@
 #include "module.h"
 #include "../memory.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <thread>
 
 using namespace h3;
@@ -85,4 +88,39 @@ PPC_FUNC(__imp__KeQueryPerformanceFrequency)
         return uint64_t(elapsedTicks / seconds);
     }();
     ctx.r3.u64 = frequency;
+}
+
+// NTSTATUS ExGetXConfigSetting(WORD category, WORD setting, PVOID buffer, WORD bufferSize, PWORD requiredSize)
+// Console settings: English, United States, no parental limits. Anything
+// else reads as zeros of the requested size.
+PPC_FUNC(__imp__ExGetXConfigSetting)
+{
+    uint32_t category = ctx.r3.u32 & 0xFFFF, setting = ctx.r4.u32 & 0xFFFF;
+    uint32_t buffer = ctx.r5.u32, bufferSize = ctx.r6.u32 & 0xFFFF, requiredSize = ctx.r7.u32;
+    static const bool log = getenv("H3_LOG_XCONFIG") != nullptr;
+    uint32_t value = 0, size = 4;
+    if (category == 3)  // XCONFIG_USER_CATEGORY
+    {
+        switch (setting)
+        {
+        case 0x09: value = 1; break;          // language: English
+        case 0x0A: value = 0x00040000; break; // video flags: widescreen
+        case 0x0C: value = 0x40; break;       // retail flags (as Xenia)
+        case 0x0E: value = 103, size = 1; break;  // country: United States
+        default: break;
+        }
+    }
+    if (log)
+        fprintf(stderr, "[kernel] ExGetXConfigSetting category %u setting %u (%u bytes)\n", category, setting, bufferSize);
+    if (requiredSize != 0)
+        GuestRef<uint16_t>(requiredSize) = uint16_t(bufferSize ? std::min(bufferSize, size) : size);
+    if (buffer != 0 && bufferSize != 0)
+    {
+        memset(GuestPtr<uint8_t>(buffer), 0, bufferSize);
+        if (size == 1)
+            *GuestPtr<uint8_t>(buffer) = uint8_t(value);
+        else if (bufferSize >= 4)
+            GuestRef<uint32_t>(buffer) = value;
+    }
+    ctx.r3.u64 = kStatusSuccess;
 }

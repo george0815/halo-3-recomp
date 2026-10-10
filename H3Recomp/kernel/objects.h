@@ -26,6 +26,7 @@ namespace h3::kernel
         SynchronizationTimer = 9,
         IoCompletion = 0x80,  // not a dispatcher type on the 360; host-only
         File = 0x81,          // host-only
+        Enumerator = 0x82,    // host-only (XamEnumerate)
     };
 
     // A kernel object. All dispatcher state is guarded by DispatcherLock().

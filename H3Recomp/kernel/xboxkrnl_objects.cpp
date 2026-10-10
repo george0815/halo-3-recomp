@@ -10,6 +10,8 @@
 #include "thread.h"
 #include "../memory.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <thread>
 
@@ -494,5 +496,110 @@ PPC_FUNC(__imp__NtQueueApcThread)
 PPC_FUNC(__imp__NtYieldExecution)
 {
     std::this_thread::yield();
+    ctx.r3.u64 = kStatusSuccess;
+}
+
+// --- Timers ------------------------------------------------------------------
+//
+// A host thread per armed timer sleeps until the due time, signals the timer
+// and queues the optional APC on the thread that set it; periodic timers go
+// around again. Setting or cancelling bumps the generation, which retires
+// the previous thread.
+
+namespace
+{
+    struct Timer : KernelObject
+    {
+        explicit Timer(bool synchronization)
+            : KernelObject(synchronization ? ObjectType::SynchronizationTimer : ObjectType::NotificationTimer) {}
+
+        bool IsSignaled(uint32_t) const override { return signaled; }
+        void Satisfy(uint32_t) override
+        {
+            if (type == ObjectType::SynchronizationTimer)
+                signaled = false;
+        }
+        int32_t SignalState() const override { return signaled; }
+
+        bool signaled = false;
+        std::atomic<uint32_t> generation{ 0 };
+    };
+}
+
+// NTSTATUS NtCreateTimer(PHANDLE handle, POBJECT_ATTRIBUTES attributes, TIMER_TYPE type)
+// TIMER_TYPE 0 is NotificationTimer, 1 SynchronizationTimer.
+PPC_FUNC(__imp__NtCreateTimer)
+{
+    bool synchronization = ctx.r5.u32 == 1;
+    ctx.r3.u64 = CreateObject<Timer>(ctx.r3.u32, ctx.r4.u32, [&] { return std::make_shared<Timer>(synchronization); });
+}
+
+// NTSTATUS NtSetTimerEx(HANDLE handle, PLARGE_INTEGER dueTime, PTIMERAPCROUTINE routine, KPROCESSOR_MODE mode,
+//     PVOID context, BOOLEAN resume, LONG period, PBOOLEAN previousState)
+PPC_FUNC(__imp__NtSetTimerEx)
+{
+    auto timer = LookupHandleAs<Timer>(ctx.r3.u32);
+    if (!timer)
+    {
+        ctx.r3.u64 = kStatusInvalidHandle;
+        return;
+    }
+    Deadline due = DeadlineFromGuest(ctx.r4.u32);
+    uint32_t routine = ctx.r5.u32, context = ctx.r7.u32;
+    int32_t period = int32_t(ctx.r9.u32);
+    uint32_t previousState = ctx.r10.u32;
+    std::shared_ptr<Thread> setter = routine != 0 ? CurrentThreadObject() : nullptr;
+
+    uint32_t generation;
+    {
+        auto lock = DispatcherLock();
+        if (previousState != 0)
+            *GuestPtr<uint8_t>(previousState) = timer->signaled;
+        timer->signaled = false;
+        timer->SyncHeader();
+        generation = ++timer->generation;
+    }
+    auto when = due.value_or(std::chrono::steady_clock::now());
+    std::thread([timer, generation, when, period, routine, context, setter]() mutable {
+        for (;;)
+        {
+            std::this_thread::sleep_until(when);
+            if (timer->generation.load() != generation)
+                return;
+            {
+                auto lock = DispatcherLock();
+                timer->signaled = true;
+                timer->SyncHeader();
+                NotifyDispatcher();
+            }
+            if (setter)
+            {
+                // The APC gets the fire time as a FILETIME, low and high parts.
+                constexpr int64_t kUnixEpochAsFileTime = 116444736000000000ll;
+                int64_t now = kUnixEpochAsFileTime + std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count() / 100;
+                QueueUserApc(*setter, { routine, context, uint32_t(now), uint32_t(uint64_t(now) >> 32) });
+            }
+            if (period <= 0)
+                return;
+            when += std::chrono::milliseconds(period);
+        }
+    }).detach();
+    ctx.r3.u64 = kStatusSuccess;
+}
+
+// NTSTATUS NtCancelTimer(HANDLE handle, PBOOLEAN currentState)
+PPC_FUNC(__imp__NtCancelTimer)
+{
+    auto timer = LookupHandleAs<Timer>(ctx.r3.u32);
+    if (!timer)
+    {
+        ctx.r3.u64 = kStatusInvalidHandle;
+        return;
+    }
+    auto lock = DispatcherLock();
+    timer->generation++;
+    if (ctx.r4.u32 != 0)
+        *GuestPtr<uint8_t>(ctx.r4.u32) = timer->signaled;
     ctx.r3.u64 = kStatusSuccess;
 }
