@@ -2,8 +2,9 @@
 // H3_PROFILE=<first frame>-<last frame> samples the instruction pointer of
 // whichever thread is using CPU, 1000 times per CPU second (SIGPROF), and
 // writes profile.txt: the executable mappings ("# " lines), then one
-// "<thread id> <address>" line per sample. tools/h3profile.py turns that into
-// a per-function report.
+// "<thread id> <address> [<return address>...]" line per sample (return
+// addresses with H3_PROFILE_STACKS=1). tools/h3profile.py turns that into a
+// per-function report.
 
 #include <algorithm>
 #include <atomic>
@@ -15,6 +16,7 @@
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <ucontext.h>
+#include <unwind.h>
 #include <unistd.h>
 
 extern "C" char __executable_start;
@@ -23,16 +25,29 @@ namespace h3::debug
 {
     namespace
     {
-        constexpr uint32_t kMaxSamples = 1u << 22;
+        constexpr uint32_t kMaxSamples = 1u << 19;
+        constexpr uint32_t kMaxFrames = 16;
         struct Sample
         {
             uint32_t thread;
+            uint32_t frames;
             uint64_t address;
+            uint64_t stack[kMaxFrames];  // with H3_PROFILE_STACKS: return addresses, from the signal handler out
         };
         Sample* g_samples = nullptr;
         std::atomic<uint32_t> g_count{ 0 };
         std::atomic<bool> g_running{ false };
         bool g_done = false;
+        bool g_stacks = false;
+
+        _Unwind_Reason_Code CollectFrame(_Unwind_Context* context, void* argument)
+        {
+            Sample& sample = *static_cast<Sample*>(argument);
+            if (sample.frames >= kMaxFrames)
+                return _URC_END_OF_STACK;
+            sample.stack[sample.frames++] = _Unwind_GetIP(context);
+            return _URC_NO_REASON;
+        }
 
         void OnSignal(int, siginfo_t*, void* context)
         {
@@ -42,7 +57,14 @@ namespace h3::debug
             if (index >= kMaxSamples)
                 return;
             auto* uc = static_cast<ucontext_t*>(context);
-            g_samples[index] = { uint32_t(syscall(SYS_gettid)), uint64_t(uc->uc_mcontext.gregs[REG_RIP]) };
+            Sample& sample = g_samples[index];
+            sample.thread = uint32_t(syscall(SYS_gettid));
+            sample.address = uint64_t(uc->uc_mcontext.gregs[REG_RIP]);
+            sample.frames = 0;
+            // Not async-signal-safe in theory (the unwinder can take the
+            // loader lock); fine for a debugging aid.
+            if (g_stacks)
+                _Unwind_Backtrace(CollectFrame, &sample);
         }
 
         void SetTimer(bool on)
@@ -67,6 +89,7 @@ namespace h3::debug
         if (frame >= first && !g_running.load() && frame <= last)
         {
             g_samples = static_cast<Sample*>(calloc(kMaxSamples, sizeof(Sample)));
+            g_stacks = getenv("H3_PROFILE_STACKS") != nullptr;
             struct sigaction action{};
             action.sa_sigaction = OnSignal;
             action.sa_flags = SA_SIGINFO | SA_RESTART;
@@ -96,7 +119,13 @@ namespace h3::debug
                     fclose(maps);
                 }
                 for (uint32_t i = 0; i < count; i++)
-                    fprintf(file, "%u %lx\n", g_samples[i].thread, static_cast<unsigned long>(g_samples[i].address));
+                {
+                    const Sample& sample = g_samples[i];
+                    fprintf(file, "%u %lx", sample.thread, static_cast<unsigned long>(sample.address));
+                    for (uint32_t f = 0; f < sample.frames; f++)
+                        fprintf(file, " %lx", static_cast<unsigned long>(sample.stack[f]));
+                    fprintf(file, "\n");
+                }
                 fclose(file);
             }
             fprintf(stderr, "[profile] %u samples written to profile.txt (frames %u-%u)\n", count, first, last);

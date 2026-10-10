@@ -61,7 +61,8 @@ Delete `private/hdd/` to start from a clean console.
 
 ### Controls
 
-Controller 0 is the keyboard merged with the first gamepad SDL finds.
+Controller 0 is the keyboard and mouse merged with the first gamepad SDL
+finds.
 
 | Key | Controller |
 |---|---|
@@ -78,6 +79,13 @@ Controller 0 is the keyboard merged with the first gamepad SDL finds.
 | C / Z | Left / right stick click |
 | Escape | Start |
 | Tab | Back |
+| Mouse | Right stick (look); click the window to capture the mouse, F1 releases it |
+| Left mouse button | Right trigger (fire) |
+| Right mouse button | Right stick click (zoom) |
+| Middle mouse button | B (melee) |
+| Mouse wheel | Y (switch weapons) |
+
+`H3_MOUSE_SENSITIVITY=<factor>` scales mouse look (default 1).
 
 `H3_INPUT_SCRIPT="40-40.4:down,f900-905:a"` holds buttons between two
 times (seconds since start, or presented frames with `f`) for testing

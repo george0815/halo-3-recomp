@@ -3,11 +3,16 @@
 
 #include "../memory.h"
 
+#include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <mutex>
+#include <tuple>
 #include <unordered_map>
+#include <vector>
 
 namespace h3::kernel
 {
@@ -102,22 +107,60 @@ namespace h3::kernel
         struct ThreadWait
         {
             const char* what;
-            uint32_t object, detail, lr;
+            uint32_t object, detail, lr, caller;
+            std::chrono::steady_clock::time_point start;
         };
         std::mutex g_threadWaitMutex;
         std::map<uint32_t, ThreadWait> g_threadWaits;
+
+        // H3_LOG_WAITS: time spent blocked, per thread, caller and object.
+        const bool g_logWaits = getenv("H3_LOG_WAITS") != nullptr;
+        struct WaitTotal
+        {
+            const char* what;
+            double seconds = 0;
+            uint32_t count = 0;
+        };
+        std::map<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>, WaitTotal> g_waitTotals;  // (thread, lr, caller, object)
     }
 
-    void SetThreadWait(uint32_t thread, const char* what, uint32_t object, uint32_t detail, uint32_t lr)
+    void SetThreadWait(uint32_t thread, const char* what, uint32_t object, uint32_t detail, uint32_t lr, uint32_t caller)
     {
         std::lock_guard lock(g_threadWaitMutex);
-        g_threadWaits[thread] = { what, object, detail, lr };
+        g_threadWaits[thread] = { what, object, detail, lr, caller, g_logWaits ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point() };
     }
 
     void ClearThreadWait(uint32_t thread)
     {
         std::lock_guard lock(g_threadWaitMutex);
-        g_threadWaits.erase(thread);
+        auto it = g_threadWaits.find(thread);
+        if (it == g_threadWaits.end())
+            return;
+        if (g_logWaits)
+        {
+            WaitTotal& total = g_waitTotals[{ thread, it->second.lr, it->second.caller, it->second.object }];
+            total.what = it->second.what;
+            total.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - it->second.start).count();
+            total.count++;
+        }
+        g_threadWaits.erase(it);
+    }
+
+    void DumpWaitTotals()
+    {
+        if (!g_logWaits)
+            return;
+        std::lock_guard lock(g_threadWaitMutex);
+        std::vector<std::pair<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>, WaitTotal>> totals(g_waitTotals.begin(), g_waitTotals.end());
+        std::sort(totals.begin(), totals.end(), [](const auto& a, const auto& b) { return a.second.seconds > b.second.seconds; });
+        fprintf(stderr, "[waits] since the last report:\n");
+        for (size_t i = 0; i < totals.size() && i < 16; i++)
+        {
+            const auto& [key, total] = totals[i];
+            fprintf(stderr, "[waits]   %7.3f s %6u x thread %08X lr %08X caller %08X %s %08X\n", total.seconds, total.count,
+                std::get<0>(key), std::get<1>(key), std::get<2>(key), total.what, std::get<3>(key));
+        }
+        g_waitTotals.clear();
     }
 
     void DumpThreadWaits()

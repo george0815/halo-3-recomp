@@ -55,6 +55,11 @@ namespace h3::gpu::texture
 
     bool Decode(const FetchConstant& fetch, const uint8_t* guest, Decoded& out);
 
+    // The fetch constant's swizzle for the host texture: formats with one
+    // or two components come back as RRRR / RGGG (as on the console, per
+    // Xenia), where the host texture has zeros.
+    uint32_t HostSwizzle(const FetchConstant& fetch);
+
     // The largest level the sampler may use, as a base level of its own:
     // the fetch constant itself, or (when the sampler is limited to smaller
     // levels, as for textures whose full size is still streaming in) that

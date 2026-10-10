@@ -15,7 +15,7 @@ namespace h3::input
     {
         // Keyboard layout (README "Controls"): WASD left stick, IJKL right
         // stick (look), arrow keys the D-pad (menus), the rest buttons and
-        // triggers.
+        // triggers. The mouse is below.
         struct KeyButton
         {
             SDL_Scancode key;
@@ -94,6 +94,37 @@ namespace h3::input
             }
         }
 
+        // Mouse: click the window to capture it (F1 or losing focus lets go).
+        // Movement drives the right stick; the stick deflection follows the
+        // mouse's speed over a short window, since the game samples the pad
+        // only once per frame. H3_MOUSE_SENSITIVITY scales it (default 1).
+        struct MouseMotion
+        {
+            uint64_t ticksNs;
+            float dx, dy;
+        };
+        constexpr uint64_t kMouseWindowNs = 50'000'000;
+        std::vector<MouseMotion> g_mouseMotion;  // window thread only
+        float g_mouseSensitivity = 1.0f;
+        int g_mouseWheel = 0;           // notches not yet turned into presses
+        uint64_t g_wheelPressUntilNs = 0;
+
+        SDL_Window* EventWindow(const SDL_Event& event)
+        {
+            return SDL_GetWindowFromEvent(&event);
+        }
+
+        // Mouse velocity (pixels per second) to a stick axis: past the dead
+        // zone as soon as the mouse moves, full deflection when fast.
+        int16_t MouseAxis(float pixelsPerSecond)
+        {
+            constexpr float kDeadZone = 8000.0f, kScale = 40.0f;
+            if (std::abs(pixelsPerSecond) < 1.0f)
+                return 0;
+            float magnitude = std::min(kDeadZone + std::abs(pixelsPerSecond) * kScale * g_mouseSensitivity, 32767.0f);
+            return int16_t(pixelsPerSecond < 0 ? -magnitude : magnitude);
+        }
+
         std::mutex g_mutex;
         GamepadState g_state;
         SDL_Gamepad* g_gamepad = nullptr;
@@ -127,6 +158,8 @@ namespace h3::input
     {
         g_log = getenv("H3_LOG_INPUT") != nullptr;
         g_startTicks = SDL_GetTicks();
+        if (const char* sensitivity = getenv("H3_MOUSE_SENSITIVITY"))
+            g_mouseSensitivity = std::max(float(atof(sensitivity)), 0.01f);
         if (const char* script = getenv("H3_INPUT_SCRIPT"))
             ParseScript(script);
         OpenFirstGamepad();
@@ -134,6 +167,32 @@ namespace h3::input
 
     void HandleEvent(const SDL_Event& event)
     {
+        switch (event.type)
+        {
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            if (SDL_Window* window = EventWindow(event); window && !SDL_GetWindowRelativeMouseMode(window))
+            {
+                SDL_SetWindowRelativeMouseMode(window, true);
+                return;  // the capturing click isn't a press
+            }
+            break;
+        case SDL_EVENT_KEY_DOWN:
+            if (event.key.scancode == SDL_SCANCODE_F1)
+                if (SDL_Window* window = EventWindow(event))
+                    SDL_SetWindowRelativeMouseMode(window, false);
+            break;
+        case SDL_EVENT_MOUSE_MOTION:
+            if (SDL_Window* window = EventWindow(event); window && SDL_GetWindowRelativeMouseMode(window))
+                g_mouseMotion.push_back({ SDL_GetTicksNS(), event.motion.xrel, event.motion.yrel });
+            break;
+        case SDL_EVENT_MOUSE_WHEEL:
+            if (SDL_Window* window = EventWindow(event); window && SDL_GetWindowRelativeMouseMode(window))
+                g_mouseWheel += event.wheel.y != 0 ? 1 : 0;
+            break;
+        default:
+            break;
+        }
+
         if (event.type == SDL_EVENT_GAMEPAD_ADDED)
             OpenFirstGamepad();
         else if (event.type == SDL_EVENT_GAMEPAD_REMOVED && g_gamepad &&
@@ -162,6 +221,38 @@ namespace h3::input
         state.thumbLY = Axis(keys[SDL_SCANCODE_S], keys[SDL_SCANCODE_W]);
         state.thumbRX = Axis(keys[SDL_SCANCODE_J], keys[SDL_SCANCODE_L]);
         state.thumbRY = Axis(keys[SDL_SCANCODE_K], keys[SDL_SCANCODE_I]);
+
+        // Mouse (captured): look, left button fires, right button zooms
+        // (right stick click), middle button melees (B), the wheel switches
+        // weapons (Y).
+        uint64_t now = SDL_GetTicksNS();
+        std::erase_if(g_mouseMotion, [&](const MouseMotion& m) { return now - m.ticksNs > kMouseWindowNs; });
+        float dx = 0, dy = 0;
+        for (const MouseMotion& m : g_mouseMotion)
+            dx += m.dx, dy += m.dy;
+        constexpr float kWindowSeconds = float(kMouseWindowNs) / 1e9f;
+        state.thumbRX = Merge(state.thumbRX, MouseAxis(dx / kWindowSeconds));
+        state.thumbRY = Merge(state.thumbRY, MouseAxis(-dy / kWindowSeconds));
+        SDL_Window* focus = SDL_GetMouseFocus();
+        if (focus && SDL_GetWindowRelativeMouseMode(focus))
+        {
+            SDL_MouseButtonFlags mouse = SDL_GetMouseState(nullptr, nullptr);
+            if (mouse & SDL_BUTTON_LMASK)
+                state.rightTrigger = 255;
+            if (mouse & SDL_BUTTON_RMASK)
+                state.buttons |= kRightThumb;
+            if (mouse & SDL_BUTTON_MMASK)
+                state.buttons |= kB;
+        }
+        // Each wheel notch is a ~100 ms press of Y (the game needs to see it
+        // held for a frame or two).
+        if (g_mouseWheel > 0 && now >= g_wheelPressUntilNs + 50'000'000)
+        {
+            g_mouseWheel--;
+            g_wheelPressUntilNs = now + 100'000'000;
+        }
+        if (now < g_wheelPressUntilNs)
+            state.buttons |= kY;
 
         if (g_gamepad)
         {

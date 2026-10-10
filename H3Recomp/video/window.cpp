@@ -20,6 +20,11 @@ namespace h3::debug
     void UpdateProfiler(uint32_t frame);
 }
 
+namespace h3::kernel
+{
+    void DumpWaitTotals();
+}
+
 namespace h3::video
 {
     namespace
@@ -230,6 +235,9 @@ namespace h3::video
                 slowest = 0;
             }
         }
+
+        if (frame % 150 == 0)
+            kernel::DumpWaitTotals();  // H3_LOG_WAITS
 
         debug::g_traceFrame.store(frame);
         debug::UpdateTraceWindow(frame);

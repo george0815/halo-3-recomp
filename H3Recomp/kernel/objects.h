@@ -163,9 +163,12 @@ namespace h3::kernel
 
     // What each guest thread is blocked on, for diagnosing hangs: set before
     // a blocking wait, cleared after; DumpThreadWaits prints them all.
-    void SetThreadWait(uint32_t thread, const char* what, uint32_t object, uint32_t detail, uint32_t lr);
+    void SetThreadWait(uint32_t thread, const char* what, uint32_t object, uint32_t detail, uint32_t lr, uint32_t caller = 0);
     void ClearThreadWait(uint32_t thread);
     void DumpThreadWaits();
+    // H3_LOG_WAITS: prints and resets the time threads spent blocked, by
+    // caller and object.
+    void DumpWaitTotals();
 
     // Queues a user APC on a thread and wakes it if it's in an alertable wait.
     void QueueUserApc(Thread& thread, const Thread::UserApc& apc);

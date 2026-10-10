@@ -370,4 +370,34 @@ namespace h3::gpu::texture
         }
         return result;
     }
+
+    uint32_t HostSwizzle(const FetchConstant& fetch)
+    {
+        uint32_t last;  // the host texture's last component
+        switch (fetch.format)
+        {
+        case 2: case 8: case 9:     // k_8, k_8_A, k_8_B
+        case 24: case 27: case 30:  // k_16, k_16_EXPAND, k_16_FLOAT
+        case 36:                    // k_32_FLOAT
+        case 58: case 59:           // k_DXT3A, k_DXT5A
+            last = 0;
+            break;
+        case 10:                    // k_8_8
+        case 25: case 28: case 31:  // k_16_16, k_16_16_EXPAND, k_16_16_FLOAT
+        case 37:                    // k_32_32_FLOAT
+        case 49: case 60:           // k_DXN, k_CTX1
+            last = 1;
+            break;
+        default:
+            return fetch.swizzle;
+        }
+        uint32_t swizzle = fetch.swizzle;
+        for (uint32_t i = 0; i < 4; i++)
+        {
+            uint32_t component = (swizzle >> (3 * i)) & 7;
+            if (component < 4 && component > last)
+                swizzle = (swizzle & ~(7u << (3 * i))) | (last << (3 * i));
+        }
+        return swizzle;
+    }
 }

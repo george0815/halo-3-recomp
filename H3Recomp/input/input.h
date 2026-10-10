@@ -4,8 +4,8 @@
 
 union SDL_Event;
 
-// Controller 0 for the game's XInput calls, from the keyboard and the first
-// SDL gamepad (merged). Sampled on the window thread, read from any thread.
+// Controller 0 for the game's XInput calls, from the keyboard, the mouse and
+// the first SDL gamepad (merged). Sampled on the window thread, read from any thread.
 namespace h3::input
 {
     // XINPUT_GAMEPAD button bits.
@@ -36,7 +36,7 @@ namespace h3::input
     };
 
     void Initialize();
-    void HandleEvent(const SDL_Event& event);  // gamepads coming and going
+    void HandleEvent(const SDL_Event& event);  // gamepads coming and going, mouse capture and motion
     void Update(uint32_t frame);               // once per window loop iteration (frames presented so far)
 
     GamepadState GetState();

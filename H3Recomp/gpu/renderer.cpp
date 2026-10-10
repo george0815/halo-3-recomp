@@ -1097,35 +1097,28 @@ void main()
 
         bool IsFloatHostFormat(SDL_GPUTextureFormat format);
 
-        // Copies a resolved rectangle back to guest memory, tiled and
-        // byte-swapped as the console stores it, for the CPU to read (Halo's
-        // auto exposure reads back its luminance). Synchronous: waits for the
-        // GPU, so only for small resolves.
-        void WriteBackResolve(const ResolvedTexture& texture, uint32_t x0, uint32_t y0, uint32_t w, uint32_t h, uint32_t endian)
+        // Resolves copied back to guest memory for the CPU to read (Halo's
+        // auto exposure reads back its luminance). The download completes
+        // asynchronously: waiting for it would drain the GPU several times a
+        // frame and serialize command processing with GPU execution. The CPU
+        // sees the data a frame or so late, which exposure adaption doesn't
+        // mind. H3_SYNC_WRITEBACK=1 waits instead (debugging).
+        struct PendingWriteBack
         {
-            if (texture.hostFormat == SDL_GPU_TEXTUREFORMAT_R11G11B10_UFLOAT)  // not the guest's 10_11_11 layout
-                return;
-            uint32_t bpp = texture.bpp, bytes = w * h * bpp;
-            SDL_GPUTransferBufferCreateInfo info{ SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, bytes, 0 };
-            SDL_GPUTransferBuffer* download = SDL_CreateGPUTransferBuffer(g_device, &info);
-            SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(Commands());
-            SDL_GPUTextureRegion region{};
-            region.texture = texture.texture;
-            region.x = x0;
-            region.y = y0;
-            region.w = w;
-            region.h = h;
-            region.d = 1;
-            SDL_GPUTextureTransferInfo destination{ download, 0, w, h };
-            SDL_DownloadFromGPUTexture(copy, &region, &destination);
-            SDL_EndGPUCopyPass(copy);
-            SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(g_commands);
-            g_commands = nullptr;
-            SDL_WaitForGPUFences(g_device, true, &fence, 1);
-            SDL_ReleaseGPUFence(g_device, fence);
+            SDL_GPUFence* fence = nullptr;
+            SDL_GPUTransferBuffer* download = nullptr;
+            uint32_t base = 0, pitch = 0, size = 0, bpp = 0;
+            uint32_t x0 = 0, y0 = 0, w = 0, h = 0, endian = 0;
+        };
+        std::vector<PendingWriteBack> g_pendingWriteBacks;  // oldest first
 
-            const uint8_t* pixels = static_cast<const uint8_t*>(SDL_MapGPUTransferBuffer(g_device, download, false));
-            uint8_t* guest = GuestPtr<uint8_t>(PhysicalToGuest(texture.base));
+        // Tiles and byte-swaps the downloaded pixels into guest memory, as the
+        // console stores them.
+        void CompleteWriteBack(const PendingWriteBack& pending)
+        {
+            uint32_t bpp = pending.bpp, w = pending.w, h = pending.h;
+            const uint8_t* pixels = static_cast<const uint8_t*>(SDL_MapGPUTransferBuffer(g_device, pending.download, false));
+            uint8_t* guest = GuestPtr<uint8_t>(PhysicalToGuest(pending.base));
             uint8_t element[16];
             for (uint32_t y = 0; y < h; y++)
             {
@@ -1133,7 +1126,7 @@ void main()
                 {
                     memcpy(element, pixels + (size_t(y) * w + x) * bpp, bpp);
                     // RB_COPY_DEST_INFO endian: 1 8in16, 2 8in32, 3 16in32, 4 8in64.
-                    switch (endian)
+                    switch (pending.endian)
                     {
                     case 1:
                         for (uint32_t i = 0; i + 1 < bpp; i += 2)
@@ -1157,13 +1150,60 @@ void main()
                     default:
                         break;
                     }
-                    size_t offset = size_t(texture::TiledOffset(x0 + x, y0 + y, texture.pitch, bpp)) * bpp;
-                    if (offset + bpp <= texture.size)
+                    size_t offset = size_t(texture::TiledOffset(pending.x0 + x, pending.y0 + y, pending.pitch, bpp)) * bpp;
+                    if (offset + bpp <= pending.size)
                         memcpy(guest + offset, element, bpp);
                 }
             }
-            SDL_UnmapGPUTransferBuffer(g_device, download);
-            SDL_ReleaseGPUTransferBuffer(g_device, download);
+            SDL_UnmapGPUTransferBuffer(g_device, pending.download);
+            SDL_ReleaseGPUTransferBuffer(g_device, pending.download);
+            SDL_ReleaseGPUFence(g_device, pending.fence);
+        }
+
+        // Completes the write-backs whose downloads have finished, in order.
+        void PollWriteBacks(bool wait = false)
+        {
+            size_t done = 0;
+            for (; done < g_pendingWriteBacks.size(); done++)
+            {
+                PendingWriteBack& pending = g_pendingWriteBacks[done];
+                if (wait)
+                    SDL_WaitForGPUFences(g_device, true, &pending.fence, 1);
+                else if (!SDL_QueryGPUFence(g_device, pending.fence))
+                    break;
+                CompleteWriteBack(pending);
+            }
+            g_pendingWriteBacks.erase(g_pendingWriteBacks.begin(), g_pendingWriteBacks.begin() + done);
+        }
+
+        void WriteBackResolve(const ResolvedTexture& texture, uint32_t x0, uint32_t y0, uint32_t w, uint32_t h, uint32_t endian)
+        {
+            if (texture.hostFormat == SDL_GPU_TEXTUREFORMAT_R11G11B10_UFLOAT)  // not the guest's 10_11_11 layout
+                return;
+            uint32_t bpp = texture.bpp, bytes = w * h * bpp;
+            SDL_GPUTransferBufferCreateInfo info{ SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, bytes, 0 };
+            SDL_GPUTransferBuffer* download = SDL_CreateGPUTransferBuffer(g_device, &info);
+            SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(Commands());
+            SDL_GPUTextureRegion region{};
+            region.texture = texture.texture;
+            region.x = x0;
+            region.y = y0;
+            region.w = w;
+            region.h = h;
+            region.d = 1;
+            SDL_GPUTextureTransferInfo destination{ download, 0, w, h };
+            SDL_DownloadFromGPUTexture(copy, &region, &destination);
+            SDL_EndGPUCopyPass(copy);
+            SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(g_commands);
+            g_commands = nullptr;
+            if (!fence)
+            {
+                SDL_ReleaseGPUTransferBuffer(g_device, download);
+                return;
+            }
+            g_pendingWriteBacks.push_back({ fence, download, texture.base, texture.pitch, texture.size, bpp, x0, y0, w, h, endian });
+            static const bool sync = getenv("H3_SYNC_WRITEBACK") != nullptr;
+            PollWriteBacks(sync);
         }
 
         // A texture inside a resolved texture at another size or position
@@ -1251,7 +1291,7 @@ void main()
                             texture = decoded;
                             sampler = SamplerFor(fetch);
                             uint32_t* constants = system.textures[binding.fetchConstant & 31];
-                            constants[0] = fetch.swizzle;
+                            constants[0] = texture::HostSwizzle(fetch);
                             constants[1] = fetch.signs;
                             constants[2] = uint32_t(fetch.expAdjust);
                             constants[3] = 1;
@@ -1288,7 +1328,7 @@ void main()
                             texture = decoded;
                             sampler = SamplerFor(fetch);
                             uint32_t* constants = system.textures[binding.fetchConstant & 31];
-                            constants[0] = fetch.swizzle;
+                            constants[0] = texture::HostSwizzle(fetch);
                             constants[1] = fetch.signs;
                             constants[2] = uint32_t(fetch.expAdjust);
                             constants[3] = 1;
@@ -2143,6 +2183,13 @@ void main()
         // H3_SNAPSHOT_EVERY=<n>: save every n-th presented frame.
         g_swaps++;
         g_frameResolves = 0;
+        PollWriteBacks();
+        // H3_LOG_FPS: how many pipelines and shaders exist (creating them
+        // stalls this thread).
+        static const bool logCounts = getenv("H3_LOG_FPS") != nullptr;
+        if (logCounts && g_swaps % 150 == 0)
+            fprintf(stderr, "[render] frame %u: %zu pipelines, %zu shaders, %zu textures\n", g_swaps, g_pipelines.size(), g_shaders.size(),
+                g_textures.size());
         static const uint32_t dumpFrame = EnvNumber("H3_DUMP_FRAME");
         static const uint32_t snapshotEvery = EnvNumber("H3_SNAPSHOT_EVERY");
         bool snapshot = snapshotEvery != 0 && g_swaps % snapshotEvery == 0;
