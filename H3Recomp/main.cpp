@@ -2,6 +2,7 @@
 
 #include "memory.h"
 #include "gpu/command_processor.h"
+#include "apu/xma_decoder.h"
 #include "gpu/renderer.h"
 #include "kernel/module.h"
 #include "kernel/modules.h"
@@ -57,6 +58,7 @@ int main(int argc, char* argv[])
         return 1;
 
     h3::gpu::Initialize();
+    h3::apu::InitXma();
 
     if (!h3::kernel::LoadExecutable(xexPath))
         return 1;

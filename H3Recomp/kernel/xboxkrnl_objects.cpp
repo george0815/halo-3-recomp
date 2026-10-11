@@ -404,6 +404,14 @@ PPC_FUNC(__imp__ExCreateThread)
     uint32_t flags = ctx.r9.u32;
 
     auto thread = StartGuestThread(stackSize, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, flags & kCreateSuspended);
+    // The top byte is a processor mask (Xenia applies it the same way); the
+    // thread's KPCR reports the lowest of those hardware threads. XAudio's
+    // workers rendezvous per CPU and need distinct numbers.
+    if (uint32_t processors = (flags >> 24) & 0x3F)
+    {
+        thread->affinity = processors;
+        *GuestPtr<uint8_t>(thread->guest->pcr + kPcrCurrentCpu) = uint8_t(__builtin_ctz(processors));
+    }
     if (handlePtr != 0)
         GuestRef<uint32_t>(handlePtr) = (flags & kReturnKThread) ? thread->guest->kthread : CreateHandle(thread);
     if (threadIdPtr != 0)
@@ -440,13 +448,20 @@ PPC_FUNC(__imp__KeResumeThread)
 }
 
 // KAFFINITY KeSetAffinityThread(PKTHREAD thread, KAFFINITY affinity, PKAFFINITY previous)
-// The host scheduler decides; just remember what the guest asked for.
+// The host scheduler decides where it really runs, but the thread's KPCR
+// reports the hardware thread it was moved to (the lowest in the mask), as
+// on the console: code indexes per-CPU state with it. XAudio's per-CPU
+// rendezvous spun forever with every thread claiming CPU 0.
 PPC_FUNC(__imp__KeSetAffinityThread)
 {
     auto thread = ThreadFromGuest(ctx.r3.u32);
     uint32_t previous = thread ? thread->affinity : 0;
     if (thread)
+    {
         thread->affinity = ctx.r4.u32;
+        if (thread->guest && (ctx.r4.u32 & 0x3F) != 0)
+            *GuestPtr<uint8_t>(thread->guest->pcr + kPcrCurrentCpu) = uint8_t(__builtin_ctz(ctx.r4.u32 & 0x3F));
+    }
     if (ctx.r5.u32 != 0)
         GuestRef<uint32_t>(ctx.r5.u32) = previous;
     ctx.r3.u64 = previous;

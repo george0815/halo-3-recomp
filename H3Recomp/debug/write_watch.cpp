@@ -1,4 +1,5 @@
 // H3_WATCH_WRITES=<first swap>-<last swap>:<physical address>:<bytes>
+// (or v<guest address> for any other guest address, e.g. MMIO registers)
 // Write-protects that physical range (in all three physical views) during
 // those frames and counts the host instructions that write to it. Each
 // write faults, the page is unprotected for one single-stepped instruction,
@@ -32,6 +33,7 @@ namespace h3::debug
         constexpr size_t kMaxSites = 4096;
 
         uint32_t g_first = 0, g_last = 0, g_address = 0, g_bytes = 0;
+        bool g_virtual = false;  // g_address is a plain guest address, not physical
         std::atomic<bool> g_armed{ false };
         struct Site
         {
@@ -46,6 +48,8 @@ namespace h3::debug
 
         uint8_t* HostAddress(uint32_t view, uint32_t offset)
         {
+            if (g_virtual)
+                return g_base + offset;
             // The 0xE0000000 view starts 0x1000 into physical memory.
             return g_base + view + offset - (view == 0xE0000000 ? 0x1000 : 0);
         }
@@ -159,7 +163,14 @@ namespace h3::debug
             char* end;
             g_first = uint32_t(strtoul(spec, &end, 0));
             g_last = *end == '-' ? uint32_t(strtoul(end + 1, &end, 0)) : g_first;
-            g_address = *end == ':' ? uint32_t(strtoul(end + 1, &end, 16)) & 0x1FFFFFFF : 0;
+            if (*end == ':' && end[1] == 'v')
+            {
+                g_virtual = true;
+                end++;
+            }
+            g_address = *end == ':' || g_virtual ? uint32_t(strtoul(end + 1, &end, 16)) : 0;
+            if (!g_virtual)
+                g_address &= 0x1FFFFFFF;
             g_bytes = *end == ':' ? uint32_t(strtoul(end + 1, &end, 0)) : 0;
             if (!g_bytes)
                 return false;

@@ -10,6 +10,7 @@ add_executable(H3Recomp
     debug/profiler.cpp
     debug/write_watch.cpp
     hooks/fibers.cpp
+    hooks/xma.cpp
     kernel/imports.cpp
     kernel/module.cpp
     kernel/modules.cpp
@@ -22,7 +23,10 @@ add_executable(H3Recomp
     kernel/xam_content.cpp
     kernel/xam_notify.cpp
     kernel/xnet.cpp
+    apu/audio_system.cpp
+    apu/xma_decoder.cpp
     kernel/xboxkrnl.cpp
+    kernel/xboxkrnl_audio.cpp
     kernel/xboxkrnl_crypt.cpp
     kernel/xboxkrnl_io.cpp
     kernel/xboxkrnl_memory.cpp
@@ -54,3 +58,11 @@ if (H3_TRACE_D3D)
 endif()
 
 target_link_libraries(H3Recomp PRIVATE H3RecompLib H3Shader PkgConfig::SHADERC SDL3::SDL3 ${H3_MODULES} ${H3_MODULE_STUBS})
+
+# FFmpeg with the xmaframes decoder (XMA audio), built by tools/build_ffmpeg.sh.
+set(H3_FFMPEG_DIR "${PROJECT_SOURCE_DIR}/build/ffmpeg")
+if (NOT EXISTS "${H3_FFMPEG_DIR}/lib/libavcodec.a")
+    message(FATAL_ERROR "XMA audio needs FFmpeg with the xmaframes decoder: run tools/build_ffmpeg.sh first")
+endif()
+target_include_directories(H3Recomp BEFORE PRIVATE "${H3_FFMPEG_DIR}/include")
+target_link_libraries(H3Recomp PRIVATE "${H3_FFMPEG_DIR}/lib/libavcodec.a" "${H3_FFMPEG_DIR}/lib/libavutil.a" m)

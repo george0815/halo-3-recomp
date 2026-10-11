@@ -1,0 +1,173 @@
+diff -ru ffmpeg-7.1.orig/configure ffmpeg-7.1/configure
+--- ffmpeg-7.1.orig/configure	2026-10-11 13:39:45.115274525 +0900
++++ ffmpeg-7.1/configure	2026-10-11 13:44:47.632305769 +0900
+@@ -3130,6 +3130,7 @@
+ wmv3image_decoder_select="wmv3_decoder"
+ xma1_decoder_select="wmapro_decoder"
+ xma2_decoder_select="wmapro_decoder"
++xmaframes_decoder_select="wmapro_decoder"
+ ylc_decoder_select="bswapdsp"
+ zerocodec_decoder_select="inflate_wrapper"
+ zlib_decoder_select="inflate_wrapper"
+diff -ru ffmpeg-7.1.orig/libavcodec/allcodecs.c ffmpeg-7.1/libavcodec/allcodecs.c
+--- ffmpeg-7.1.orig/libavcodec/allcodecs.c	2026-10-11 13:39:45.094132733 +0900
++++ ffmpeg-7.1/libavcodec/allcodecs.c	2026-10-11 13:40:28.062319197 +0900
+@@ -550,6 +550,7 @@
+ extern const FFCodec ff_ws_snd1_decoder;
+ extern const FFCodec ff_xma1_decoder;
+ extern const FFCodec ff_xma2_decoder;
++extern const FFCodec ff_xmaframes_decoder;
+ 
+ /* PCM codecs */
+ extern const FFCodec ff_pcm_alaw_encoder;
+diff -ru ffmpeg-7.1.orig/libavcodec/codec_desc.c ffmpeg-7.1/libavcodec/codec_desc.c
+--- ffmpeg-7.1.orig/libavcodec/codec_desc.c	2026-10-11 13:39:45.101509055 +0900
++++ ffmpeg-7.1/libavcodec/codec_desc.c	2026-10-11 13:48:58.340374352 +0900
+@@ -3433,6 +3433,13 @@
+         .long_name = NULL_IF_CONFIG_SMALL("LC3 (Low Complexity Communication Codec)"),
+         .props     = AV_CODEC_PROP_INTRA_ONLY | AV_CODEC_PROP_LOSSY,
+     },
++    {
++        .id        = AV_CODEC_ID_XMAFRAMES,
++        .type      = AVMEDIA_TYPE_AUDIO,
++        .name      = "xmaframes",
++        .long_name = NULL_IF_CONFIG_SMALL("Xbox Media Audio raw frames"),
++        .props     = AV_CODEC_PROP_LOSSY,
++    },
+ 
+     /* subtitle codecs */
+     {
+diff -ru ffmpeg-7.1.orig/libavcodec/codec_id.h ffmpeg-7.1/libavcodec/codec_id.h
+--- ffmpeg-7.1.orig/libavcodec/codec_id.h	2026-10-11 13:39:45.056870135 +0900
++++ ffmpeg-7.1/libavcodec/codec_id.h	2026-10-11 13:40:28.062158705 +0900
+@@ -544,6 +544,7 @@
+     AV_CODEC_ID_OSQ,
+     AV_CODEC_ID_QOA,
+     AV_CODEC_ID_LC3,
++    AV_CODEC_ID_XMAFRAMES,
+ 
+     /* subtitle codecs */
+     AV_CODEC_ID_FIRST_SUBTITLE = 0x17000,          ///< A dummy ID pointing at the start of subtitle codecs.
+diff -ru ffmpeg-7.1.orig/libavcodec/Makefile ffmpeg-7.1/libavcodec/Makefile
+--- ffmpeg-7.1.orig/libavcodec/Makefile	2026-10-11 13:39:45.051061750 +0900
++++ ffmpeg-7.1/libavcodec/Makefile	2026-10-11 13:44:47.631300259 +0900
+@@ -839,6 +839,7 @@
+ OBJS-$(CONFIG_XL_DECODER)              += xl.o
+ OBJS-$(CONFIG_XMA1_DECODER)            += wmaprodec.o wma.o wma_common.o
+ OBJS-$(CONFIG_XMA2_DECODER)            += wmaprodec.o wma.o wma_common.o
++OBJS-$(CONFIG_XMAFRAMES_DECODER)       += wmaprodec.o wma.o wma_common.o
+ OBJS-$(CONFIG_XPM_DECODER)             += xpmdec.o
+ OBJS-$(CONFIG_XSUB_DECODER)            += xsubdec.o
+ OBJS-$(CONFIG_XSUB_ENCODER)            += xsubenc.o
+diff -ru ffmpeg-7.1.orig/libavcodec/wmaprodec.c ffmpeg-7.1/libavcodec/wmaprodec.c
+--- ffmpeg-7.1.orig/libavcodec/wmaprodec.c	2026-10-11 13:39:45.078756146 +0900
++++ ffmpeg-7.1/libavcodec/wmaprodec.c	2026-10-11 13:40:28.063101497 +0900
+@@ -370,7 +370,8 @@
+     int log2_max_num_subframes;
+     int num_possible_block_sizes;
+ 
+-    if (avctx->codec_id == AV_CODEC_ID_XMA1 || avctx->codec_id == AV_CODEC_ID_XMA2)
++    if (avctx->codec_id == AV_CODEC_ID_XMA1 || avctx->codec_id == AV_CODEC_ID_XMA2 ||
++        avctx->codec_id == AV_CODEC_ID_XMAFRAMES)
+         avctx->block_align = 2048;
+ 
+     if (!avctx->block_align) {
+@@ -418,6 +419,11 @@
+             avpriv_request_sample(avctx, "bits per sample is %d", s->bits_per_sample);
+             return AVERROR_PATCHWELCOME;
+         }
++    } else if (avctx->codec_id == AV_CODEC_ID_XMAFRAMES) {
++        s->decode_flags    = 0x10d6;
++        s->bits_per_sample = 16;
++        channel_mask       = 0;
++        s->nb_channels     = avctx->ch_layout.nb_channels;
+     } else {
+         avpriv_request_sample(avctx, "Unknown extradata size");
+         return AVERROR_PATCHWELCOME;
+@@ -431,7 +437,8 @@
+     }
+ 
+     /** frame info */
+-    s->skip_frame = 1; /* skip first frame */
++    /* skip first frame; single XMA frames decode in step (as in Xenia) */
++    s->skip_frame = avctx->codec_id != AV_CODEC_ID_XMAFRAMES;
+ 
+     s->packet_loss = 1;
+     s->len_prefix  = (s->decode_flags & 0x40);
+@@ -2149,4 +2156,76 @@
+     .p.sample_fmts  = (const enum AVSampleFormat[]) { AV_SAMPLE_FMT_FLTP,
+                                                       AV_SAMPLE_FMT_NONE },
+     .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
++};
++
++/* Single XMA frames, as Xenia's xmaframes decoder: packet parsing is the
++ * caller's. The packet starts with one byte holding the bit padding before
++ * (bits 7-5) and after (bits 4-2) the frame. */
++static av_cold int xmaframes_decode_init(AVCodecContext *avctx)
++{
++    WMAProDecodeCtx *s = avctx->priv_data;
++    return decode_init(s, avctx, 0);
++}
++
++static av_cold int xmaframes_decode_end(AVCodecContext *avctx)
++{
++    WMAProDecodeCtx *s = avctx->priv_data;
++    decode_end(s);
++    return 0;
++}
++
++static int xmaframes_decode_packet(AVCodecContext *avctx, AVFrame *frame,
++                                   int *got_frame_ptr, AVPacket *avpkt)
++{
++    WMAProDecodeCtx *s = avctx->priv_data;
++    GetBitContext *gb = &s->gb;
++    int ret, xma_frame_len;
++    uint8_t padding_start, padding_end;
++
++    *got_frame_ptr = 0;
++    if (avpkt->size < 3)
++        return AVERROR_INVALIDDATA;
++
++    s->buf_bit_size = avpkt->size << 3;
++    if ((ret = init_get_bits8(gb, avpkt->data, avpkt->size)) < 0)
++        return ret;
++    padding_start = get_bits(gb, 3);
++    padding_end   = get_bits(gb, 3);
++    skip_bits(gb, 2);
++    skip_bits(gb, padding_start);
++
++    xma_frame_len = show_bits(gb, s->log2_frame_size);
++    if (s->buf_bit_size != 8 + padding_start + xma_frame_len + padding_end) {
++        av_log(avctx, AV_LOG_ERROR, "XMA frame size mismatch: %d != 8 + %d + %d + %d\n",
++               s->buf_bit_size, padding_start, xma_frame_len, padding_end);
++        return AVERROR_INVALIDDATA;
++    }
++
++    s->packet_loss = 0;
++    save_bits(s, gb, xma_frame_len, 0);
++    if (s->packet_loss)
++        return AVERROR_INVALIDDATA;
++
++    frame->nb_samples = s->samples_per_frame;
++    if ((ret = ff_get_buffer(avctx, frame, 0)) < 0)
++        return ret;
++    decode_frame(s, frame, got_frame_ptr);
++    if (s->packet_loss)
++        return AVERROR_INVALIDDATA;
++    return avpkt->size;
++}
++
++const FFCodec ff_xmaframes_decoder = {
++    .p.name         = "xmaframes",
++    CODEC_LONG_NAME("Xbox Media Audio raw frames"),
++    .p.type         = AVMEDIA_TYPE_AUDIO,
++    .p.id           = AV_CODEC_ID_XMAFRAMES,
++    .priv_data_size = sizeof(WMAProDecodeCtx),
++    .init           = xmaframes_decode_init,
++    .close          = xmaframes_decode_end,
++    FF_CODEC_DECODE_CB(xmaframes_decode_packet),
++    .p.capabilities = AV_CODEC_CAP_DR1,
++    .p.sample_fmts  = (const enum AVSampleFormat[]) { AV_SAMPLE_FMT_FLTP,
++                                                      AV_SAMPLE_FMT_NONE },
++    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
+ };

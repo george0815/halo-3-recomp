@@ -29,6 +29,7 @@ H3RecompLib/ppc/     generated C++ (ignored)
 H3RecompLib/modules/ generated C++ for the DLLs the game loads (ignored)
 tools/h3xexinfo/     XEX inspector: layout, imports, helper addresses, stubs
 tools/recompile.sh   full XEX -> C++ pipeline
+tools/build_ffmpeg.sh  FFmpeg 7.1 + XMA frame decoder (tools/patches/), static
 tools/xdvdfs_extract.py  disc image -> private/game
 tools/h3analysis.py  jump table / function boundary fixups
 thirdparty/          XenonRecomp (submodule)
@@ -39,6 +40,8 @@ docs/                dumping guide, roadmap
 ## Building
 
 Requires CMake 3.20+, Ninja, Clang 18+, SDL3, shaderc and a Vulkan driver.
+XMA audio needs a patched FFmpeg, built once by `tools/build_ffmpeg.sh`
+(downloads FFmpeg 7.1; needs curl, make and a C compiler).
 
 ```sh
 git submodule update --init --recursive
@@ -50,6 +53,7 @@ cmake --build --preset release
 # Put your default.xex in private/, then:
 build/release/tools/h3xexinfo/h3xexinfo private/default.xex
 # paste the printed addresses into H3RecompLib/config/halo3.toml
+tools/build_ffmpeg.sh
 tools/recompile.sh
 cmake --build --preset release
 build/release/H3Recomp/H3Recomp private/default.xex
@@ -117,6 +121,8 @@ Environment variables:
 | `H3_DUMP_SCALE=<n>` | Divide 16-bit float colors by n in dumps (Halo's final 7e3 target holds 32x values) |
 | `H3_SNAPSHOT_EVERY=<n>` | Save every n-th presented frame as `frame_<n>.png` (from frame `H3_SNAPSHOT_FROM`, if set) |
 | `H3_LOG_CLEARS=1` | Log D3D clears (screen-space rectangle draws) with their rectangles, color and surface |
+| `H3_LOG_AUDIO=1` | Log audio frames submitted and their peak level, once a second |
+| `H3_AUDIO_DUMP=<file>` | Also write the audio output as raw 6-channel 48 kHz float (`ffmpeg -f f32le -ac 6 -ar 48000 -i <file> out.wav`) |
 | `H3_LOG_FPS=1` | Log presented frames per second and the slowest frame, once a second |
 | `H3_LOG_SLOW=1` | Log shader translations, pipeline creations and texture uploads that take 20 ms or more (pipelines with their shaders' cache names) |
 | `H3_DUMP_GLSL=1` | Write each translated shader's GLSL to the working directory as `<cache name>.glsl` |
