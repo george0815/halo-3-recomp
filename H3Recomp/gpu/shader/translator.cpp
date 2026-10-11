@@ -132,50 +132,52 @@ void xe_write_vertex(vec4 position, vec4 outputs[16])
     gl_Position = vec4(position.xyz * xe_sys.ndc_scale.xyz + position.w * xe_sys.ndc_offset.xyz, position.w);
 }
 
+// The shader body is called from a single site: the optimizer inlines every
+// call, and separate calls for the rectangle cases tripled the code (and
+// the driver's pipeline compile time).
 void main()
 {
-    vec4 position;
-    vec4 outputs[16];
-    if ((xe_sys.flags & 1u) == 0u)
-    {
-        xe_vertex_shader(gl_VertexIndex, position, outputs);
-        xe_write_vertex(position, outputs);
-        return;
-    }
-
+    bool rectList = (xe_sys.flags & 1u) != 0u;
     int rect = gl_VertexIndex / 6;
     int corner = gl_VertexIndex % 6;
     uint base = xe_sys.rect_indices + uint(rect) * 3u;
-    if (corner < 3)
-    {
-        xe_vertex_shader(int(xe_memory[base + uint(corner)]), position, outputs);
-        xe_write_vertex(position, outputs);
-        return;
-    }
-
+    // Rectangle corners 3-5 need all three given vertices.
+    int count = (rectList && corner >= 3) ? 3 : 1;
     vec4 p[3];
     vec4 o[3][16];
-    for (int i = 0; i < 3; i++)
-        xe_vertex_shader(int(xe_memory[base + uint(i)]), p[i], o[i]);
-    // The right angle is opposite the longest edge.
-    vec2 s0 = p[0].xy / p[0].w, s1 = p[1].xy / p[1].w, s2 = p[2].xy / p[2].w;
-    float d01 = dot(s0 - s1, s0 - s1), d02 = dot(s0 - s2, s0 - s2), d12 = dot(s1 - s2, s1 - s2);
-    int r = (d12 >= d01 && d12 >= d02) ? 0 : (d02 >= d01 ? 1 : 2);
-    int a = r == 0 ? 1 : 0;
-    int b = r == 2 ? 1 : 2;
-    if (corner == 3)
+    for (int i = 0; i < count; i++)
     {
-        xe_write_vertex(p[a], o[a]);
-        return;
+        int index = !rectList ? gl_VertexIndex : int(xe_memory[base + uint(count == 1 ? corner : i)]);
+        xe_vertex_shader(index, p[i], o[i]);
     }
-    if (corner == 4)
+
+    vec4 position = p[0];
+    vec4 outputs[16] = o[0];
+    if (count == 3)
     {
-        xe_write_vertex(p[b], o[b]);
-        return;
+        // The right angle is opposite the longest edge.
+        vec2 s0 = p[0].xy / p[0].w, s1 = p[1].xy / p[1].w, s2 = p[2].xy / p[2].w;
+        float d01 = dot(s0 - s1, s0 - s1), d02 = dot(s0 - s2, s0 - s2), d12 = dot(s1 - s2, s1 - s2);
+        int r = (d12 >= d01 && d12 >= d02) ? 0 : (d02 >= d01 ? 1 : 2);
+        int a = r == 0 ? 1 : 0;
+        int b = r == 2 ? 1 : 2;
+        if (corner == 3)
+        {
+            position = p[a];
+            outputs = o[a];
+        }
+        else if (corner == 4)
+        {
+            position = p[b];
+            outputs = o[b];
+        }
+        else
+        {
+            position = p[a] + p[b] - p[r];
+            for (int i = 0; i < 16; i++)
+                outputs[i] = o[a][i] + o[b][i] - o[r][i];
+        }
     }
-    position = p[a] + p[b] - p[r];
-    for (int i = 0; i < 16; i++)
-        outputs[i] = o[a][i] + o[b][i] - o[r][i];
     xe_write_vertex(position, outputs);
 }
 )";
@@ -1193,7 +1195,7 @@ void main()
                 out += Format("layout(std140, set = %u, binding = 1) uniform XeSystem\n{\n"
                               "    uvec4 bools[2];\n    uvec4 loops[8];\n    uvec4 vfetch[96];\n"
                               "    vec4 ndc_scale;\n    vec4 ndc_offset;\n    uint ps_param_gen;\n    uint flags;\n    uint rect_indices;\n"
-                              "    uvec4 tfetch[32];\n    vec4 color_exp_bias;\n    float alpha_ref;\n} xe_sys;\n",
+                              "    uvec4 tfetch[32];\n    vec4 color_exp_bias;\n    float alpha_ref;\n    float pixel_scale_x;\n    float pixel_scale_y;\n} xe_sys;\n",
                     uniformSet);
                 for (const TextureBinding& texture : m_info.textures)
                     out += Format("layout(set = %u, binding = %u) uniform %s xe_texture%u;\n", textureSet, texture.binding,
@@ -1257,7 +1259,12 @@ vec4 xe_texture_result(vec4 v, uint fetchConstant)
     for (int i = 0; i < 4; i++)
     {
         uint sign = (t.y >> (2 * i)) & 3u;
-        if (sign == 1u)
+        if (sign == 1u && t.w == 2u)
+        {
+            float s = floor(v[i] * 65535.0 + 0.5);
+            v[i] = max((s >= 32768.0 ? s - 65536.0 : s) / 32767.0, -1.0);
+        }
+        else if (sign == 1u)
         {
             float s = floor(v[i] * 255.0 + 0.5);
             v[i] = max((s >= 128.0 ? s - 256.0 : s) / 127.0, -1.0);
@@ -1326,7 +1333,7 @@ vec3 xe_cube_direction(vec3 stf)
                 {
                     out += "    for (int i = 0; i < 16; i++) r[i] = xe_in[i];\n";
                     out += "    if (xe_sys.ps_param_gen < 64u)\n"
-                           "        r[xe_sys.ps_param_gen] = vec4(gl_FragCoord.xy, gl_FrontFacing ? 0.0 : -0.0, 0.0);\n";
+                           "        r[xe_sys.ps_param_gen] = vec4(floor(gl_FragCoord.xy / vec2(xe_sys.pixel_scale_x, xe_sys.pixel_scale_y)), gl_FrontFacing ? 0.0 : -0.0, 0.0);\n";
                     for (uint32_t i = 0; i < 4; i++)
                         if (m_info.colorTargetMask & (1u << i))
                             out += Format("    vec4 xe_color%u = vec4(0.0);\n", i);
@@ -1351,7 +1358,11 @@ vec3 xe_cube_direction(vec3 stf)
                            "        discard;\n";
                 for (uint32_t i = 0; i < 4; i++)
                     if (m_info.colorTargetMask & (1u << i))
+                    {
                         out += Format("    xe_color%u_out = xe_color%u * xe_sys.color_exp_bias[%u];\n", i, i, i);
+                        out += Format("    if ((xe_sys.flags & %uu) != 0u)\n        xe_color%u_out = clamp(xe_color%u_out, 0.0, 1.0);\n",
+                            0x1000u << i, i, i);
+                    }
                 out += m_info.writesDepth ? "    float xe_frag_depth = xe_depth.x;\n" : "    float xe_frag_depth = gl_FragCoord.z;\n";
                 out += "    if ((xe_sys.flags & 2u) != 0u)\n        xe_frag_depth = xe_float24_round(xe_frag_depth);\n";
                 out += "    gl_FragDepth = xe_frag_depth;\n";

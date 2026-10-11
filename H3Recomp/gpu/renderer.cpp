@@ -10,6 +10,8 @@
 #include <shaderc/shaderc.h>
 
 #include <algorithm>
+#include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -76,10 +78,19 @@ namespace h3::gpu::renderer
         SDL_GPUTexture* g_placeholder3D = nullptr;
         SDL_GPUTexture* g_placeholderCube = nullptr;
 
+        // FNV-1a style, eight bytes at a time (shader microcode and texture
+        // memory get hashed often).
         uint64_t Hash(const void* data, size_t size, uint64_t hash = 0xCBF29CE484222325ull)
         {
             const uint8_t* bytes = static_cast<const uint8_t*>(data);
-            for (size_t i = 0; i < size; i++)
+            size_t words = size / 8;
+            for (size_t i = 0; i < words; i++)
+            {
+                uint64_t word;
+                memcpy(&word, bytes + i * 8, 8);
+                hash = (hash ^ word) * 0x100000001B3ull;
+            }
+            for (size_t i = words * 8; i < size; i++)
                 hash = (hash ^ bytes[i]) * 0x100000001B3ull;
             return hash;
         }
@@ -95,6 +106,22 @@ namespace h3::gpu::renderer
             fprintf(stderr, "[render] %s\n", message.c_str());
         }
 
+        // Logs work on the GPU thread that took long enough to show as a
+        // hitch (H3_LOG_SLOW=1).
+        struct SlowTimer
+        {
+            const char* what;
+            std::string detail = {};
+            std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            ~SlowTimer()
+            {
+                static const bool enabled = getenv("H3_LOG_SLOW") != nullptr;
+                double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+                if (enabled && ms >= 20)
+                    fprintf(stderr, "[render] slow %s: %.0f ms (frame %u) %s\n", what, ms, g_swaps, detail.c_str());
+            }
+        };
+
         // --- Shaders ---------------------------------------------------
 
         struct Shader
@@ -102,6 +129,7 @@ namespace h3::gpu::renderer
             bool ok = false;
             SDL_GPUShader* shader = nullptr;
             shader::ShaderInfo info;
+            std::string cacheName;  // SPIR-V file in the shader cache (for logs)
         };
 
         std::unordered_map<uint64_t, std::unique_ptr<Shader>> g_shaders;
@@ -114,13 +142,19 @@ namespace h3::gpu::renderer
         // threads waiting on its fences). Keep the results on disk.
         std::filesystem::path g_shaderCacheDirectory;
 
-        std::vector<uint8_t> CompileCached(bool vertex, const std::string& glsl)
+        std::vector<uint8_t> CompileCached(bool vertex, const std::string& glsl, std::string& cacheName)
         {
             std::filesystem::path path;
+            char name[32];
+            snprintf(name, sizeof(name), "%016llx.spv", (unsigned long long)Hash(glsl.data(), glsl.size(), vertex ? 1 : 2));
+            cacheName = name;
+            // H3_DUMP_GLSL=1: write each shader's GLSL as <cache name>.glsl
+            // in the working directory.
+            static const bool dumpGlsl = getenv("H3_DUMP_GLSL") != nullptr;
+            if (dumpGlsl)
+                std::ofstream(std::string(name) + ".glsl") << glsl;
             if (!g_shaderCacheDirectory.empty())
             {
-                char name[32];
-                snprintf(name, sizeof(name), "%016llx.spv", (unsigned long long)Hash(glsl.data(), glsl.size(), vertex ? 1 : 2));
                 path = g_shaderCacheDirectory / name;
                 std::ifstream file(path, std::ios::binary);
                 if (file)
@@ -167,6 +201,7 @@ namespace h3::gpu::renderer
             if (it != g_shaders.end())
                 return it->second.get();
 
+            SlowTimer timer{ "shader" };
             auto entry = std::make_unique<Shader>();
             shader::TranslationResult translated = shader::Translate(vertex, dwords, count);
             if (!translated.ok)
@@ -175,7 +210,7 @@ namespace h3::gpu::renderer
             }
             else
             {
-                std::vector<uint8_t> spirv = CompileCached(vertex, translated.glsl);
+                std::vector<uint8_t> spirv = CompileCached(vertex, translated.glsl, entry->cacheName);
                 if (!spirv.empty())
                 {
                     SDL_GPUShaderCreateInfo info{};
@@ -389,8 +424,12 @@ void main()
             switch (xenosFormat)
             {
             case 0:   // k_8_8_8_8
-            case 1:   // k_8_8_8_8_GAMMA
                 return SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+            case 1:   // k_8_8_8_8_GAMMA
+                // Linear values at 8 bits lost the darks (posterized
+                // shadows; Halo's lighting relies on this target for them).
+                // The console stores them gamma encoded; resolves encode.
+                return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
             case 2:   // k_2_10_10_10
             case 10:  // k_2_10_10_10_AS_10_10_10_10
                 return SDL_GPU_TEXTUREFORMAT_R10G10B10A2_UNORM;
@@ -536,7 +575,8 @@ void main()
             uint32_t textures[32][4];  // per texture fetch constant: swizzle, signs, exp adjust, enabled
             float colorExpBias[4];     // 2^RB_COLOR_INFO exp bias, per render target
             float alphaRef;
-            uint32_t pad2[3];
+            float pixelScale[2];  // host texels per guest pixel
+            uint32_t pad2;
         };
 
         struct TargetSet
@@ -580,8 +620,64 @@ void main()
         uint32_t g_memoryBufferSize = 0;
         SDL_GPUBuffer* g_indexBuffer = nullptr;
         uint32_t g_indexBufferSize = 0;
-        SDL_GPUTransferBuffer* g_transfer = nullptr;
-        uint32_t g_transferSize = 0;
+        // Flushes within a frame append to the buffers above at these
+        // offsets (in dwords) and only the frame's first flush cycles them.
+        // Cycling on every flush made SDL keep one buffer instance per
+        // in-flight flush, dozens per frame (gigabytes of host-visible
+        // memory with a shared cycled transfer buffer).
+        uint32_t g_memoryBase = 0;
+        uint32_t g_indexBase = 0;
+
+        // Upload buffers for Flush: one per flush (writing several flushes
+        // into one shared buffer without cycling lost data), reused once
+        // they're kTransferAge frames old so the GPU is done with them.
+        // Creating a buffer per flush instead cost mmap/ioctl calls that
+        // halved the frame rate.
+        struct TransferBuffer
+        {
+            SDL_GPUTransferBuffer* buffer;
+            uint32_t size;
+        };
+        constexpr uint32_t kTransferAge = 3;
+        std::vector<TransferBuffer> g_freeTransfers;
+        std::vector<TransferBuffer> g_frameTransfers[kTransferAge + 1];
+
+        SDL_GPUTransferBuffer* AcquireTransfer(uint32_t size)
+        {
+            std::vector<TransferBuffer>& used = g_frameTransfers[g_swaps % (kTransferAge + 1)];
+            // Smallest free buffer that fits.
+            size_t best = g_freeTransfers.size();
+            for (size_t i = 0; i < g_freeTransfers.size(); i++)
+                if (g_freeTransfers[i].size >= size && (best == g_freeTransfers.size() || g_freeTransfers[i].size < g_freeTransfers[best].size))
+                    best = i;
+            if (best < g_freeTransfers.size())
+            {
+                used.push_back(g_freeTransfers[best]);
+                g_freeTransfers.erase(g_freeTransfers.begin() + best);
+                return used.back().buffer;
+            }
+            uint32_t capacity = std::max<uint32_t>(1u << 16, std::bit_ceil(size));
+            SDL_GPUTransferBufferCreateInfo info{ SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, capacity, 0 };
+            used.push_back({ SDL_CreateGPUTransferBuffer(g_device, &info), capacity });
+            return used.back().buffer;
+        }
+
+        // At a swap: buffers from kTransferAge frames ago become free.
+        void RetireTransfers()
+        {
+            std::vector<TransferBuffer>& oldest = g_frameTransfers[(g_swaps + 1) % (kTransferAge + 1)];
+            g_freeTransfers.insert(g_freeTransfers.end(), oldest.begin(), oldest.end());
+            oldest.clear();
+            // Don't hoard: past 512 free buffers (a few frames' worth; the
+            // menu flushes ~90 times a frame), release the largest.
+            while (g_freeTransfers.size() > 512)
+            {
+                auto largest = std::max_element(g_freeTransfers.begin(), g_freeTransfers.end(),
+                    [](const TransferBuffer& a, const TransferBuffer& b) { return a.size < b.size; });
+                SDL_ReleaseGPUTransferBuffer(g_device, largest->buffer);
+                g_freeTransfers.erase(largest);
+            }
+        }
 
         std::unordered_map<uint64_t, SDL_GPUGraphicsPipeline*> g_pipelines;
 
@@ -592,10 +688,11 @@ void main()
             return g_commands;
         }
 
-        void EnsureBuffer(SDL_GPUBuffer*& buffer, uint32_t& capacity, uint32_t size, SDL_GPUBufferUsageFlags usage)
+        // Returns true if the buffer was replaced (its old contents are gone).
+        bool EnsureBuffer(SDL_GPUBuffer*& buffer, uint32_t& capacity, uint32_t size, SDL_GPUBufferUsageFlags usage)
         {
             if (size <= capacity && buffer)
-                return;
+                return false;
             if (buffer)
                 SDL_ReleaseGPUBuffer(g_device, buffer);
             capacity = std::max<uint32_t>(size, capacity * 2);
@@ -604,6 +701,7 @@ void main()
             info.usage = usage;
             info.size = capacity;
             buffer = SDL_CreateGPUBuffer(g_device, &info);
+            return true;
         }
 
         // Records everything pending: one copy pass for the frame's vertex
@@ -615,34 +713,37 @@ void main()
                 return;
             SDL_GPUCommandBuffer* commands = Commands();
 
+            // Staged offsets already include the bases, so this flush's data
+            // goes to [base, base + size) of each buffer. A replaced buffer
+            // only needs to hold this flush's range: earlier passes keep
+            // the old one until they finish.
             uint32_t memoryBytes = uint32_t(std::max<size_t>(g_memoryStaging.size(), 1) * 4);
             uint32_t indexBytes = uint32_t(std::max<size_t>(g_indexStaging.size(), 1) * 4);
-            EnsureBuffer(g_memoryBuffer, g_memoryBufferSize, memoryBytes, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ);
-            EnsureBuffer(g_indexBuffer, g_indexBufferSize, indexBytes, SDL_GPU_BUFFERUSAGE_INDEX);
-            uint32_t transferBytes = memoryBytes + indexBytes;
-            if (transferBytes > g_transferSize || !g_transfer)
-            {
-                if (g_transfer)
-                    SDL_ReleaseGPUTransferBuffer(g_device, g_transfer);
-                g_transferSize = std::max(transferBytes, g_transferSize * 2);
-                SDL_GPUTransferBufferCreateInfo info{};
-                info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-                info.size = g_transferSize;
-                g_transfer = SDL_CreateGPUTransferBuffer(g_device, &info);
-            }
-            uint8_t* mapped = static_cast<uint8_t*>(SDL_MapGPUTransferBuffer(g_device, g_transfer, true));
+            bool memoryCycle = g_memoryBase == 0;
+            bool indexCycle = g_indexBase == 0;
+            if (EnsureBuffer(g_memoryBuffer, g_memoryBufferSize, g_memoryBase * 4 + memoryBytes, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ))
+                memoryCycle = false;
+            if (EnsureBuffer(g_indexBuffer, g_indexBufferSize, g_indexBase * 4 + indexBytes, SDL_GPU_BUFFERUSAGE_INDEX))
+                indexCycle = false;
+            // Cycling is only a safety net: the buffer is kTransferAge frames
+            // old, so normally no longer in use.
+            SDL_GPUTransferBuffer* transfer = AcquireTransfer(memoryBytes + indexBytes);
+            uint8_t* mapped = static_cast<uint8_t*>(SDL_MapGPUTransferBuffer(g_device, transfer, true));
             memcpy(mapped, g_memoryStaging.data(), g_memoryStaging.size() * 4);
             memcpy(mapped + memoryBytes, g_indexStaging.data(), g_indexStaging.size() * 4);
-            SDL_UnmapGPUTransferBuffer(g_device, g_transfer);
+            SDL_UnmapGPUTransferBuffer(g_device, transfer);
 
             SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commands);
-            SDL_GPUTransferBufferLocation source{ g_transfer, 0 };
-            SDL_GPUBufferRegion destination{ g_memoryBuffer, 0, memoryBytes };
-            SDL_UploadToGPUBuffer(copy, &source, &destination, true);
+            SDL_GPUTransferBufferLocation source{ transfer, 0 };
+            SDL_GPUBufferRegion destination{ g_memoryBuffer, g_memoryBase * 4, memoryBytes };
+            SDL_UploadToGPUBuffer(copy, &source, &destination, memoryCycle);
             source.offset = memoryBytes;
-            destination = { g_indexBuffer, 0, indexBytes };
-            SDL_UploadToGPUBuffer(copy, &source, &destination, true);
+            destination = { g_indexBuffer, g_indexBase * 4, indexBytes };
+            SDL_UploadToGPUBuffer(copy, &source, &destination, indexCycle);
             SDL_EndGPUCopyPass(copy);
+            // Keep offsets 16-byte aligned.
+            g_memoryBase = (g_memoryBase * 4 + memoryBytes + 15) / 4 & ~3u;
+            g_indexBase = (g_indexBase * 4 + indexBytes + 15) / 4 & ~3u;
 
             SDL_GPUColorTargetInfo colors[4]{};
             for (uint32_t i = 0; i < g_targets.colorCount; i++)
@@ -758,6 +859,7 @@ void main()
             if (it != g_pipelines.end())
                 return it->second;
 
+            SlowTimer timer{ "pipeline", vs->cacheName + " " + ps->cacheName };
             SDL_GPUColorTargetDescription descriptions[4]{};
             for (uint32_t i = 0; i < targets.colorCount; i++)
             {
@@ -959,7 +1061,7 @@ void main()
                     entry[0] = staged->second;
                     continue;
                 }
-                entry[0] = uint32_t(g_memoryStaging.size());
+                entry[0] = g_memoryBase + uint32_t(g_memoryStaging.size());
                 g_stagedRanges.emplace(key, entry[0]);
                 size_t start = g_memoryStaging.size();
                 g_memoryStaging.resize(start + dwords);
@@ -984,61 +1086,109 @@ void main()
             SDL_GPUTexture* texture = nullptr;
             uint64_t contentHash = 0;
             uint32_t checkedFrame = ~0u;
+            uint32_t changedFrame = ~0u;  // last frame its contents changed (videos, render-to-memory)
         };
         std::unordered_map<uint64_t, CachedTexture> g_textures;  // fetch constant layout -> texture
         std::unordered_map<uint32_t, SDL_GPUSampler*> g_samplers;  // clamp/filter modes -> sampler
 
-        uint64_t HashMemory(const uint8_t* data, size_t size)
-        {
-            uint64_t hash = 0xCBF29CE484222325ull;
-            size_t words = size / 8;
-            for (size_t i = 0; i < words; i++)
-            {
-                uint64_t word;
-                memcpy(&word, data + i * 8, 8);
-                hash = (hash ^ word) * 0x100000001B3ull;
-            }
-            return Hash(data + words * 8, size - words * 8, hash);
-        }
+        uint64_t HashMemory(const uint8_t* data, size_t size) { return Hash(data, size); }
 
-        SDL_GPUTexture* MemoryTexture(const texture::FetchConstant& constant)
+        // layers: a stacked texture's layers as the slices of a 3D host texture
+        // (for shaders that sample it as 3D-or-stacked); otherwise its first
+        // layer as a 2D texture.
+        SDL_GPUTexture* MemoryTexture(const texture::FetchConstant& constant, bool layers = false)
         {
             const texture::FetchConstant fetch = texture::LargestUsableLevel(constant);
-            // Cube maps: six 2D faces one after another.
+            // Cube maps: six 2D faces one after another; stacked textures the
+            // same with their layers.
             bool cube = fetch.dimension == 3;
-            uint32_t faces = cube ? 6 : 1;
+            bool volume = layers && fetch.depth > 1;
+            uint32_t faces = cube ? 6 : volume ? fetch.depth : 1;
             uint32_t faceSize = texture::GuestSize(fetch);
-            uint32_t stride = cube ? texture::FaceStride(fetch) : faceSize;
+            uint32_t stride = (cube || volume) ? texture::FaceStride(fetch) : faceSize;
             uint32_t size = stride * (faces - 1) + faceSize;
             if (!faceSize || fetch.address + uint64_t(size) > 0x20000000)
                 return nullptr;
+            // Mip levels of 2D textures: without them distant surfaces
+            // aliased into high-contrast noise (Halo's detail maps above
+            // all). Only when the base level is the fetch constant's own.
+            std::vector<texture::FetchConstant> mips;
+            if (!cube && !volume && fetch.address == constant.address)
+            {
+                mips = texture::MipLevels(constant);
+                // Keep the levels that lie in memory and that the host
+                // texture can hold.
+                uint32_t hostLevels = 1;
+                while ((std::max(fetch.width, fetch.height) >> hostLevels) != 0)
+                    hostLevels++;
+                if (mips.size() + 1 > hostLevels)
+                    mips.resize(hostLevels - 1);
+                for (size_t i = 0; i < mips.size(); i++)
+                    if (mips[i].address + uint64_t(texture::GuestSize(mips[i])) > 0x20000000)
+                    {
+                        mips.resize(i);
+                        break;
+                    }
+            }
+            uint32_t levels = uint32_t(mips.size()) + 1;
             uint32_t layout[] = { fetch.address, fetch.format, fetch.endian, fetch.width, fetch.height, fetch.pitch,
-                uint32_t(fetch.tiled) | (uint32_t(fetch.packedMips) << 1) | (uint32_t(cube) << 2) };
-            CachedTexture& cached = g_textures[Hash(layout, sizeof(layout))];
-            if (cached.checkedFrame == g_swaps && cached.texture)
+                uint32_t(fetch.tiled) | (uint32_t(fetch.packedMips) << 1) | (uint32_t(cube) << 2) | (uint32_t(volume) << 3) |
+                    (faces << 8) | (levels << 20),
+                levels > 1 ? constant.mipAddress : 0 };
+            uint64_t layoutHash = Hash(layout, sizeof(layout));
+            CachedTexture& cached = g_textures[layoutHash];
+            // Contents are re-checked when a texture is used 8 or more frames
+            // after its last check (staggered by when each was first used):
+            // hashing every bound texture every frame cost milliseconds, and
+            // streamed-in data showing up a few frames later is harmless.
+            // (Checking on frames where (frame + hash) % 8 == 0 instead never
+            // refreshed a texture used only every other frame when the hash
+            // had the wrong parity: the Halo 3 logo screen's second Bink
+            // buffer stayed black and flickered.)
+            // Textures that changed recently (video frames the CPU decodes)
+            // are checked every frame.
+            constexpr uint32_t kCheckInterval = 8;
+            // Recently means within the last second: Bink double-buffers
+            // its frames, and a buffer also sampled while it holds the
+            // previous frame must not count as settled (stale frames
+            // flickered in the splash videos).
+            constexpr uint32_t kRecentFrames = 60;
+            bool recentlyChanged = cached.changedFrame != ~0u && g_swaps - cached.changedFrame < kRecentFrames;
+            if (cached.texture && (cached.checkedFrame == g_swaps ||
+                                      (!recentlyChanged && g_swaps - cached.checkedFrame < kCheckInterval)))
                 return cached.texture;
             cached.checkedFrame = g_swaps;
             const uint8_t* guest = GuestPtr<uint8_t>(PhysicalToGuest(fetch.address));
             uint64_t contentHash = HashMemory(guest, size);
+            if (cached.texture && contentHash != cached.contentHash)
+                cached.changedFrame = g_swaps;
             if (cached.texture && contentHash == cached.contentHash)
                 return cached.texture;
 
-            texture::Decoded decodedFaces[6];
+            SlowTimer timer{ "texture" };
+            std::vector<texture::Decoded> decodedFaces(faces);
             for (uint32_t face = 0; face < faces; face++)
                 if (!texture::Decode(fetch, guest + size_t(face) * stride, decodedFaces[face]))
                     return nullptr;
             const texture::Decoded& decoded = decodedFaces[0];
+            std::vector<texture::Decoded> decodedMips(mips.size());
+            for (size_t i = 0; i < mips.size(); i++)
+                if (!texture::Decode(mips[i], GuestPtr<uint8_t>(PhysicalToGuest(mips[i].address)), decodedMips[i]))
+                    return nullptr;
             if (!cached.texture)
             {
                 SDL_GPUTextureCreateInfo info{};
-                info.type = cube ? SDL_GPU_TEXTURETYPE_CUBE : SDL_GPU_TEXTURETYPE_2D;
+                info.type = cube ? SDL_GPU_TEXTURETYPE_CUBE : volume ? SDL_GPU_TEXTURETYPE_3D : SDL_GPU_TEXTURETYPE_2D;
                 info.format = decoded.format;
                 info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
                 info.width = decoded.width;
                 info.height = decoded.height;
                 info.layer_count_or_depth = faces;
-                info.num_levels = 1;
+                info.num_levels = levels;
                 cached.texture = SDL_CreateGPUTexture(g_device, &info);
+                // New textures (a video's first frames, data still streaming
+                // in) are watched like ones that just changed.
+                cached.changedFrame = g_swaps;
                 if (!cached.texture)
                 {
                     LogOnce("texture creation failed (format " + std::to_string(fetch.format) + "): " + SDL_GetError());
@@ -1048,11 +1198,20 @@ void main()
             cached.contentHash = contentHash;
 
             uint32_t faceBytes = uint32_t(decoded.data.size());
-            SDL_GPUTransferBufferCreateInfo transferInfo{ SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, faceBytes * faces, 0 };
+            uint32_t mipBytes = 0;
+            for (const texture::Decoded& mip : decodedMips)
+                mipBytes += uint32_t(mip.data.size());
+            SDL_GPUTransferBufferCreateInfo transferInfo{ SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, faceBytes * faces + mipBytes, 0 };
             SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(g_device, &transferInfo);
             uint8_t* mapped = static_cast<uint8_t*>(SDL_MapGPUTransferBuffer(g_device, transfer, false));
             for (uint32_t face = 0; face < faces; face++)
                 memcpy(mapped + size_t(face) * faceBytes, decodedFaces[face].data.data(), faceBytes);
+            uint32_t mipOffset = faceBytes * faces;
+            for (const texture::Decoded& mip : decodedMips)
+            {
+                memcpy(mapped + mipOffset, mip.data.data(), mip.data.size());
+                mipOffset += uint32_t(mip.data.size());
+            }
             SDL_UnmapGPUTransferBuffer(g_device, transfer);
             SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(Commands());
             for (uint32_t face = 0; face < faces; face++)
@@ -1060,11 +1219,31 @@ void main()
                 SDL_GPUTextureTransferInfo source{ transfer, face * faceBytes, decoded.rowTexels, decoded.height };
                 SDL_GPUTextureRegion region{};
                 region.texture = cached.texture;
-                region.layer = face;
+                if (volume)
+                    region.z = face;
+                else
+                    region.layer = face;
                 region.w = decoded.width;
                 region.h = decoded.height;
                 region.d = 1;
                 SDL_UploadToGPUTexture(copy, &source, &region, false);
+            }
+            mipOffset = faceBytes * faces;
+            for (size_t i = 0; i < decodedMips.size(); i++)
+            {
+                const texture::Decoded& mip = decodedMips[i];
+                uint32_t level = uint32_t(i) + 1;
+                SDL_GPUTextureTransferInfo source{ transfer, mipOffset, mip.rowTexels, mip.height };
+                SDL_GPUTextureRegion region{};
+                region.texture = cached.texture;
+                region.mip_level = level;
+                // The host level's size; compressed levels decode to whole
+                // blocks, which may be larger.
+                region.w = std::min(mip.width, std::max(1u, decoded.width >> level));
+                region.h = std::min(mip.height, std::max(1u, decoded.height >> level));
+                region.d = 1;
+                SDL_UploadToGPUTexture(copy, &source, &region, false);
+                mipOffset += uint32_t(mip.data.size());
             }
             SDL_EndGPUCopyPass(copy);
             SDL_ReleaseGPUTransferBuffer(g_device, transfer);
@@ -1073,7 +1252,9 @@ void main()
 
         SDL_GPUSampler* SamplerFor(const texture::FetchConstant& fetch)
         {
-            uint32_t key = fetch.clampX | (fetch.clampY << 3) | (fetch.clampZ << 6) | (fetch.magFilter << 9) | (fetch.minFilter << 11);
+            uint32_t aniso = fetch.anisoFilter >= 1 && fetch.anisoFilter <= 5 ? 1u << (fetch.anisoFilter - 1) : 1;
+            uint32_t key = fetch.clampX | (fetch.clampY << 3) | (fetch.clampZ << 6) | (fetch.magFilter << 9) | (fetch.minFilter << 11) |
+                (fetch.mipFilter << 13) | (aniso << 16);
             SDL_GPUSampler*& sampler = g_samplers[key];
             if (sampler)
                 return sampler;
@@ -1087,7 +1268,14 @@ void main()
             SDL_GPUSamplerCreateInfo info{};
             info.mag_filter = fetch.magFilter == 0 ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
             info.min_filter = fetch.minFilter == 0 ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
-            info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+            // Mip filter: point, linear, or base level only.
+            info.mipmap_mode = fetch.mipFilter == 1 ? SDL_GPU_SAMPLERMIPMAPMODE_LINEAR : SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+            info.max_lod = fetch.mipFilter == 2 ? 0.0f : 1000.0f;
+            if (aniso > 1)
+            {
+                info.enable_anisotropy = true;
+                info.max_anisotropy = float(aniso);
+            }
             info.address_mode_u = address(fetch.clampX);
             info.address_mode_v = address(fetch.clampY);
             info.address_mode_w = address(fetch.clampZ);
@@ -1218,6 +1406,9 @@ void main()
         };
         std::unordered_map<uint64_t, SubTexture> g_subTextures;
 
+        void DumpTexture(SDL_GPUTexture* texture, uint32_t width, uint32_t height, const char* path, SDL_GPUTextureFormat format);
+        uint32_t EnvNumber(const char* name);
+
         SDL_GPUTexture* ResolvedView(ResolvedTexture& resolved, const texture::FetchConstant& fetch, uint32_t address)
         {
             uint32_t hostWidth = std::max(resolved.pitch, 32u), hostHeight = std::max(resolved.height, 32u);
@@ -1265,6 +1456,14 @@ void main()
             }
             sub.source = resolved.texture;
             sub.generation = resolved.generation;
+            // H3_DUMP_VIEWS (with H3_DUMP_FRAME): save each copied-out view.
+            static const bool dumpViews = getenv("H3_DUMP_VIEWS") != nullptr;
+            if (dumpViews && g_swaps + 1 == EnvNumber("H3_DUMP_FRAME"))
+            {
+                char path[96];
+                snprintf(path, sizeof(path), "view_%u_%04u_%08X_%ux%u.png", g_swaps + 1, g_frameDraws, address, width, height);
+                DumpTexture(sub.texture, width, height, path, format);
+            }
             return sub.texture;
         }
 
@@ -1292,11 +1491,38 @@ void main()
                             sampler = SamplerFor(fetch);
                             uint32_t* constants = system.textures[binding.fetchConstant & 31];
                             constants[0] = texture::HostSwizzle(fetch);
-                            constants[1] = fetch.signs;
+                            constants[3] = texture::SignPrecision(fetch);
+                            constants[1] = constants[3] ? fetch.signs : 0;
                             constants[2] = uint32_t(fetch.expAdjust);
-                            constants[3] = 1;
+                            constants[3] = std::max(constants[3], 1u);
                         }
                     }
+                }
+                else if (binding.dimension == ucode::TextureDimension::D3OrStacked)
+                {
+                    // Stacked (2D array) textures, as 3D host textures. True 3D
+                    // textures tile differently in memory and aren't decoded
+                    // yet.
+                    uint32_t words[6];
+                    for (uint32_t i = 0; i < 6; i++)
+                        words[i] = ReadRegister(kRegShaderConstantFetch + binding.fetchConstant * 6 + i);
+                    texture::FetchConstant fetch = texture::ParseFetchConstant(words);
+                    if (fetch.valid && fetch.dimension == 1 && !g_noTextures && !FindResolved(fetch.address))
+                    {
+                        if (SDL_GPUTexture* decoded = MemoryTexture(fetch, true))
+                        {
+                            texture = decoded;
+                            sampler = SamplerFor(fetch);
+                            uint32_t* constants = system.textures[binding.fetchConstant & 31];
+                            constants[0] = texture::HostSwizzle(fetch);
+                            constants[3] = texture::SignPrecision(fetch);
+                            constants[1] = constants[3] ? fetch.signs : 0;
+                            constants[2] = uint32_t(fetch.expAdjust);
+                            constants[3] = std::max(constants[3], 1u);
+                        }
+                    }
+                    else if (fetch.valid && fetch.dimension == 2)
+                        LogOnce("3D textures from memory aren't supported yet");
                 }
                 else if (binding.dimension == ucode::TextureDimension::D2 || binding.dimension == ucode::TextureDimension::D1)
                 {
@@ -1329,9 +1555,10 @@ void main()
                             sampler = SamplerFor(fetch);
                             uint32_t* constants = system.textures[binding.fetchConstant & 31];
                             constants[0] = texture::HostSwizzle(fetch);
-                            constants[1] = fetch.signs;
+                            constants[3] = texture::SignPrecision(fetch);
+                            constants[1] = constants[3] ? fetch.signs : 0;
                             constants[2] = uint32_t(fetch.expAdjust);
-                            constants[3] = 1;
+                            constants[3] = std::max(constants[3], 1u);
                         }
                         else
                             LogOnce("unsupported texture format " + std::to_string(fetch.format));
@@ -1431,13 +1658,14 @@ void main()
             if (current && current != target)
             {
                 Flush();
-                // 8_8_8_8_GAMMA keeps linear values on the host, other
-                // 8-bit formats the stored (encoded) ones.
+                // 8_8_8_8_GAMMA keeps linear values on the host (as 16-bit
+                // floats), other 8-bit formats the stored (encoded) ones.
                 bool fromGamma = current->xenosFormat == 1, toGamma = target->xenosFormat == 1;
+                SDL_GPUTextureFormat encodedFormat = fromGamma ? target->format : current->format;
                 if (Is7e3(current->xenosFormat) && !IsFloatHostFormat(target->format))
                     ConvertCopy(current->texture, target->texture, target->format, kRenderTargetWidth, kRenderTargetHeight, 0, 0, 0,
                         0, kRenderTargetWidth, kRenderTargetHeight, CopyMode::FloatTo7e3);
-                else if (fromGamma != toGamma && !IsFloatHostFormat(target->format) && !IsFloatHostFormat(current->format))
+                else if (fromGamma != toGamma && !IsFloatHostFormat(encodedFormat))
                     ConvertCopy(current->texture, target->texture, target->format, kRenderTargetWidth, kRenderTargetHeight, 0, 0, 0,
                         0, kRenderTargetWidth, kRenderTargetHeight, fromGamma ? CopyMode::LinearToGamma : CopyMode::GammaToLinear);
                 else
@@ -1534,7 +1762,10 @@ void main()
                         if (sign)
                             value = -value;
                         sum[c] += value;
-                        out[i * 4 + c] = uint8_t(std::clamp(value, 0.0f, 1.0f) * 255.0f);
+                        // H3_DUMP_SCALE=<1/n>: divide colors by n first (render
+                        // targets with an exponent bias hold values far above 1).
+                        static const float dumpScale = getenv("H3_DUMP_SCALE") ? 1.0f / float(atof(getenv("H3_DUMP_SCALE"))) : 1.0f;
+                        out[i * 4 + c] = uint8_t(std::clamp(c < 3 ? value * dumpScale : value, 0.0f, 1.0f) * 255.0f);
                     }
                 fprintf(stderr, "[render] %s average %g %g %g %g\n", path, sum[0] / (width * height), sum[1] / (width * height),
                     sum[2] / (width * height), sum[3] / (width * height));
@@ -1546,7 +1777,7 @@ void main()
             {
                 uint32_t v = texels[i];
                 if (format == SDL_GPU_TEXTUREFORMAT_R10G10B10A2_UNORM)
-                    v = ((v >> 2) & 0xFF) | (((v >> 12) & 0xFF) << 8) | (((v >> 22) & 0xFF) << 16) | 0xFF000000u;
+                    v = ((v >> 2) & 0xFF) | (((v >> 12) & 0xFF) << 8) | (((v >> 22) & 0xFF) << 16) | ((v >> 30) * 85u << 24);
                 else if (format == SDL_GPU_TEXTUREFORMAT_R32_FLOAT)
                 {
                     float f;
@@ -1689,7 +1920,9 @@ void main()
             Flush();
             char path[64];
             snprintf(path, sizeof(path), "draw_%u_%04u.png", dumpFrame, g_frameDraws);
-            DumpTexture(g_targets.color[index], 1152, 640, path, g_targets.colorFormat[index]);
+            // Host targets are in sample space: a 4x surface covers 2x2
+            // texels per pixel.
+            DumpTexture(g_targets.color[index], 2304, 1280, path, g_targets.colorFormat[index]);
         }
     }
 
@@ -1818,12 +2051,16 @@ void main()
 
         // Constants: vertex shaders use float constants 0-255, pixel shaders
         // 256-511.
-        for (uint32_t i = 0; i < 256 * 4; i++)
         {
-            uint32_t v = ReadRegister(kRegShaderConstantAlu + i);
-            uint32_t p = ReadRegister(kRegShaderConstantAlu + 256 * 4 + i);
-            memcpy(&draw->vertexConstants[i], &v, 4);
-            memcpy(&draw->pixelConstants[i], &p, 4);
+            const uint32_t* alu = GuestPtr<uint32_t>(kGpuRegisterBase + kRegShaderConstantAlu * 4);  // big-endian words
+            uint32_t vertex[256 * 4], pixel[256 * 4];
+            for (uint32_t i = 0; i < 256 * 4; i++)
+            {
+                vertex[i] = __builtin_bswap32(alu[i]);
+                pixel[i] = __builtin_bswap32(alu[256 * 4 + i]);
+            }
+            memcpy(draw->vertexConstants, vertex, sizeof(vertex));
+            memcpy(draw->pixelConstants, pixel, sizeof(pixel));
         }
         SystemConstants& system = draw->system;
         memset(&system, 0, sizeof(system));
@@ -1864,6 +2101,7 @@ void main()
         uint32_t surfaceMsaa = (ReadRegister(kRegRbSurfaceInfo) >> 16) & 3;
         float gridX = float(SamplesX(surfaceMsaa)), gridY = float(SamplesY(surfaceMsaa));
         float width = float(kRenderTargetWidth), height = float(kRenderTargetHeight);
+        system.pixelScale[0] = gridX, system.pixelScale[1] = gridY;
         system.ndcScale[0] = xScale * gridX * 2.0f / width;
         system.ndcOffset[0] = (xOffset + windowX) * gridX * 2.0f / width - 1.0f;
         system.ndcScale[1] = -yScale * gridY * 2.0f / height;
@@ -1936,6 +2174,9 @@ void main()
         {
             int32_t bias = int32_t((ReadRegister(kRegColorInfo[i]) >> 20) << 26) >> 26;
             system.colorExpBias[i] = std::ldexp(1.0f, bias);
+            // 8_8_8_8_GAMMA targets are host floats; the console clamps.
+            if (((ReadRegister(kRegColorInfo[i]) >> 16) & 0xF) == 1)
+                system.flags |= 0x1000u << i;
         }
         // Alpha test: RB_COLORCONTROL function (bits 0-2) and enable (bit 3).
         uint32_t colorControl = ReadRegister(kRegRbColorControl);
@@ -1953,7 +2194,7 @@ void main()
         if (primitive == kPrimRectangleList)
         {
             system.flags |= 1;
-            system.rectIndices = uint32_t(g_memoryStaging.size());
+            system.rectIndices = g_memoryBase + uint32_t(g_memoryStaging.size());
             uint32_t rects = uint32_t(indices.size() / 3);
             g_memoryStaging.insert(g_memoryStaging.end(), indices.begin(), indices.begin() + rects * 3);
             draw->indexed = false;
@@ -1963,9 +2204,10 @@ void main()
         {
             uint32_t resetIndex = ReadRegister(kRegVgtMultiPrimIbResetIndx);
             bool resetEnabled = (modeControl >> 21) & 1;
-            draw->firstIndex = uint32_t(g_indexStaging.size());
+            uint32_t first = uint32_t(g_indexStaging.size());
             AppendTriangles(g_indexStaging, indices, primitive, resetIndex, resetEnabled);
-            draw->count = uint32_t(g_indexStaging.size()) - draw->firstIndex;
+            draw->firstIndex = g_indexBase + first;
+            draw->count = uint32_t(g_indexStaging.size()) - first;
         }
         if (draw->count == 0)
             return;
@@ -2107,8 +2349,9 @@ void main()
         }
 
         if (getenv("H3_LOG_RESOLVES"))
-            fprintf(stderr, "[render] f%u r%u resolve rt%u %d,%d-%d,%d -> %08X (pitch reg %08X fmt %u info %08X) tex %08X %ux%u at %u,%u\n", g_swaps + 1, g_frameResolves + 1, source, x0, y0,
-                x1, y1, destBase, destPitchReg, destFormat, destInfo, texture->base, texture->pitch, texture->height, destX, destY);
+            fprintf(stderr, "[render] f%u r%u resolve rt%u %d,%d-%d,%d -> %08X (pitch reg %08X fmt %u info %08X) tex %08X %ux%u at %u,%u surface %08X\n", g_swaps + 1, g_frameResolves + 1, source, x0, y0,
+                x1, y1, destBase, destPitchReg, destFormat, destInfo, texture->base, texture->pitch, texture->height, destX, destY,
+                ReadRegister(kRegRbSurfaceInfo));
         Flush();
         uint32_t textureWidth = std::max(texture->pitch, 32u), textureHeight = std::max(texture->height, 32u);
         int32_t sampleX0 = x0 * samplesX, sampleY0 = y0 * samplesY;
@@ -2158,6 +2401,13 @@ void main()
             else
                 snprintf(path, sizeof(path), "resolve_%u_%u.png", dumpFrame, dumpResolve);
             DumpTexture(texture->texture, texture->pitch, texture->height, path, texture->hostFormat);
+            // H3_DUMP_SOURCE: also the source render target (sample space).
+            if (getenv("H3_DUMP_SOURCE") && !depthSource && (target->format == SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM ||
+                    target->format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT))
+            {
+                snprintf(path, sizeof(path), "source_%u_%02u.png", dumpFrame, g_frameResolves);
+                DumpTexture(target->texture, 2304, 1280, path, target->format);
+            }
         }
     }
 
@@ -2180,9 +2430,36 @@ void main()
         }
         // H3_DUMP_FRAME=<n>: save the n-th presented frame as frame_<n>.png
         // (or, with H3_DUMP_ADDRESS, the resolved texture at that address).
-        // H3_SNAPSHOT_EVERY=<n>: save every n-th presented frame.
+        // H3_SNAPSHOT_EVERY=<n>: save every n-th presented frame (from frame
+        // H3_SNAPSHOT_FROM on).
         g_swaps++;
         g_frameResolves = 0;
+        // H3_DUMP_MEMORY=<frame>:<physical address>:<bytes>[,...]: save guest
+        // memory at that swap as mem_<frame>_<address>.bin.
+        if (const char* spec = getenv("H3_DUMP_MEMORY"))
+        {
+            for (const char* p = spec; *p;)
+            {
+                char* end;
+                uint32_t frameNumber = uint32_t(strtoul(p, &end, 0));
+                uint32_t address = *end == ':' ? uint32_t(strtoul(end + 1, &end, 16)) : 0;
+                uint32_t bytes = *end == ':' ? uint32_t(strtoul(end + 1, &end, 0)) : 0;
+                if (frameNumber == g_swaps && bytes)
+                {
+                    char path[64];
+                    snprintf(path, sizeof(path), "mem_%u_%08X.bin", g_swaps, address);
+                    if (FILE* file = fopen(path, "wb"))
+                    {
+                        fwrite(GuestPtr<uint8_t>(PhysicalToGuest(address)), 1, bytes, file);
+                        fclose(file);
+                    }
+                }
+                p = *end == ',' ? end + 1 : end;
+                if (end == p && *p) break;
+            }
+        }
+        g_memoryBase = g_indexBase = 0;
+        RetireTransfers();
         PollWriteBacks();
         // H3_LOG_FPS: how many pipelines and shaders exist (creating them
         // stalls this thread).
@@ -2192,7 +2469,8 @@ void main()
                 g_textures.size());
         static const uint32_t dumpFrame = EnvNumber("H3_DUMP_FRAME");
         static const uint32_t snapshotEvery = EnvNumber("H3_SNAPSHOT_EVERY");
-        bool snapshot = snapshotEvery != 0 && g_swaps % snapshotEvery == 0;
+        static const uint32_t snapshotFrom = EnvNumber("H3_SNAPSHOT_FROM");
+        bool snapshot = snapshotEvery != 0 && g_swaps % snapshotEvery == 0 && g_swaps >= snapshotFrom;
         if (((dumpFrame != 0 && g_swaps == dumpFrame) || snapshot) && !getenv("H3_DUMP_RESOLVE") && frame.texture)
         {
             uint32_t w = frame.width, h = frame.height;

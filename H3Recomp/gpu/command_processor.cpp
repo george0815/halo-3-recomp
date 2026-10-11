@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -96,6 +97,26 @@ namespace h3::gpu
 
 
         const bool g_log = getenv("H3_LOG_GPU") != nullptr;
+
+        // H3_LOG_WAITS: time WAIT_REG_MEM spends waiting, per address
+        // (memory addresses have bit 31 set), reported every 150 swaps.
+        const bool g_logWaits = getenv("H3_LOG_WAITS") != nullptr;
+        struct WaitStat
+        {
+            double seconds = 0;
+            uint32_t count = 0;
+        };
+        std::map<uint32_t, WaitStat> g_waitStats;
+
+        void ReportWaitStats()
+        {
+            fprintf(stderr, "[gpu waits]");
+            for (const auto& [address, stat] : g_waitStats)
+                if (stat.seconds > 0.01)
+                    fprintf(stderr, " %s %08X %.3f s/%u", (address >> 31) ? "mem" : "reg", address & 0x7FFFFFFF, stat.seconds, stat.count);
+            fprintf(stderr, "\n");
+            g_waitStats.clear();
+        }
 
         // GPU endian modes, in the low two bits of addresses the GPU writes.
         uint32_t GpuSwap(uint32_t value, uint32_t endian)
@@ -416,6 +437,12 @@ namespace h3::gpu
                     }
                     std::this_thread::yield();
                 }
+                if (g_logWaits)
+                {
+                    WaitStat& stat = g_waitStats[address | ((waitInfo & 0x10) ? 0x80000000u : 0)];
+                    stat.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+                    stat.count++;
+                }
                 break;
             }
             case kOpRegRmw:
@@ -524,6 +551,9 @@ namespace h3::gpu
                 uint32_t width = reader.Read();
                 uint32_t height = reader.Read();
                 renderer::OnSwap(frontbuffer, width, height);
+                static uint32_t swaps = 0;
+                if (g_logWaits && ++swaps % 150 == 0)
+                    ReportWaitStats();
                 video::OnFramePresented(frame);
                 if (g_log && frame % 60 == 0)
                     fprintf(stderr, "[gpu] %u frames presented\n", frame);

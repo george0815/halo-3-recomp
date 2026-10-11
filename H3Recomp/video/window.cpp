@@ -18,6 +18,7 @@ namespace h3::debug
     extern std::atomic<uint32_t> g_traceFrame;
     void UpdateTraceWindow(uint32_t frame);
     void UpdateProfiler(uint32_t frame);
+    void UpdateWriteWatch(uint32_t frame);
 }
 
 namespace h3::kernel
@@ -116,6 +117,12 @@ namespace h3::video
 
     bool CreateMainWindow()
     {
+        // NVIDIA's on-disk pipeline cache is 256 MiB per application by
+        // default; the game's pipelines outgrow it, and evicted ones cost
+        // up to seconds to rebuild on the next run. Read when the driver
+        // loads, so set it first (a value the user set wins).
+        SDL_setenv_unsafe("__GL_SHADER_DISK_CACHE_SIZE", "4294967296", 0);
+
         if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMEPAD))
         {
             fprintf(stderr, "[video] SDL_Init failed: %s\n", SDL_GetError());
@@ -242,5 +249,6 @@ namespace h3::video
         debug::g_traceFrame.store(frame);
         debug::UpdateTraceWindow(frame);
         debug::UpdateProfiler(frame);
+        debug::UpdateWriteWatch(frame);
     }
 }

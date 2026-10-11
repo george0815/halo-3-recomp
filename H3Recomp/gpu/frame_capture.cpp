@@ -5,6 +5,8 @@
 #include "gpu/texture.h"
 #include "memory.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -119,14 +121,37 @@ namespace h3::gpu::capture
             return;
         }
 
+        // Small auto-indexed draws (UI quads): vertex fetch constant 95's
+        // data as floats (byte-swapped).
+        if (((initiator >> 6) & 3) == 2 && (initiator >> 16) <= 6)
+        {
+            uint32_t w0 = ReadRegister(kRegShaderConstantFetch + 95 * 2), w1 = ReadRegister(kRegShaderConstantFetch + 95 * 2 + 1);
+            uint32_t dwords = std::min((w1 >> 2) & 0xFFFFFF, 32u);
+            if ((w0 & 3) == 3 && (w0 & ~3u) != 0)
+            {
+                const uint32_t* data = GuestPtr<uint32_t>(PhysicalToGuest(w0 & ~3u));
+                fprintf(out, "  vertices");
+                for (uint32_t i = 0; i < dwords; i++)
+                {
+                    uint32_t raw = __builtin_bswap32(data[i]);
+                    float f;
+                    memcpy(&f, &raw, 4);
+                    if (f == f && std::fabs(f) < 1e6f)
+                        fprintf(out, " %g", f);
+                    else
+                        fprintf(out, " #%08X", raw);
+                }
+                fprintf(out, "\n");
+            }
+        }
         fprintf(out, "  vs %08X ps %08X program cntl %08X color info %08X depth info %08X modecontrol %08X\n",
             g_vertexShader, g_pixelShader, ReadRegister(kRegSqProgramCntl), ReadRegister(kRegRbColorInfo),
             ReadRegister(kRegRbDepthInfo), ReadRegister(kRegRbModeControl));
         fprintf(out, "  color1 %08X color2 %08X color3 %08X surface %08X\n", ReadRegister(kRegRbColor1Info), ReadRegister(kRegRbColor2Info),
             ReadRegister(kRegRbColor3Info), ReadRegister(kRegRbSurfaceInfo));
-        fprintf(out, "  window offset %08X mode cntl %08X vte cntl %08X depthcontrol %08X colormask %08X\n",
+        fprintf(out, "  window offset %08X mode cntl %08X vte cntl %08X depthcontrol %08X colormask %08X blend %08X\n",
             ReadRegister(kRegPaScWindowOffset), ReadRegister(0x2205), ReadRegister(0x2206), ReadRegister(0x2200),
-            ReadRegister(0x2104));
+            ReadRegister(0x2104), ReadRegister(0x2201));
         fprintf(out, "  viewport scale %g,%g,%g offset %g,%g,%g\n", RegFloat(kRegPaClVportXScale),
             RegFloat(kRegPaClVportYScale), RegFloat(kRegPaClVportZScale), RegFloat(kRegPaClVportXOffset),
             RegFloat(kRegPaClVportYOffset), RegFloat(kRegPaClVportZOffset));
@@ -138,7 +163,7 @@ namespace h3::gpu::capture
         fprintf(out, "\n");
         // Texture fetch constants of type texture:
         // slot:base:format:signs:exp:size:dimension (t = tiled, p = packed
-        // mips):mip levels@mip address.
+        // mips):mip levels@mip address:swizzle (x/y/z/w, 0, 1).
         fprintf(out, "  textures");
         for (uint32_t t = 0; t < 32; t++)
         {
@@ -150,9 +175,12 @@ namespace h3::gpu::capture
             for (uint32_t i = 0; i < 6; i++)
                 words[i] = ReadRegister(kRegShaderConstantFetch + t * 6 + i);
             texture::FetchConstant fetch = texture::ParseFetchConstant(words);
-            fprintf(out, " %u:%08X:%u:%02X:%d:%ux%u:d%u%s%s:m%u-%u@%08X", t, w1 & 0xFFFFF000, w1 & 0x3F, (w0 >> 2) & 0xFF,
+            char swizzle[5] = {};
+            for (uint32_t i = 0; i < 4; i++)
+                swizzle[i] = "xyzw01??"[(fetch.swizzle >> (3 * i)) & 7];
+            fprintf(out, " %u:%08X:%u:%02X:%d:%ux%u:d%u%s%s:m%u-%u@%08X:%s", t, w1 & 0xFFFFF000, w1 & 0x3F, (w0 >> 2) & 0xFF,
                 int32_t(w3 << 13) >> 26, fetch.width, fetch.height, fetch.dimension, fetch.tiled ? "t" : "", fetch.packedMips ? "p" : "",
-                fetch.mipMin, fetch.mipMax, fetch.mipAddress);
+                fetch.mipMin, fetch.mipMax, fetch.mipAddress, swizzle);
         }
         fprintf(out, "\n");
     }

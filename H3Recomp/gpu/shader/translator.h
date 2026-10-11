@@ -32,16 +32,24 @@ namespace h3::gpu::shader
     //   uint  flags;             bit 0: rectangle list (see kVertexMain),
     //                            bit 1: round depth to 24-bit float,
     //                            bits 2-4: PA_CL_VTE_CNTL XY/Z divided by W,
-    //                            W not reciprocal
+    //                            W not reciprocal,
+    //                            bits 12-15: clamp color output i to 0..1
+    //                            (fixed-point targets kept as host floats)
     //   uint  rect_indices;      rectangle lists: dword offset of the guest
     //                            vertex indices (3 per rectangle, host-endian)
     //                            in the vertex memory buffer
     //   uvec4 tfetch[32];        per texture fetch constant: x = swizzle,
     //                            y = sign modes, z = exp adjust, w = apply
-    //                            (textures decoded from memory)
+    //                            (textures decoded from memory; 2: signed
+    //                            components are 16-bit)
     //   vec4  color_exp_bias;    pixel shaders: color output i *= [i]
     //   float alpha_ref;         alpha test reference (flags bits 5-8:
     //                            function, enable)
+    //   float pixel_scale_x, _y; host texels per guest pixel (render
+    //                            targets are in sample space: 2 at 4x);
+    //                            pixel parameters are the guest pixel's
+    //                            integer position (D3D9 pixel centers),
+    //                            once per pixel as the console shades
     struct TextureBinding
     {
         uint32_t fetchConstant;

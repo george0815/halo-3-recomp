@@ -18,6 +18,8 @@ namespace h3::gpu::texture
         uint32_t format = 0;       // xenos::TextureFormat
         uint32_t endian = 0;       // 0 none, 1 8in16, 2 8in32, 3 16in32
         uint32_t width = 0, height = 0;
+        uint32_t depth = 1;        // 3D depth, or layers of a stacked (2D array) texture
+        bool stacked = false;      // 2D dimension holding several layers (Halo's lightmaps)
         uint32_t pitch = 0;        // texels per row
         bool tiled = false;
         bool packedMips = false;
@@ -29,6 +31,12 @@ namespace h3::gpu::texture
         uint32_t swizzle = 0;      // 3 bits per component: 0-3 = XYZW, 4 = 0, 5 = 1
         uint32_t signs = 0;        // 2 bits per component: 0 unsigned, 1 signed, 2 biased, 3 gamma
         int32_t expAdjust = 0;
+        uint32_t mipFilter = 0;    // 0 point, 1 linear, 2 base map only
+        uint32_t anisoFilter = 0;  // 0 off, n = 2^(n-1) samples
+        // A mip level inside a packed mip tail: its block offset in the
+        // tail's tile (set by MipLevels; otherwise Layout derives it).
+        bool explicitOffset = false;
+        uint32_t offsetX = 0, offsetY = 0;
     };
 
     FetchConstant ParseFetchConstant(const uint32_t words[6]);
@@ -50,7 +58,8 @@ namespace h3::gpu::texture
     // format isn't supported.
     uint32_t GuestSize(const FetchConstant& fetch);
 
-    // Distance between the faces of a cube map (each a 2D level, 4 KB aligned).
+    // Distance between the faces of a cube map, or the layers of a stacked
+    // texture (each a 2D level, 4 KB aligned).
     inline uint32_t FaceStride(const FetchConstant& fetch) { return (GuestSize(fetch) + 4095) & ~4095u; }
 
     bool Decode(const FetchConstant& fetch, const uint8_t* guest, Decoded& out);
@@ -59,6 +68,16 @@ namespace h3::gpu::texture
     // or two components come back as RRRR / RGGG (as on the console, per
     // Xenia), where the host texture has zeros.
     uint32_t HostSwizzle(const FetchConstant& fetch);
+
+    // How the shader applies the fetch constant's sign modes to the host
+    // texture's values: 0 = not at all (float formats, which have no sign
+    // modes), 1 = 8-bit components, 2 = 16-bit components.
+    uint32_t SignPrecision(const FetchConstant& fetch);
+
+    // Fetch constants for mip levels 1 on of a 2D texture (each decodes
+    // like a base level), as many as the fetch constant and the dimensions
+    // allow; empty if it has none.
+    std::vector<FetchConstant> MipLevels(const FetchConstant& fetch);
 
     // The largest level the sampler may use, as a base level of its own:
     // the fetch constant itself, or (when the sampler is limited to smaller

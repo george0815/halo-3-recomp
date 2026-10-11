@@ -217,6 +217,12 @@ namespace h3::gpu::texture
             if (fetch.tiled)
                 pitchBlocks = (pitchBlocks + 31) & ~31u;
             offsetX = offsetY = 0;
+            if (fetch.explicitOffset)
+            {
+                offsetX = fetch.offsetX;
+                offsetY = fetch.offsetY;
+                return;
+            }
             uint32_t log2w = Log2Ceil(fetch.width), log2h = Log2Ceil(fetch.height);
             if (fetch.packedMips && std::min(log2w, log2h) <= 4)
             {
@@ -255,6 +261,7 @@ namespace h3::gpu::texture
         fetch.format = words[1] & 0x3F;
         fetch.endian = (words[1] >> 6) & 3;
         fetch.address = words[1] & 0xFFFFF000;
+        fetch.stacked = (words[1] >> 10) & 1;
         fetch.dimension = (words[5] >> 9) & 3;
         fetch.packedMips = (words[5] >> 11) & 1;
         fetch.mipAddress = words[5] & 0xFFFFF000;
@@ -269,16 +276,21 @@ namespace h3::gpu::texture
         case 2:
             fetch.width = (words[2] & 0x7FF) + 1;
             fetch.height = ((words[2] >> 11) & 0x7FF) + 1;
+            fetch.depth = ((words[2] >> 22) & 0x3FF) + 1;
             break;
         default:
             fetch.width = (words[2] & 0x1FFF) + 1;
             fetch.height = ((words[2] >> 13) & 0x1FFF) + 1;
+            if (fetch.dimension == 1 && fetch.stacked)
+                fetch.depth = ((words[2] >> 26) & 0x3F) + 1;
             break;
         }
         fetch.swizzle = (words[3] >> 1) & 0xFFF;
         fetch.expAdjust = int32_t(words[3] << 13) >> 26;
         fetch.magFilter = (words[3] >> 19) & 3;
         fetch.minFilter = (words[3] >> 21) & 3;
+        fetch.mipFilter = (words[3] >> 23) & 3;
+        fetch.anisoFilter = (words[3] >> 25) & 7;
         return fetch;
     }
 
@@ -343,9 +355,81 @@ namespace h3::gpu::texture
         return true;
     }
 
+    std::vector<FetchConstant> MipLevels(const FetchConstant& fetch)
+    {
+        std::vector<FetchConstant> levels;
+        Format f = FormatFor(fetch.format);
+        if (!f.blockBytes || fetch.dimension != 1 || fetch.stacked || fetch.mipAddress == 0 || fetch.mipMax == 0)
+            return levels;
+        uint32_t log2w = Log2Ceil(fetch.width), log2h = Log2Ceil(fetch.height);
+        uint32_t maxLevel = std::min(fetch.mipMax, std::max(log2w, log2h));
+        // Levels from packedLevel on share one tile (Xenia's
+        // GetPackedMipLevel / GetPackedMipOffset).
+        uint32_t log2Min = std::min(log2w, log2h);
+        uint32_t packedLevel = fetch.packedMips ? (log2Min > 4 ? log2Min - 4 : 0) : ~0u;
+        auto alignUp = [](uint32_t value, uint32_t alignment) { return (value + alignment - 1) / alignment * alignment; };
+        // Level l's storage: power-of-two dimensions, 32x32-block aligned,
+        // linear rows 256-byte aligned, each level 4 KB aligned.
+        auto stridePitch = [&](uint32_t level) { return std::max(1u, (1u << log2w) >> level); };
+        auto strideBytes = [&](uint32_t level) {
+            uint32_t pitchBlocks = alignUp(alignUp(stridePitch(level), f.blockSize) / f.blockSize, 32);
+            uint32_t rowBytes = pitchBlocks * f.blockBytes;
+            if (!fetch.tiled)
+                rowBytes = alignUp(rowBytes, 256);
+            uint32_t rows = alignUp(alignUp(std::max(1u, (1u << log2h) >> level), f.blockSize) / f.blockSize, 32);
+            return alignUp(rowBytes * rows, 4096);
+        };
+        uint32_t address = fetch.mipAddress;
+        for (uint32_t level = 1; level <= maxLevel; level++)
+        {
+            FetchConstant mip = fetch;
+            mip.packedMips = false;
+            mip.mipMin = mip.mipMax = 0;
+            mip.width = std::max(1u, fetch.width >> level);
+            mip.height = std::max(1u, fetch.height >> level);
+            if (level >= packedLevel)
+            {
+                // The packed tail lives at the packed level's address with
+                // that level's pitch; each level at its own block offset.
+                uint32_t tailAddress = fetch.mipAddress;
+                for (uint32_t l = 1; l < std::max(packedLevel, 1u); l++)
+                    tailAddress += strideBytes(l);
+                mip.address = tailAddress;
+                mip.pitch = stridePitch(std::max(packedLevel, 1u));
+                uint32_t baseLevel = log2Min > 4 ? log2Min - 4 : 0;
+                uint32_t packedMip = level - baseLevel;
+                uint32_t x = 0, y = 0;
+                if (packedMip < 3)
+                {
+                    if (log2w > log2h)
+                        y = 16 >> packedMip;
+                    else
+                        x = 16 >> packedMip;
+                }
+                else if (log2w > log2h)
+                    x = (1u << (log2w - baseLevel)) >> (packedMip - 2);
+                else
+                    y = (1u << (log2h - baseLevel)) >> (packedMip - 2);
+                mip.explicitOffset = true;
+                mip.offsetX = x / f.blockSize;
+                mip.offsetY = y / f.blockSize;
+                // Tail levels need the tile's full 32-texel pitch.
+                mip.pitch = std::max(mip.pitch, 32u);
+            }
+            else
+            {
+                mip.address = address;
+                mip.pitch = stridePitch(level);
+                address += strideBytes(level);
+            }
+            levels.push_back(mip);
+        }
+        return levels;
+    }
+
     FetchConstant LargestUsableLevel(const FetchConstant& fetch)
     {
-        if (fetch.mipMin == 0 || fetch.mipAddress == 0 || fetch.dimension != 1)
+        if (fetch.mipMin == 0 || fetch.mipAddress == 0 || fetch.dimension != 1 || fetch.stacked)
             return fetch;
         // Levels 1 on start at the mip address, each with power-of-two
         // dimensions and 4 KB aligned. Levels of 16 texels or less share a
@@ -399,5 +483,21 @@ namespace h3::gpu::texture
                 swizzle = (swizzle & ~(7u << (3 * i))) | (last << (3 * i));
         }
         return swizzle;
+    }
+
+    uint32_t SignPrecision(const FetchConstant& fetch)
+    {
+        switch (fetch.format)
+        {
+        case 27: case 28: case 29:  // k_16_EXPAND, k_16_16_EXPAND, k_16_16_16_16_EXPAND
+        case 30: case 31: case 32:  // k_16_FLOAT, k_16_16_FLOAT, k_16_16_16_16_FLOAT
+        case 36: case 37: case 38:  // k_32_FLOAT, k_32_32_FLOAT, k_32_32_32_32_FLOAT
+        case 57:                    // k_32_32_32_FLOAT
+            return 0;
+        case 24: case 25: case 26:  // k_16, k_16_16, k_16_16_16_16
+            return 2;
+        default:
+            return 1;
+        }
     }
 }

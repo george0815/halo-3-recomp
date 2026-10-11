@@ -8,6 +8,7 @@ add_executable(H3Recomp
     input/input.cpp
     debug/first_calls.cpp
     debug/profiler.cpp
+    debug/write_watch.cpp
     hooks/fibers.cpp
     kernel/imports.cpp
     kernel/module.cpp
