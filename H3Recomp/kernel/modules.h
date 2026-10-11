@@ -1,3 +1,7 @@
+// Loading title modules: the executable (default.xex) and the DLLs it loads
+// with XexLoadImage. Registers their recompiled functions, resolves their
+// imports, and runs DLL entry points.
+
 #pragma once
 
 #include <cstdint>
@@ -41,6 +45,7 @@ namespace h3::kernel
     // imports. Also fills in g_module.
     bool LoadExecutable(const char* path);
 
+    // The module record for default.xex (valid after LoadExecutable).
     const Module& ExecutableModule();
 
     // XexLoadImage. Loads a DLL by guest path (game:\foo.dll), or bumps the

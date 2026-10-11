@@ -49,6 +49,9 @@ namespace h3::kernel
                 uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(sinceBoot).count());
         }
 
+        // Creates KeTimeStampBundle (interrupt time, system time, tick count) and a
+        // host thread that keeps it ticking every millisecond, as the console's clock
+        // interrupt does.
         void StartTimeStampBundle()
         {
             g_timeStampBundle = SystemAlloc(0x18);

@@ -73,7 +73,10 @@ Rough phases. Each one is a large amount of work; that's fine.
       depth word's bytes); fetch offsets; resolve exponent bias; gamma render
       targets (encoded on resolve, decoded on fetch, both approximated as
       gamma 2); render target exponent bias; alpha test; blend constants
-- [ ] Mipmaps, 3D textures, exact piecewise-linear gamma
+- [x] Mipmaps (2D textures, decoded from the guest's mip chain), stacked
+      (2D array) textures, anisotropic filtering
+- [ ] 3D textures, mips for cube/stacked textures, exact piecewise-linear
+      gamma
 - [ ] Culling, MSAA, point sizes
 - [ ] Batch draws better (one render pass per render target change today)
 - [x] EDRAM render targets and resolves (Halo 3 renders 1152x640 in four
@@ -87,7 +90,9 @@ Rough phases. Each one is a large amount of work; that's fine.
       nothing draws; see private notes)
 
 ## 4. Audio, input, saves
-- [ ] XMA decoding, XAudio
+- [x] XAudio render driver (`apu/audio_system.cpp`) and the XMA hardware
+      decoder (`apu/xma_decoder.cpp`, FFmpeg's xmaframes decoder built by
+      `tools/build_ffmpeg.sh`)
 - [x] XInput → keyboard and SDL gamepad (`H3Recomp/input/`); no rumble
 - [x] Local profile signed in on user 0 (`kernel/xam_user.cpp`), profile
       setting defaults, notifications, content packages as host folders

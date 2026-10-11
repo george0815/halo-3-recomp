@@ -15,6 +15,7 @@ using namespace h3;
 
 namespace
 {
+    // Calls f with each hardware context index of a voice.
     template <typename F>
     void ForEachContext(uint32_t voice, F&& f)
     {

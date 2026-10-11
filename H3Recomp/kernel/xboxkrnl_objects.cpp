@@ -26,6 +26,7 @@ namespace
     constexpr uint32_t kStatusSemaphoreLimitExceeded = 0xC0000047;
     constexpr uint32_t kStatusObjectNameExists = 0x40000000;
 
+    // Guest address of the calling thread's KTHREAD.
     uint32_t CurrentKThread()
     {
         return CurrentThread()->kthread;
@@ -83,6 +84,7 @@ namespace
         return status;
     }
 
+    // The Thread object for a guest KTHREAD pointer (or a handle to one), or null.
     std::shared_ptr<Thread> ThreadFromGuest(uint32_t kthread)
     {
         return std::dynamic_pointer_cast<Thread>(ObjectForGuest(kthread));

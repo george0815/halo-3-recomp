@@ -1,4 +1,12 @@
+// The command processor (see command_processor.h): reads PM4 packets from
+// the ring buffer on its own thread and executes them. Packet types:
+//   0  write consecutive registers      1  write two registers
+//   2  no-op                            3  an opcode (ExecuteType3)
+// Also delivers the GPU's interrupts (command processor and 60 Hz vblank)
+// to the game's graphics interrupt callback.
+
 #include "command_processor.h"
+#include "config/env.h"
 
 #include <ppc_recomp_shared.h>
 
@@ -8,6 +16,7 @@
 #include "frame_capture.h"
 #include "renderer.h"
 #include "registers.h"
+#include "xenos.h"
 
 #include <algorithm>
 #include <atomic>
@@ -39,7 +48,32 @@ namespace h3::gpu
         constexpr uint32_t kRegRbBcSpares = 0x0F0C;
         constexpr uint32_t kRegVblankStatus = 0x1951;  // bit 0: vblank pending
         constexpr uint32_t kRegD1ModeViewportSize = 0x1961;
-        constexpr uint32_t kRegisterCount = 0x8000;
+        constexpr uint32_t kRegisterCount = 0x8000;  // size of the register file (dwords)
+        // Register indices in REG_RMW / COND_WRITE are 13 bits.
+        constexpr uint32_t kPacketRegisterMask = 0x1FFF;
+
+        // WAIT_REG_MEM / COND_WRITE wait info bits.
+        constexpr uint32_t kWaitMemory = 0x10;   // poll memory rather than a register
+        constexpr uint32_t kWriteMemory = 0x100;  // COND_WRITE: write memory rather than a register
+        // Bit 31 of COHER_STATUS_HOST: a coherency request is pending.
+        constexpr uint32_t kCoherRequest = 0x80000000u;
+        // VGT_EVENT_INITIATOR's event type field.
+        constexpr uint32_t kEventTypeMask = 0x3F;
+
+        // The 360's CPU has 6 hardware threads; interrupts target any subset.
+        constexpr uint32_t kCpuCount = 6;
+        // Vblank interrupts are delivered on this hardware thread (as Xenia).
+        constexpr uint32_t kVblankCpu = 2;
+        constexpr int kVblankHz = 60;
+        // Stack for the guest threads that run interrupt callbacks.
+        constexpr uint32_t kInterruptStackSize = 64 * 1024;
+        // How long the ring buffer thread sleeps when there are no packets.
+        constexpr auto kIdleSleep = std::chrono::microseconds(100);
+        // A WAIT_REG_MEM still waiting after this long gets logged once.
+        constexpr auto kStuckWaitReport = std::chrono::seconds(1);
+        // H3_LOG_WAITS reports every this many swaps, waits over this long.
+        constexpr uint32_t kWaitReportInterval = 150;
+        constexpr double kWaitReportMinSeconds = 0.01;
 
         // Type-3 opcodes that matter to the CPU.
         enum : uint32_t
@@ -96,11 +130,11 @@ namespace h3::gpu
         std::atomic<uint32_t> g_interruptData{ 0 };
 
 
-        const bool g_log = getenv("H3_LOG_GPU") != nullptr;
+        const bool g_log = EnvFlag("H3_LOG_GPU");
 
         // H3_LOG_WAITS: time WAIT_REG_MEM spends waiting, per address
         // (memory addresses have bit 31 set), reported every 150 swaps.
-        const bool g_logWaits = getenv("H3_LOG_WAITS") != nullptr;
+        const bool g_logWaits = EnvFlag("H3_LOG_WAITS");
         struct WaitStat
         {
             double seconds = 0;
@@ -108,41 +142,33 @@ namespace h3::gpu
         };
         std::map<uint32_t, WaitStat> g_waitStats;
 
+        // Prints and resets the H3_LOG_WAITS totals.
         void ReportWaitStats()
         {
             fprintf(stderr, "[gpu waits]");
             for (const auto& [address, stat] : g_waitStats)
-                if (stat.seconds > 0.01)
+                if (stat.seconds > kWaitReportMinSeconds)
                     fprintf(stderr, " %s %08X %.3f s/%u", (address >> 31) ? "mem" : "reg", address & 0x7FFFFFFF, stat.seconds, stat.count);
             fprintf(stderr, "\n");
             g_waitStats.clear();
         }
 
-        // GPU endian modes, in the low two bits of addresses the GPU writes.
-        uint32_t GpuSwap(uint32_t value, uint32_t endian)
-        {
-            switch (endian & 3)
-            {
-            case 1: return ((value & 0x00FF00FF) << 8) | ((value >> 8) & 0x00FF00FF);  // 8-in-16
-            case 2: return ByteSwap(value);                                                // 8-in-32
-            case 3: return (value << 16) | (value >> 16);                                 // 16-in-32
-            default: return value;
-            }
-        }
-
-        // As in Xenia: the swapped value is stored in host byte order, so
-        // the common 8-in-32 mode leaves a big-endian word for the CPU.
+        // GPU memory writes: the low two bits of the address are the endian
+        // mode (xenos.h). As in Xenia, the swapped value is stored in host
+        // byte order, so the common 8-in-32 mode leaves a big-endian word for
+        // the CPU.
         void WriteMemory(uint32_t address, uint32_t value)
         {
-            uint32_t swapped = GpuSwap(value, address);
+            uint32_t swapped = SwapEndian32(value, address);
             memcpy(GuestPtr<uint8_t>(PhysicalToGuest(address & ~3u)), &swapped, 4);
         }
 
+        // GPU memory read, swapped the same way as WriteMemory.
         uint32_t ReadMemory(uint32_t address)
         {
             uint32_t value;
             memcpy(&value, GuestPtr<uint8_t>(PhysicalToGuest(address & ~3u)), 4);
-            return GpuSwap(value, address);
+            return SwapEndian32(value, address);
         }
 
         // Reads packets from the ring buffer (wrapping) or an indirect
@@ -157,6 +183,7 @@ namespace h3::gpu
 
             uint32_t Remaining() const { return ring ? (end + size - index) % size : end - index; }
 
+            // The next dword (wrapping in the ring).
             uint32_t Read()
             {
                 uint32_t value = GuestRef<uint32_t>(base + index * 4);
@@ -166,6 +193,7 @@ namespace h3::gpu
                 return value;
             }
 
+            // Skips up to count dwords.
             void Skip(uint32_t count)
             {
                 count = std::min(count, Remaining());
@@ -195,13 +223,14 @@ namespace h3::gpu
         void MakeCoherent()
         {
             uint32_t status = ReadRegister(kRegCoherStatusHost);
-            if (status & 0x80000000)
-                WriteRegister(kRegCoherStatusHost, status & ~0x80000000u);
+            if (status & kCoherRequest)
+                WriteRegister(kRegCoherStatusHost, status & ~kCoherRequest);
         }
 
+        // The value a WAIT_REG_MEM / COND_WRITE compares: memory or a register.
         uint32_t PollValue(uint32_t waitInfo, uint32_t address)
         {
-            if (waitInfo & 0x10)
+            if (waitInfo & kWaitMemory)
                 return ReadMemory(address);
             if (address == kRegCoherStatusHost)
                 MakeCoherent();
@@ -216,9 +245,10 @@ namespace h3::gpu
             uint64_t stack = 0;
         };
 
+        // Makes the calling host thread a guest thread able to run callbacks.
         void InitInterruptContext(InterruptContext& context)
         {
-            kernel::AdoptHostThread(context.ctx, 0x10000);
+            kernel::AdoptHostThread(context.ctx, kInterruptStackSize);
             context.stack = context.ctx.r1.u64;
         }
 
@@ -249,6 +279,7 @@ namespace h3::gpu
         // The command processor's own guest context (see CommandProcessorThread).
         InterruptContext* g_cpInterruptContext = nullptr;
 
+        // H3_LOG_GPU: logs the first time each type-3 opcode is seen.
         void LogOpcode(uint32_t opcode, const char* what)
         {
             static std::mutex mutex;
@@ -279,6 +310,9 @@ namespace h3::gpu
             }
         }
 
+        // Executes one type-3 packet (header: opcode @8, payload dwords - 1
+        // @16, predicated @0). Whatever part of the payload a case doesn't
+        // read is skipped at the end.
         void ExecuteType3(Reader& reader, uint32_t header)
         {
             uint32_t opcode = (header >> 8) & 0x7F;
@@ -428,18 +462,22 @@ namespace h3::gpu
                 bool reported = false;
                 while (!Compare(waitInfo, PollValue(waitInfo, address) & mask, ref))
                 {
-                    if (!reported && std::chrono::steady_clock::now() - start > std::chrono::seconds(1))
+                    if (!reported && std::chrono::steady_clock::now() - start > kStuckWaitReport)
                     {
                         fprintf(stderr, "[gpu] stuck waiting on %s 0x%08X: (0x%08X & 0x%08X) func %u ref 0x%08X\n",
-                            (waitInfo & 0x10) ? "memory" : "register", address, PollValue(waitInfo, address), mask,
+                            (waitInfo & kWaitMemory) ? "memory" : "register", address, PollValue(waitInfo, address), mask,
                             waitInfo & 7, ref);
                         reported = true;
                     }
+                    // PERF: spins (yielding) until the CPU writes the value;
+                    // a wake-up from the guest's register/memory writes isn't
+                    // possible with plain memory, but a short sleep after a
+                    // while would free the core.
                     std::this_thread::yield();
                 }
                 if (g_logWaits)
                 {
-                    WaitStat& stat = g_waitStats[address | ((waitInfo & 0x10) ? 0x80000000u : 0)];
+                    WaitStat& stat = g_waitStats[address | ((waitInfo & kWaitMemory) ? 0x80000000u : 0)];
                     stat.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
                     stat.count++;
                 }
@@ -451,10 +489,11 @@ namespace h3::gpu
                 uint32_t info = reader.Read();
                 uint32_t andMask = reader.Read();
                 uint32_t orMask = reader.Read();
-                uint32_t value = ReadRegister(info & 0x1FFF);
-                value &= (info >> 31) ? ReadRegister(andMask & 0x1FFF) : andMask;
-                value |= ((info >> 30) & 1) ? ReadRegister(orMask & 0x1FFF) : orMask;
-                CpWriteRegister(info & 0x1FFF, value);
+                // Bits 31/30: the AND/OR operands are registers, not values.
+                uint32_t value = ReadRegister(info & kPacketRegisterMask);
+                value &= (info >> 31) ? ReadRegister(andMask & kPacketRegisterMask) : andMask;
+                value |= ((info >> 30) & 1) ? ReadRegister(orMask & kPacketRegisterMask) : orMask;
+                CpWriteRegister(info & kPacketRegisterMask, value);
                 break;
             }
             case kOpCondWrite:
@@ -468,7 +507,7 @@ namespace h3::gpu
                 uint32_t data = reader.Read();
                 if (Compare(waitInfo, PollValue(waitInfo, address) & mask, ref))
                 {
-                    if (waitInfo & 0x100)
+                    if (waitInfo & kWriteMemory)
                         WriteMemory(writeAddress, data);
                     else
                         CpWriteRegister(writeAddress, data);
@@ -490,7 +529,7 @@ namespace h3::gpu
                 uint32_t initiator = reader.Read();
                 uint32_t address = reader.Read();
                 uint32_t value = reader.Read();
-                WriteRegister(kRegVgtEventInitiator, initiator & 0x3F);
+                WriteRegister(kRegVgtEventInitiator, initiator & kEventTypeMask);
                 WriteMemory(address, (initiator >> 31) ? g_swapCounter.load() : value);
                 break;
             }
@@ -504,12 +543,14 @@ namespace h3::gpu
                 // samples passing: a running counter that advances per event.
                 LogOpcode(opcode, "event write (z pass)");
                 uint32_t initiator = reader.Read();
-                WriteRegister(kRegVgtEventInitiator, initiator & 0x3F);
+                WriteRegister(kRegVgtEventInitiator, initiator & kEventTypeMask);
                 uint32_t address = ReadRegister(kRegRbSampleCountAddr);
                 if (address == 0)
                     break;
+                // Samples "passing" per event; any positive amount works.
+                constexpr uint32_t kFakeSamplesPerEvent = 1000;
                 static uint32_t passed = 0;
-                passed += 1000;
+                passed += kFakeSamplesPerEvent;
                 uint32_t counts[8] = { passed - (passed >> 1), passed >> 1, 0, 0, passed - (passed >> 1), passed >> 1, 0, 0 };
                 memcpy(GuestPtr<uint8_t>(PhysicalToGuest(address & ~3u)), counts, sizeof(counts));
                 break;
@@ -521,7 +562,8 @@ namespace h3::gpu
                 LogOpcode(opcode, "event write (extents)");
                 uint32_t initiator = reader.Read();
                 uint32_t address = reader.Read();
-                WriteRegister(kRegVgtEventInitiator, initiator & 0x3F);
+                WriteRegister(kRegVgtEventInitiator, initiator & kEventTypeMask);
+                // x min/max, y min/max (in 8-pixel units), z min/max.
                 constexpr uint16_t kExtents[] = { 0, 8192 >> 3, 0, 8192 >> 3, 0, 1 };
                 for (uint32_t i = 0; i < 6; i++)
                     GuestRef<uint16_t>(PhysicalToGuest(address & ~3u) + i * 2) = kExtents[i];
@@ -534,7 +576,7 @@ namespace h3::gpu
                 // packets after an interrupt (D3D's GPU-to-CPU callback
                 // handshake) expect the handler to have run.
                 uint32_t cpuMask = reader.Read();
-                for (uint32_t cpu = 0; cpu < 6; cpu++)
+                for (uint32_t cpu = 0; cpu < kCpuCount; cpu++)
                 {
                     if (cpuMask & (1u << cpu))
                         DeliverInterrupt(*g_cpInterruptContext, kInterruptCommandProcessor, cpu);
@@ -552,7 +594,7 @@ namespace h3::gpu
                 uint32_t height = reader.Read();
                 renderer::OnSwap(frontbuffer, width, height);
                 static uint32_t swaps = 0;
-                if (g_logWaits && ++swaps % 150 == 0)
+                if (g_logWaits && ++swaps % kWaitReportInterval == 0)
                     ReportWaitStats();
                 video::OnFramePresented(frame);
                 if (g_log && frame % 60 == 0)
@@ -569,6 +611,7 @@ namespace h3::gpu
                 reader.Skip(count - consumed());
         }
 
+        // Executes the next packet of any type.
         void ExecutePacket(Reader& reader)
         {
             uint32_t header = reader.Read();
@@ -599,12 +642,15 @@ namespace h3::gpu
             }
         }
 
+        // Executes packets until the reader's end.
         void Execute(Reader& reader)
         {
             while (reader.Remaining() > 0)
                 ExecutePacket(reader);
         }
 
+        // Tells the CPU how far the ring buffer has been read (register, and
+        // the write-back address if D3D enabled one).
         void PublishReadPointer(uint32_t readPointer)
         {
             WriteRegister(kRegCpRbRptr, readPointer);
@@ -612,6 +658,8 @@ namespace h3::gpu
                 GuestRef<uint32_t>(writeback) = readPointer;
         }
 
+        // The command processor thread: executes the ring buffer between the
+        // read pointer and the CPU's write pointer, forever.
         void CommandProcessorThread()
         {
             // A guest thread, so it can run the interrupt callback itself.
@@ -627,7 +675,10 @@ namespace h3::gpu
                 uint32_t writePointer = ReadRegister(kRegCpRbWptr) % size;
                 if (writePointer == readPointer)
                 {
-                    std::this_thread::sleep_for(std::chrono::microseconds(100));
+                    // PERF: polls the write pointer; it's plain memory, so the
+                    // CPU's update can't wake this thread directly (hooking
+                    // D3D's kick function could).
+                    std::this_thread::sleep_for(kIdleSleep);
                     continue;
                 }
 
@@ -650,34 +701,32 @@ namespace h3::gpu
             InterruptContext context;
             InitInterruptContext(context);
 
-            constexpr auto kVblankPeriod = std::chrono::nanoseconds(1'000'000'000 / 60);
+            constexpr auto kVblankPeriod = std::chrono::nanoseconds(1'000'000'000 / kVblankHz);
             auto nextVblank = std::chrono::steady_clock::now() + kVblankPeriod;
             for (;;)
             {
                 std::this_thread::sleep_until(nextVblank);
                 nextVblank += kVblankPeriod;
-                DeliverInterrupt(context, kInterruptVblank, 2);
+                DeliverInterrupt(context, kInterruptVblank, kVblankCpu);
             }
         }
     }
 
     void Initialize()
     {
-        // The values Xenia's graphics system returns for these registers.
-        WriteRegister(kRegRbEdramTiming, 0x08100748);
+        // The values Xenia's graphics system returns for these registers
+        // (EDRAM timing is an opaque hardware value D3D checks).
+        constexpr uint32_t kEdramTiming = 0x08100748;
+        constexpr uint32_t kDisplayWidth = 1280, kDisplayHeight = 720;
+        WriteRegister(kRegRbEdramTiming, kEdramTiming);
         WriteRegister(kRegRbBcSpares, 0);
         WriteRegister(kRegVblankStatus, 1);
-        WriteRegister(kRegD1ModeViewportSize, (1280 << 16) | 720);
+        WriteRegister(kRegD1ModeViewportSize, (kDisplayWidth << 16) | kDisplayHeight);
     }
 
     uint32_t MakePacketType3(uint32_t opcode, uint32_t payloadDwords)
     {
         return (3u << 30) | (((payloadDwords - 1) & 0x3FFF) << 16) | ((opcode & 0x7F) << 8);
-    }
-
-    uint32_t PhysicalToGuest(uint32_t address)
-    {
-        return kPhysicalMemoryBase + (address & 0x1FFFFFFF);
     }
 
     uint32_t ReadRegister(uint32_t index)

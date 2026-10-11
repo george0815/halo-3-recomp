@@ -5,6 +5,7 @@
 // counts (window_calls.txt).
 
 #include <atomic>
+#include "config/env.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -29,7 +30,7 @@ namespace h3::debug
     // Called once per presented frame: opens and closes the window.
     void UpdateTraceWindow(uint32_t frame)
     {
-        static const char* setting = getenv("H3_TRACE_WINDOW");
+        static const char* setting = EnvString("H3_TRACE_WINDOW");
         if (!setting || g_windowDumped)
             return;
         static uint32_t first = 0, last = 0;

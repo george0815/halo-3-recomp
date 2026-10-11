@@ -1,3 +1,6 @@
+// The guest file system: maps guest paths (devices and symbolic links like
+// d:\, game:\, cache0:\) onto host folders under private/.
+
 #pragma once
 
 #include <filesystem>
@@ -18,6 +21,8 @@ namespace h3::kernel
     //
     // The title adds its own links with ObCreateSymbolicLink.
 
+    // Host folders for the disc contents (game:\, d:\, read-only) and the
+    // hard drive (cache partitions, saves; writable). Set before booting.
     void SetContentRoot(std::filesystem::path root);
     void SetUserDataRoot(std::filesystem::path root);
 
@@ -42,5 +47,6 @@ namespace h3::kernel
     // MapGuestPath for files that must exist.
     std::optional<std::filesystem::path> ResolveGuestPath(std::string_view guestPath);
 
+    // ASCII case-insensitive comparison (360 paths ignore case).
     bool EqualsIgnoreCase(std::string_view a, std::string_view b);
 }

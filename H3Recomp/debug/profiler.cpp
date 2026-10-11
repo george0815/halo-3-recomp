@@ -7,6 +7,7 @@
 // per-function report.
 
 #include <algorithm>
+#include "config/env.h"
 #include <atomic>
 #include <csignal>
 #include <cstdint>
@@ -40,6 +41,7 @@ namespace h3::debug
         bool g_done = false;
         bool g_stacks = false;
 
+        // Unwinder callback: records one return address of the sample.
         _Unwind_Reason_Code CollectFrame(_Unwind_Context* context, void* argument)
         {
             Sample& sample = *static_cast<Sample*>(argument);
@@ -49,6 +51,7 @@ namespace h3::debug
             return _URC_NO_REASON;
         }
 
+        // SIGPROF handler: takes one sample (thread, instruction pointer, stack).
         void OnSignal(int, siginfo_t*, void* context)
         {
             if (!g_running.load(std::memory_order_relaxed))
@@ -67,6 +70,7 @@ namespace h3::debug
                 _Unwind_Backtrace(CollectFrame, &sample);
         }
 
+        // Starts or stops the CPU-time profiling timer.
         void SetTimer(bool on)
         {
             itimerval timer{};
@@ -79,7 +83,7 @@ namespace h3::debug
     // Called once per presented frame.
     void UpdateProfiler(uint32_t frame)
     {
-        static const char* setting = getenv("H3_PROFILE");
+        static const char* setting = EnvString("H3_PROFILE");
         if (!setting || g_done)
             return;
         static uint32_t first = 0, last = 0;
@@ -89,7 +93,7 @@ namespace h3::debug
         if (frame >= first && !g_running.load() && frame <= last)
         {
             g_samples = static_cast<Sample*>(calloc(kMaxSamples, sizeof(Sample)));
-            g_stacks = getenv("H3_PROFILE_STACKS") != nullptr;
+            g_stacks = EnvFlag("H3_PROFILE_STACKS");
             struct sigaction action{};
             action.sa_sigaction = OnSignal;
             action.sa_flags = SA_SIGINFO | SA_RESTART;

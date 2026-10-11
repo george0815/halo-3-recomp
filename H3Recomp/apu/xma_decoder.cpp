@@ -1,3 +1,6 @@
+// XMA decoder (xma_decoder.h): the context data layout, frame/packet
+// parsing, and decoding through FFmpeg's xmaframes decoder.
+
 #include "apu/xma_decoder.h"
 
 #include "memory.h"
@@ -41,7 +44,7 @@ namespace h3::apu
         constexpr uint32_t kBytesPerSubframeChannel = kSamplesPerSubframe * kBytesPerSample;
         constexpr uint32_t kMaxFrameLength = 0x7FFF;
 
-        uint8_t* Physical(uint32_t address) { return g_base + kPhysicalMemoryBase + (address & 0x1FFFFFFF); }
+        uint8_t* Physical(uint32_t address) { return GuestPtr<uint8_t>(PhysicalToGuest(address)); }
 
         // XMA_CONTEXT_DATA: 16 big-endian dwords; the bit fields below are
         // laid out for the dwords after byte swapping (LSB first).
@@ -88,6 +91,7 @@ namespace h3::apu
             // DWORDs 10-15
             uint32_t unk_dwords_10_15[6];
 
+            // Reads the context from guest memory (16 big-endian dwords).
             void Load(const uint8_t* guest)
             {
                 uint32_t* words = reinterpret_cast<uint32_t*>(this);
@@ -98,6 +102,7 @@ namespace h3::apu
                     words[i] = __builtin_bswap32(word);
                 }
             }
+            // Writes the context back to guest memory.
             void Store(uint8_t* guest) const
             {
                 const uint32_t* words = reinterpret_cast<const uint32_t*>(this);
@@ -118,6 +123,7 @@ namespace h3::apu
             void SetOffset(size_t offset) { m_offset = std::min(offset, m_sizeBits); }
             size_t Offset() const { return m_offset; }
             size_t BitsRemaining() const { return m_sizeBits - m_offset; }
+            // The next `bits` bits (at most 57) without advancing.
             uint64_t Peek(size_t bits) const
             {
                 size_t bytes = m_offset >> 3, rel = m_offset & 7;
@@ -127,6 +133,7 @@ namespace h3::apu
                 value >>= 64 - (rel + bits);
                 return value & ((1ull << bits) - 1);
             }
+            // The next `bits` bits, advancing past them.
             uint64_t Read(size_t bits)
             {
                 uint64_t value = Peek(bits);
@@ -176,12 +183,14 @@ namespace h3::apu
         {
             uint8_t* buffer;
             uint32_t capacity, read, write;
+            // Bytes that can be written before reaching the read offset.
             uint32_t WriteCount() const
             {
                 if (read == write)
                     return capacity;
                 return write < read ? read - write : capacity - write + read;
             }
+            // Appends count bytes, wrapping at the end.
             void Write(const uint8_t* data, uint32_t count)
             {
                 uint32_t first = std::min(count, capacity - write);
@@ -191,12 +200,16 @@ namespace h3::apu
             }
         };
 
+        // XMA packet header (32 bits): frame count : 6, first frame's bit
+        // offset : 15, metadata : 3, skip count : 8. The first frame starts
+        // after the header.
         uint32_t PacketFrameOffset(const uint8_t* packet)
         {
             return uint32_t(((packet[0] & 3) << 13) | (packet[1] << 5) | (packet[2] >> 3)) + 32;
         }
         uint32_t PacketSkipCount(const uint8_t* packet) { return packet[3]; }
 
+        // ContextData::sample_rate to Hz.
         int SampleRate(uint32_t id)
         {
             static constexpr int kRates[] = { 24000, 32000, 44100, 48000 };
@@ -212,6 +225,8 @@ namespace h3::apu
             bool allocated = false;
             bool enabled = false;
 
+            // Decodes as much as the context's buffers allow, if it's been
+            // kicked. Returns whether it did anything.
             bool Work()
             {
                 std::lock_guard guard(lock);
@@ -226,18 +241,21 @@ namespace h3::apu
                 return true;
             }
 
+            // Kick: decode on the next worker pass.
             void Enable()
             {
                 std::lock_guard guard(lock);
                 enabled = true;
             }
 
+            // Lock: stop decoding.
             void Disable()
             {
                 std::lock_guard guard(lock);
                 enabled = false;
             }
 
+            // XMAReleaseContext: frees the context and zeroes its data.
             void Release()
             {
                 std::lock_guard guard(lock);
@@ -260,6 +278,7 @@ namespace h3::apu
             std::array<uint8_t, 1 + 4096> m_frameData{};
             std::array<uint8_t, kBytesPerFrameChannel * 2> m_rawFrame{};
 
+            // Forgets any partly read frame.
             void ResetDecoder()
             {
                 m_packetsSkip = 0;
@@ -267,6 +286,7 @@ namespace h3::apu
                 m_splitFramePaddingStart = 0;
             }
 
+            // (Re)opens the FFmpeg decoder for the context's rate/channels.
             bool PrepareDecoder(uint32_t sampleRateId, bool stereo)
             {
                 int rate = SampleRate(sampleRateId), channels = stereo ? 2 : 1;
@@ -293,6 +313,8 @@ namespace h3::apu
                 return true;
             }
 
+            // The current input buffer is used up: invalidate it and move to
+            // the other one.
             static void SwapInputBuffer(ContextData& data)
             {
                 if (data.current_buffer == 0)
@@ -303,6 +325,8 @@ namespace h3::apu
                 data.input_buffer_read_offset = 0;
             }
 
+            // Jumps back to the loop start if looping and past the loop end
+            // (or at the buffer's end). Returns whether it looped.
             static bool TrySetupNextLoop(ContextData& data, bool ignoreInputBufferOffset)
             {
                 if (data.loop_count > 0 && data.loop_start < data.loop_end &&
@@ -316,6 +340,7 @@ namespace h3::apu
                 return false;
             }
 
+            // Index of the packet containing a bit offset, or -1 past the end.
             static int FramePacketNumber(size_t size, size_t bitOffset)
             {
                 if (bitOffset >= size * 8)
@@ -323,6 +348,7 @@ namespace h3::apu
                 return int((bitOffset >> 3) / kBytesPerPacket);
             }
 
+            // Whether a bit offset is the start of a frame in its packet.
             static bool ValidFrameOffset(uint8_t* block, size_t size, size_t frameOffset)
             {
                 int packetNumber = FramePacketNumber(size, frameOffset);
@@ -350,6 +376,8 @@ namespace h3::apu
                 }
             }
 
+            // Bit offset of the frame after the one at bitOffset within the
+            // same packet, or 0 if that was the packet's last.
             static size_t NextFrame(uint8_t* block, size_t size, size_t bitOffset)
             {
                 int packetIndex = FramePacketNumber(size, bitOffset);
@@ -369,6 +397,7 @@ namespace h3::apu
                 return bitOffset;
             }
 
+            // (packet index, frame index within it) of the frame at bitOffset.
             static std::tuple<int, int> FrameNumber(uint8_t* block, size_t size, size_t bitOffset)
             {
                 int packetIndex = FramePacketNumber(size, bitOffset);
@@ -445,6 +474,9 @@ namespace h3::apu
                     SwapInputBuffer(data);
             }
 
+            // Decodes frames from the input buffers into the output ring
+            // until the ring is full or the input runs out (Xenia's
+            // XmaContext::Decode).
             void Decode(ContextData& data)
             {
                 if (!data.output_buffer_valid)
@@ -651,6 +683,7 @@ namespace h3::apu
         std::condition_variable g_wake;
         std::atomic<bool> g_pending{ false };
 
+        // The decoder thread: works every kicked context, sleeping when idle.
         void Worker()
         {
             for (;;)
@@ -685,7 +718,7 @@ namespace h3::apu
         }
         // The game reads the registers byte-reversed (lwbrx): store them in
         // host order.
-        uint32_t physical = g_arrayBase & 0x1FFFFFFF;
+        uint32_t physical = GuestToPhysical(g_arrayBase);
         std::memcpy(g_base + kRegisterBase + kRegContextArrayAddress * 4, &physical, 4);
         std::thread(Worker).detach();
     }

@@ -10,6 +10,7 @@
 // piece of guest memory.
 
 #include "memory.h"
+#include "config/env.h"
 
 #if defined(__linux__) && defined(__x86_64__)
 #include <signal.h>
@@ -46,6 +47,8 @@ namespace h3::debug
         std::mutex g_mutex;
         thread_local uint8_t* t_page = nullptr;  // page to re-protect after the step
 
+        // Host address of `offset` in one physical view (or of the guest
+        // address itself for v-addresses).
         uint8_t* HostAddress(uint32_t view, uint32_t offset)
         {
             if (g_virtual)
@@ -54,6 +57,7 @@ namespace h3::debug
             return g_base + view + offset - (view == 0xE0000000 ? 0x1000 : 0);
         }
 
+        // Applies a protection to the watched range in every view.
         void Protect(int protection)
         {
             long pageSize = sysconf(_SC_PAGESIZE);
@@ -65,6 +69,7 @@ namespace h3::debug
             }
         }
 
+        // Whether a host address is in the watched range (and its offset).
         bool InRange(uint8_t* address, uint32_t* offset)
         {
             for (uint32_t view : kViews)
@@ -79,6 +84,7 @@ namespace h3::debug
             return false;
         }
 
+        // Counts a write from a host instruction.
         void Record(uint64_t rip, uint32_t offset)
         {
             std::lock_guard lock(g_mutex);
@@ -92,6 +98,8 @@ namespace h3::debug
                 g_sites[g_siteCount++] = { rip, 1, offset };
         }
 
+        // A write hit a protected page: record it, unprotect the page and
+        // single-step the instruction.
         void OnSegv(int, siginfo_t* info, void* context)
         {
             auto* uc = static_cast<ucontext_t*>(context);
@@ -125,6 +133,7 @@ namespace h3::debug
             uc->uc_mcontext.gregs[REG_EFL] |= 0x100;  // trap flag: stop after one instruction
         }
 
+        // After the single step: protect the page again.
         void OnTrap(int, siginfo_t*, void* context)
         {
             auto* uc = static_cast<ucontext_t*>(context);
@@ -137,6 +146,7 @@ namespace h3::debug
             }
         }
 
+        // Writes write_watch.txt.
         void Write()
         {
             FILE* file = fopen("write_watch.txt", "w");
@@ -157,7 +167,7 @@ namespace h3::debug
     void UpdateWriteWatch(uint32_t frame)
     {
         static const bool parsed = [] {
-            const char* spec = getenv("H3_WATCH_WRITES");
+            const char* spec = EnvString("H3_WATCH_WRITES");
             if (!spec)
                 return false;
             char* end;
@@ -170,7 +180,7 @@ namespace h3::debug
             }
             g_address = *end == ':' || g_virtual ? uint32_t(strtoul(end + 1, &end, 16)) : 0;
             if (!g_virtual)
-                g_address &= 0x1FFFFFFF;
+                g_address = GuestToPhysical(g_address);
             g_bytes = *end == ':' ? uint32_t(strtoul(end + 1, &end, 0)) : 0;
             if (!g_bytes)
                 return false;

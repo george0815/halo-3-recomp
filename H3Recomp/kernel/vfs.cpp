@@ -1,3 +1,6 @@
+// Guest path resolution: device mounts, symbolic links, and
+// case-insensitive lookup on the host (360 paths are case-insensitive).
+
 #include "vfs.h"
 
 #include <algorithm>
@@ -22,6 +25,7 @@ namespace h3::kernel
         std::vector<Mount> g_mounts;
         std::map<std::string, std::string> g_links;  // lowercase link -> target
 
+        // Lower-case ASCII copy of text (guest paths compare case-insensitively).
         std::string Lower(std::string_view text)
         {
             std::string lower(text);
@@ -30,6 +34,8 @@ namespace h3::kernel
             return lower;
         }
 
+        // Mounts a guest device (e.g. "\\Device\\Cdrom0") on a host directory,
+        // read-only unless writable.
         void SetMount(std::string device, std::filesystem::path root, bool writable)
         {
             std::lock_guard lock(g_mutex);

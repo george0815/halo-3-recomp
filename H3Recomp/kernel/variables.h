@@ -1,3 +1,6 @@
+// xboxkrnl data exports (variables like KeTimeStampBundle), created in guest
+// memory on demand.
+
 #pragma once
 
 #include <cstdint>

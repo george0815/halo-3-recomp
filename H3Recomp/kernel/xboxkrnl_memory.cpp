@@ -3,6 +3,7 @@
 #include <ppc_recomp_shared.h>
 
 #include "imports.h"
+#include "config/env.h"
 #include "../memory.h"
 
 #include <algorithm>
@@ -30,12 +31,7 @@ namespace
 
     // Physical memory is mapped at 0xA0000000; physical address 0 is there.
     constexpr uint32_t kPhysicalBase = kPhysicalMemoryBase;
-    constexpr uint32_t kPhysicalSize = 0x20000000;
 
-    uint32_t RoundUp(uint32_t value, uint32_t alignment)
-    {
-        return (value + alignment - 1) & ~(alignment - 1);
-    }
 }
 
 // NTSTATUS NtAllocateVirtualMemory(PVOID* baseAddress, PSIZE_T regionSize,
@@ -56,7 +52,7 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
 
     uint32_t pageSize = (type & kMemLargePages) ? kPageSize64K : kPageSize4K;
     uint32_t requested = baseRef.get() & ~(pageSize - 1);
-    size = RoundUp(size, requested ? pageSize : kPageSize64K);
+    size = AlignUp(size, requested ? pageSize : kPageSize64K);
 
     uint32_t address = 0;
     if (requested != 0)
@@ -127,7 +123,7 @@ PPC_FUNC(__imp__NtFreeVirtualMemory)
 
     if (ctx.r5.u32 == kMemDecommit)
     {
-        uint32_t size = RoundUp(sizeRef, heap->PageSize());
+        uint32_t size = AlignUp(sizeRef, heap->PageSize());
         heap->Decommit(address, size);
         sizeRef = size;
     }
@@ -192,18 +188,18 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
 
     uint32_t pageSize = kPageSize4K;
     if (protect & kMem16MBPages)
-        pageSize = 0x1000000;
+        pageSize = kPageSize16M;
     else if (protect & kMemLargePages)
         pageSize = kPageSize64K;
 
-    uint32_t low = kPhysicalBase + std::min(minAddress, kPhysicalSize - 1);
-    uint64_t high = uint64_t(kPhysicalBase) + std::min(maxAddress, kPhysicalSize - 1) + 1;
+    uint32_t low = kPhysicalBase + std::min(minAddress, kPhysicalMemorySize - 1);
+    uint64_t high = uint64_t(kPhysicalBase) + std::min(maxAddress, kPhysicalMemorySize - 1) + 1;
     // Top-down, like the console's kernel (and Xenia). Map files hold
     // absolute pointers into tag memory that assume this placement.
-    ctx.r3.u64 = PhysicalHeap().AllocInRange(RoundUp(size, pageSize), std::max(alignment, pageSize),
+    ctx.r3.u64 = PhysicalHeap().AllocInRange(AlignUp(size, pageSize), std::max(alignment, pageSize),
         low, uint32_t(std::min<uint64_t>(high, 0xFFFFFFFF)), true);
 
-    static const bool log = getenv("H3_LOG_MEMORY") != nullptr;
+    static const bool log = EnvFlag("H3_LOG_MEMORY");
     if (log)
         fprintf(stderr, "[memory] physical alloc 0x%X (protect 0x%X, range 0x%X-0x%X, align 0x%X) -> 0x%08X\n",
             size, protect, minAddress, maxAddress, alignment, ctx.r3.u32);
@@ -219,7 +215,7 @@ PPC_FUNC(__imp__MmFreePhysicalMemory)
 PPC_FUNC(__imp__MmGetPhysicalAddress)
 {
     uint32_t address = ctx.r3.u32;
-    ctx.r3.u64 = address >= kPhysicalBase ? address & (kPhysicalSize - 1) : 0;
+    ctx.r3.u64 = address >= kPhysicalBase ? address & (kPhysicalMemorySize - 1) : 0;
 }
 
 // SIZE_T MmQueryAllocationSize(PVOID address)
@@ -276,8 +272,9 @@ PPC_FUNC(__imp__ExFreePool)
 // Returns the top of a new stack (stacks grow down), as in Xenia.
 PPC_FUNC(__imp__MmCreateKernelStack)
 {
-    uint32_t size = (ctx.r3.u32 + 0xFFF) & ~0xFFFu;
-    uint32_t alignment = (ctx.r3.u32 & 0xF000) ? 0x1000 : 0x10000;
+    // Sizes that aren't a multiple of 64 KiB get 4 KiB alignment, as in Xenia.
+    uint32_t size = AlignUp(ctx.r3.u32, kPageSize4K);
+    uint32_t alignment = (ctx.r3.u32 & (kPageSize64K - kPageSize4K)) ? kPageSize4K : kPageSize64K;
     uint32_t bottom = SystemHeap().Alloc(size, alignment);
     ctx.r3.u64 = bottom != 0 ? bottom + size : 0;
 }

@@ -1,3 +1,5 @@
+// XMA hardware decoder emulation (see the comment below).
+
 #pragma once
 
 #include <cstdint>

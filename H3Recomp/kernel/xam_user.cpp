@@ -5,6 +5,7 @@
 #include <ppc_recomp_shared.h>
 
 #include "imports.h"
+#include "config/env.h"
 #include "objects.h"
 #include "../memory.h"
 
@@ -67,9 +68,10 @@ namespace
         }
     }
 
+    // H3_LOG_USER=1: log profile and user calls.
     bool LogUser()
     {
-        static const bool log = getenv("H3_LOG_USER") != nullptr;
+        static const bool log = EnvFlag("H3_LOG_USER");
         return log;
     }
 
@@ -276,6 +278,8 @@ namespace
     constexpr uint32_t kAppXmp = 0xFA;
     constexpr uint32_t kAppXgi = 0xFB;
 
+    // Handles a message to one of the system apps (XMP music player, XGI game info)
+    // sent with XMsgSyncMessage/XMsgStartIORequest. Returns an HRESULT-style status.
     uint32_t DispatchAppMessage(uint32_t app, uint32_t message, uint32_t buffer, uint32_t length)
     {
         {

@@ -3,6 +3,7 @@
 #include <ppc_recomp_shared.h>
 
 #include "imports.h"
+#include "config/env.h"
 #include "module.h"
 #include "objects.h"
 #include "thread.h"
@@ -25,7 +26,8 @@ using namespace h3::kernel;
 // to really run. Like Xenia, each task gets its own guest thread.
 PPC_FUNC(__imp__XamTaskSchedule)
 {
-    uint32_t stackSize = std::max(0x4000u, (g_module.stackSize + 0xFFF) & ~0xFFFu);
+    // AllocateGuestThread applies the minimum stack size.
+    uint32_t stackSize = AlignUp(g_module.stackSize, kPageSize4K);
     auto thread = StartGuestThread(stackSize, 0, ctx.r3.u32, ctx.r4.u32, false);
     if (ctx.r6.u32 != 0)
         GuestRef<uint32_t>(ctx.r6.u32) = CreateHandle(thread);
@@ -67,6 +69,7 @@ constexpr uint32_t kErrorSuccess = 0;
 constexpr uint32_t kErrorDeviceNotConnected = 0x48F;
 constexpr uint32_t kUserIndexAny = 0xFF;
 
+// True for the controller slots that have a pad (keyboard/mouse counts as pad 0).
 static bool IsConnectedUser(uint32_t userIndex)
 {
     return userIndex == 0 || userIndex == kUserIndexAny;
@@ -88,7 +91,7 @@ static void WriteGamepad(uint32_t address, const input::GamepadState& state)
 // XINPUT_CAPABILITIES: Type, SubType, WORD Flags, XINPUT_GAMEPAD, XINPUT_VIBRATION.
 PPC_FUNC(__imp__XamInputGetCapabilities)
 {
-    static const bool log = getenv("H3_LOG_INPUT") != nullptr;
+    static const bool log = EnvFlag("H3_LOG_INPUT");
     if (log)
     {
         static uint32_t calls = 0;
@@ -118,7 +121,7 @@ PPC_FUNC(__imp__XamInputGetCapabilities)
 // XINPUT_STATE: DWORD dwPacketNumber, XINPUT_GAMEPAD.
 PPC_FUNC(__imp__XamInputGetState)
 {
-    static const bool log = getenv("H3_LOG_INPUT") != nullptr;
+    static const bool log = EnvFlag("H3_LOG_INPUT");
     if (log)
     {
         static uint32_t calls = 0;

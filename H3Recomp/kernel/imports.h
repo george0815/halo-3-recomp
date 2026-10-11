@@ -1,3 +1,7 @@
+// Shared helpers for kernel export implementations: the fallback for
+// unimplemented imports, argument access beyond r10, XOVERLAPPED
+// completion, and the NTSTATUS codes exports return.
+
 #pragma once
 
 #include <cstdint>

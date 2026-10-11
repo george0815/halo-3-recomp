@@ -1,4 +1,7 @@
+// H3_GPU_CAPTURE: a text log of one frame's GPU work (frame_capture.h).
+
 #include "gpu/frame_capture.h"
+#include "config/env.h"
 
 #include "gpu/command_processor.h"
 #include "gpu/registers.h"
@@ -16,11 +19,12 @@ namespace h3::gpu::capture
 {
     namespace
     {
+        // The swap number H3_GPU_CAPTURE names (0: capture off).
         uint32_t TargetFrame()
         {
             static uint32_t frame = []
             {
-                const char* value = getenv("H3_GPU_CAPTURE");
+                const char* value = EnvString("H3_GPU_CAPTURE");
                 return value ? uint32_t(strtoul(value, nullptr, 0)) : 0u;
             }();
             return frame;
@@ -31,6 +35,7 @@ namespace h3::gpu::capture
         uint32_t g_draws = 0;
         uint32_t g_vertexShader = 0, g_pixelShader = 0;
 
+        // The capture file while the target frame runs, else null.
         FILE* Out()
         {
             if (TargetFrame() == 0 || g_frame + 1 != TargetFrame())
@@ -44,6 +49,7 @@ namespace h3::gpu::capture
             return g_out;
         }
 
+        // A register's bits as a float.
         float RegFloat(uint32_t index)
         {
             uint32_t bits = ReadRegister(index);
@@ -52,6 +58,7 @@ namespace h3::gpu::capture
             return value;
         }
 
+        // Name of an RB_MODECONTROL EDRAM mode, for the log.
         const char* EdramModeName(uint32_t mode)
         {
             switch (mode)

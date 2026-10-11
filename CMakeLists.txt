@@ -1,3 +1,9 @@
+# Top-level build. Pieces:
+#   thirdparty/XenonRecomp  the recompiler (built as a tool)
+#   H3RecompLib             the recompiled game code (generated; see tools/recompile.sh)
+#   H3Recomp                the runtime executable
+#   tools/                  h3xexinfo (XEX inspector), h3shader (shader translator test)
+
 cmake_minimum_required(VERSION 3.20)
 
 project(H3Recomp LANGUAGES C CXX)

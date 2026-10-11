@@ -1,4 +1,10 @@
+// Kernel objects: the KernelObject base, handles, object names, and waiting
+// (WaitForObjects) for events, semaphores, mutants, timers, threads and I/O
+// completion ports. The xboxkrnl exports built on them are in
+// xboxkrnl_objects.cpp.
+
 #include "objects.h"
+#include "config/env.h"
 #include "thread.h"
 
 #include "../memory.h"
@@ -23,7 +29,10 @@ namespace h3::kernel
 
         std::mutex g_handleMutex;
         std::unordered_map<uint32_t, std::shared_ptr<KernelObject>> g_handles;
-        uint32_t g_nextHandle = 0xF8000000;
+        // Handles start high so they never look like small integers or
+        // valid guest pointers (Xenia starts at 0xF8000000 too).
+        constexpr uint32_t kFirstHandle = 0xF8000000;
+        uint32_t g_nextHandle = kFirstHandle;
 
         std::mutex g_nameMutex;
         std::unordered_map<std::string, std::weak_ptr<KernelObject>> g_names;
@@ -48,6 +57,9 @@ namespace h3::kernel
         return std::unique_lock(g_dispatcherMutex);
     }
 
+    // PERF: every state change wakes every waiting thread, which then
+    // re-checks its own objects (one global condition variable). Per-object
+    // wait lists would wake only the threads that can proceed.
     void NotifyDispatcher()
     {
         g_dispatcherCv.notify_all();
@@ -114,7 +126,7 @@ namespace h3::kernel
         std::map<uint32_t, ThreadWait> g_threadWaits;
 
         // H3_LOG_WAITS: time spent blocked, per thread, caller and object.
-        const bool g_logWaits = getenv("H3_LOG_WAITS") != nullptr;
+        const bool g_logWaits = EnvFlag("H3_LOG_WAITS");
         struct WaitTotal
         {
             const char* what;

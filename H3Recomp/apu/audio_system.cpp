@@ -1,4 +1,8 @@
+// XAudio render driver (audio_system.h): the worker thread that runs the
+// game's audio callback and the SDL stream frames go to.
+
 #include "apu/audio_system.h"
+#include "config/env.h"
 
 #include "kernel/thread.h"
 #include "memory.h"
@@ -39,6 +43,8 @@ namespace h3::apu
         std::atomic<uint32_t> g_submitted{ 0 };
         std::once_flag g_started;
 
+        // Opens the default audio device as a 5.1 float stream (on failure,
+        // audio is dropped but the callbacks still run at the right rate).
         void OpenDevice()
         {
             if (!SDL_InitSubSystem(SDL_INIT_AUDIO))
@@ -58,6 +64,7 @@ namespace h3::apu
             SDL_ResumeAudioStreamDevice(g_stream);
         }
 
+        // Frames waiting in the device stream.
         uint32_t QueuedFrames()
         {
             if (!g_stream)
@@ -156,14 +163,14 @@ namespace h3::apu
         // H3_AUDIO_DUMP=<file>: also write the output as raw 6-channel
         // 48 kHz float (ffmpeg -f f32le -ac 6 -ar 48000 -i <file> out.wav).
         static FILE* dump = [] {
-            const char* path = getenv("H3_AUDIO_DUMP");
+            const char* path = EnvString("H3_AUDIO_DUMP");
             return path ? fopen(path, "wb") : nullptr;
         }();
         if (dump)
             fwrite(frame, sizeof(frame), 1, dump);
 
         // H3_LOG_AUDIO=1: frames submitted and their peak level, once a second.
-        static const bool log = getenv("H3_LOG_AUDIO") != nullptr;
+        static const bool log = EnvFlag("H3_LOG_AUDIO");
         if (log)
         {
             static float peak = 0;

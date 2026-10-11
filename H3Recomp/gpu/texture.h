@@ -1,3 +1,7 @@
+// Xenos textures in guest memory: parsing texture fetch constants, the
+// memory layout of levels (tiling, packed mips, faces, layers), and decoding
+// a level into something a host texture can hold.
+
 #pragma once
 
 #include <SDL3/SDL_gpu.h>
@@ -10,6 +14,13 @@
 // converted where the host has no matching format).
 namespace h3::gpu::texture
 {
+    // Memory layout rules for Xenos textures (Xenia's texture_util.cc).
+    constexpr uint32_t kTileSize = 32;               // tiled textures: pitch and height in 32-block tiles
+    constexpr uint32_t kLinearRowAlignment = 256;    // linear textures: row pitch in bytes
+    constexpr uint32_t kLevelAlignment = 4096;       // each mip level / face / layer starts 4 KB aligned
+    constexpr uint32_t kPackedMipMaxSize = 16;       // levels this small or smaller share a packed tile
+    constexpr uint32_t kPackedMipMaxSizeLog2 = 4;
+
     // Texture fetch constant (6 dwords), as Xenia's xe_gpu_texture_fetch_t.
     struct FetchConstant
     {
@@ -39,6 +50,7 @@ namespace h3::gpu::texture
         uint32_t offsetX = 0, offsetY = 0;
     };
 
+    // Decodes the 6 dwords of a texture fetch constant.
     FetchConstant ParseFetchConstant(const uint32_t words[6]);
 
     // XGAddress2DTiledOffset: element index of block (x, y) in a tiled
@@ -60,8 +72,11 @@ namespace h3::gpu::texture
 
     // Distance between the faces of a cube map, or the layers of a stacked
     // texture (each a 2D level, 4 KB aligned).
-    inline uint32_t FaceStride(const FetchConstant& fetch) { return (GuestSize(fetch) + 4095) & ~4095u; }
+    inline uint32_t FaceStride(const FetchConstant& fetch) { return (GuestSize(fetch) + kLevelAlignment - 1) & ~(kLevelAlignment - 1); }
 
+    // Decodes the level the fetch constant describes from guest memory
+    // (pointing at its first byte) into out. False if the format isn't
+    // supported.
     bool Decode(const FetchConstant& fetch, const uint8_t* guest, Decoded& out);
 
     // The fetch constant's swizzle for the host texture: formats with one

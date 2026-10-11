@@ -1,4 +1,8 @@
+// Implementation of the shared export helpers in imports.h, plus the handler
+// the recompiled code calls when a jump table is indexed out of range.
+
 #include "imports.h"
+#include "config/env.h"
 
 #include <ppc_recomp_shared.h>
 
@@ -17,7 +21,7 @@ namespace h3::kernel
     {
         static std::mutex mutex;
         static std::unordered_set<std::string> reported;
-        static const bool strict = getenv("H3_STRICT_IMPORTS") != nullptr;
+        static const bool strict = EnvFlag("H3_STRICT_IMPORTS");
 
         {
             std::lock_guard lock(mutex);
@@ -38,9 +42,17 @@ namespace h3::kernel
         ctx.r3.u64 = ntStatus ? kStatusNotImplemented : 0;
     }
 
+    // PowerPC ABI: the caller's parameter save area starts at r1 + 0x50 and
+    // holds one 8-byte slot per argument (the first eight are passed in
+    // registers but still have slots). A 32-bit argument sits in the low,
+    // big-endian half of its slot, hence + 4.
+    constexpr uint32_t kParameterSaveArea = 0x50;
+    constexpr uint32_t kRegisterArguments = 8;
+    constexpr uint32_t kArgumentSlotSize = 8;
+
     uint32_t StackArgument(const PPCContext& ctx, uint32_t index)
     {
-        return GuestRef<uint32_t>(ctx.r1.u32 + 0x54 + (index - 8) * 8);
+        return GuestRef<uint32_t>(ctx.r1.u32 + kParameterSaveArea + 4 + (index - kRegisterArguments) * kArgumentSlotSize);
     }
 
     void GuestFatal(const char* what, PPCContext& ctx)

@@ -1,4 +1,7 @@
+// The SDL window and event loop (window.h).
+
 #include "video/window.h"
+#include "config/env.h"
 
 #include "video/bink_view.h"
 #include "gpu/renderer.h"
@@ -79,6 +82,8 @@ namespace h3::video
             return true;
         }
 
+        // The Bink movie's current frame straight from its YUV buffers (shown
+        // until the renderer has a frame of its own).
         void DrawBinkFrame()
         {
             BinkFrame frame;
@@ -222,7 +227,7 @@ namespace h3::video
         g_framesPresented.store(frame);
 
         // H3_LOG_FPS: frames presented per second, and the slowest frame.
-        static const bool logFps = getenv("H3_LOG_FPS") != nullptr;
+        static const bool logFps = EnvFlag("H3_LOG_FPS");
         if (logFps)
         {
             using Clock = std::chrono::steady_clock;

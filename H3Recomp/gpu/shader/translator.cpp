@@ -29,6 +29,7 @@ namespace h3::gpu::shader
 
         const char kSwizzleChars[] = "xyzw";
 
+        // printf-style formatting into a std::string.
         std::string Format(const char* format, ...)
         {
             char buffer[1024];
@@ -54,6 +55,7 @@ float xe_dot4(vec4 a, vec4 b) { vec4 p = xe_mul(a, b); return ((p.x + p.y) + p.z
 float xe_dot3(vec4 a, vec4 b) { vec4 p = xe_mul(a, b); return (p.x + p.y) + p.z; }
 vec4 xe_max(vec4 a, vec4 b) { return mix(b, a, greaterThanEqual(a, b)); }
 vec4 xe_min(vec4 a, vec4 b) { return mix(b, a, lessThan(a, b)); }
+// Infinity replaced by +-replacement (the "clamped" forms of rcp/rsq).
 float xe_clamp_inf(float t, float replacement)
 {
     return isinf(t) ? (t < 0.0 ? -replacement : replacement) : t;
@@ -97,6 +99,7 @@ float xe_float24_round(float f)
     return uintBitsToFloat((uint(exponent + 112) << 23) | (mantissa << 3));
 }
 
+// Xenos endian swap of a vertex fetch word (modes as in gpu/xenos.h).
 uint xe_swap(uint value, uint mode)
 {
     if (mode == 1u)  // 8-in-16
@@ -117,6 +120,8 @@ uint xe_swap(uint value, uint mode)
         // the other three like Xenia's geometry shader: opposite the
         // right-angle corner, every output = a + b - corner.
         const char* kVertexMain = R"(
+// Writes a finished vertex: interpolators, then the position through the
+// viewport transform (system constants) into host clip space.
 void xe_write_vertex(vec4 position, vec4 outputs[16])
 {
     for (int i = 0; i < 16; i++)
@@ -193,12 +198,15 @@ void main()
         class Translator
         {
         public:
+            // Translates one shader: microcode dwords (host-endian), vertex or pixel.
             Translator(bool isVertex, const uint32_t* dwords, uint32_t count)
                 : m_vertex(isVertex), m_dwords(dwords), m_count(count)
             {
                 m_info.isVertex = isVertex;
             }
 
+            // Decodes the control flow, emits the GLSL and returns it with the shader's metadata
+            // (or an error).
             TranslationResult Run()
             {
                 TranslationResult result;
@@ -282,12 +290,14 @@ void main()
             // vfetch_mini reuses the address of the previous vfetch_full.
             FetchInstruction m_previousFullFetch;
 
+            // Records the first error; translation continues but the result is marked failed.
             void Fail(const std::string& message)
             {
                 if (m_error.empty())
                     m_error = message;
             }
 
+            // Appends one line to the shader body at the current indentation.
             void Line(const std::string& text)
             {
                 m_body.append(size_t(m_indent) * 4, ' ');
@@ -354,6 +364,8 @@ void main()
                 m_info.storageBufferBinding = uint32_t(m_info.textures.size());
             }
 
+            // The sampler binding for a texture fetch constant used with a dimension (one binding
+            // per distinct pair, in first-use order).
             uint32_t TextureBindingFor(uint32_t fetchConstant, TextureDimension dimension)
             {
                 for (const TextureBinding& binding : m_info.textures)
@@ -366,11 +378,13 @@ void main()
 
             // --- Body ----------------------------------------------------
 
+            // GLSL for boolean constant `index` (bits packed 32 per word in xe_sys.bools).
             std::string BoolConstant(uint32_t index)
             {
                 return Format("((xe_sys.bools[%u][%u] & %uu) != 0u)", index >> 7, (index >> 5) & 3, 1u << (index & 31));
             }
 
+            // Emits the control flow state machine: one case per control flow instruction.
             void EmitBody()
             {
                 m_indent = 2;
@@ -384,6 +398,8 @@ void main()
                 }
             }
 
+            // Emits the case for one control flow instruction: exec clauses, loops, calls, jumps,
+            // allocs.
             void EmitControlFlow(uint32_t index, const CfInstruction& cf)
             {
                 uint32_t next = index + 1;
@@ -474,6 +490,8 @@ void main()
                 Fail(Format("unknown control flow opcode %u", uint32_t(cf.Opcode())));
             }
 
+            // Emits an exec clause's ALU and fetch instructions, each guarded by its predicate
+            // condition if it has one.
             void EmitExec(const CfInstruction& cf)
             {
                 for (uint32_t j = 0; j < cf.ExecCount(); j++)
@@ -495,6 +513,7 @@ void main()
 
             // --- ALU -----------------------------------------------------
 
+            // GLSL for temporary register `index`, optionally relative to the address register a0.
             std::string TempRegister(uint32_t index, bool relative)
             {
                 if (relative)
@@ -502,6 +521,8 @@ void main()
                 return Format("r[%u]", index & (kMaxRegisters - 1));
             }
 
+            // Decodes ALU source operand i (1-3): register or constant, relative addressing,
+            // swizzle, negation, absolute value.
             SourceOperand AluSource(const AluInstruction& alu, uint32_t i)
             {
                 SourceOperand op;
@@ -525,6 +546,7 @@ void main()
                 return op;
             }
 
+            // Applies an operand's absolute value and negation modifiers to an expression.
             static std::string Apply(const SourceOperand& op, const std::string& swizzled)
             {
                 std::string value = swizzled;
@@ -535,6 +557,7 @@ void main()
                 return value;
             }
 
+            // The operand as a vec4 with its swizzle and modifiers.
             static std::string Vector(const SourceOperand& op)
             {
                 std::string swizzle = ".";
@@ -543,6 +566,7 @@ void main()
                 return Apply(op, op.base + swizzle);
             }
 
+            // One component of the operand (after swizzle) with its modifiers, as a float.
             static std::string Component(const SourceOperand& op, uint32_t component)
             {
                 return Apply(op, op.base + "." + kSwizzleChars[SwizzledComponent(op.swizzle, component)]);
@@ -724,6 +748,8 @@ void main()
                 return "";
             }
 
+            // Emits one ALU instruction: the vector and scalar operations it pairs, their
+            // saturation, write masks and exports.
             void EmitAlu(const AluInstruction& alu)
             {
                 bool predicated = alu.IsPredicated();
@@ -854,6 +880,8 @@ void main()
 
             // --- Fetch ---------------------------------------------------
 
+            // GLSL assignments writing a fetch's result into its destination register through the
+            // destination swizzle (components set to 0/1 or kept).
             static std::string DestinationWrites(const FetchInstruction& f, const std::string& value)
             {
                 // 3 bits per destination component: 0-3 = fetched component,
@@ -872,6 +900,7 @@ void main()
                 return out;
             }
 
+            // Emits a vertex or texture fetch.
             void EmitFetch(const FetchInstruction& f)
             {
                 if (f.IsPredicated())
@@ -886,6 +915,9 @@ void main()
                 Line("}");
             }
 
+            // Emits a vertex fetch: reads the element from the vertex memory buffer (through the
+            // fetch constant's offset, stride and endian) and converts it from its vertex format to
+            // floats.
             void EmitVertexFetch(const FetchInstruction& f)
             {
                 if (!f.VertexIsMini())
@@ -1056,6 +1088,8 @@ void main()
                     Line(Format("vec4 dst = %s; %s %s = dst;", dst.c_str(), writes.c_str(), dst.c_str()));
             }
 
+            // Emits a texture fetch (sample, LOD/gradient queries, or texture info) with offsets,
+            // filtering overrides and the fetch constant's result conversion.
             void EmitTextureFetch(const FetchInstruction& f)
             {
                 std::string dst = TempRegister(f.DstReg(), f.DstRelative());
@@ -1172,6 +1206,7 @@ void main()
 
             // --- Assembly ------------------------------------------------
 
+            // The GLSL sampler type for a texture dimension.
             std::string SamplerType(TextureDimension dimension)
             {
                 switch (dimension)
@@ -1184,6 +1219,8 @@ void main()
                 return "sampler2D";
             }
 
+            // Assembles the final GLSL: header, interface declarations, helper functions, the body
+            // and main().
             std::string EmitShader()
             {
                 uint32_t textureSet = m_vertex ? 0 : 2;
@@ -1231,6 +1268,8 @@ float xe_round_index(float value) { return floor(value + 0.5); }
 )";
                 }
                 out += R"(
+// The "cube" ALU op: cube map face coordinates (t, s, 2 * major axis, face
+// index) for a direction.
 vec4 xe_cube(vec4 v)
 {
     // v is src0 = source.zzxy: x = v.z, y = v.w, z = v.x.
@@ -1241,6 +1280,7 @@ vec4 xe_cube(vec4 v)
     else { tc = -y; sc = x < 0.0 ? z : -z; ma = 2.0 * x; id = x < 0.0 ? 1.0 : 0.0; }
     return vec4(tc, sc, ma, id);
 }
+// The "max4" ALU op: the largest component, broadcast.
 vec4 xe_max4(vec4 v)
 {
     if (v.x > v.y && v.x > v.z && v.x > v.w) return vec4(v.x);
@@ -1299,6 +1339,8 @@ bool xe_compare(uint func, float a, float b)
     }
 }
 
+// Turns cube texture coordinates (face s, t and face index) back into a
+// direction for a host samplerCube.
 vec3 xe_cube_direction(vec3 stf)
 {
     // Inverse of cube + "mad r.xy, r, 1/|ma|, 1.5": face coordinates in

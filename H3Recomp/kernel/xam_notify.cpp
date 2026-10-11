@@ -9,6 +9,7 @@
 #include <ppc_recomp_shared.h>
 
 #include "imports.h"
+#include "config/env.h"
 #include "objects.h"
 #include "../memory.h"
 
@@ -43,9 +44,10 @@ namespace
         std::deque<Notification> queue;  // guarded by DispatcherLock()
     };
 
+    // H3_LOG_NOTIFY=1: log notification listener calls.
     bool LogNotify()
     {
-        static const bool log = getenv("H3_LOG_NOTIFY") != nullptr;
+        static const bool log = EnvFlag("H3_LOG_NOTIFY");
         return log;
     }
 }

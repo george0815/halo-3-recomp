@@ -129,6 +129,7 @@ namespace
         y += m <= 2;
     }
 
+    // Days since 1970-01-01 for a Gregorian date (Howard Hinnant's algorithm).
     int64_t DaysFromCivil(int64_t y, unsigned m, unsigned d)
     {
         y -= m <= 2;

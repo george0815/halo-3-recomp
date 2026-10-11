@@ -1,3 +1,5 @@
+// Finds the movie player's Bink frame buffers in guest memory (bink_view.h).
+
 #include "video/bink_view.h"
 
 #include "memory.h"
@@ -19,7 +21,8 @@ namespace h3::video
 
         constexpr uint32_t kPhysicalEnd = 0xC0000000;
 
-        uint32_t Read(uint32_t address)
+        // A big-endian word of guest memory.
+    uint32_t Read(uint32_t address)
         {
             return GuestRef<uint32_t>(address);
         }

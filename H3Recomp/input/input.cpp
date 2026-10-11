@@ -1,4 +1,9 @@
+// XInput emulation (input.h). The keyboard/mouse layout is listed in the
+// README ("Controls"). The keyboard, the mouse and a gamepad are merged:
+// buttons OR together, sticks take the larger deflection.
+
 #include "input/input.h"
+#include "config/env.h"
 
 #include <SDL3/SDL.h>
 
@@ -52,6 +57,8 @@ namespace h3::input
         std::vector<ScriptedPress> g_script;
         uint64_t g_startTicks = 0;
 
+        // The button bit for a name in H3_INPUT_SCRIPT ("a", "start", "up"...),
+        // or 0.
         uint16_t ButtonNamed(const std::string& name)
         {
             static const struct
@@ -69,6 +76,7 @@ namespace h3::input
             return 0;
         }
 
+        // Parses H3_INPUT_SCRIPT into g_script.
         void ParseScript(const char* text)
         {
             std::string script = text;
@@ -109,6 +117,7 @@ namespace h3::input
         int g_mouseWheel = 0;           // notches not yet turned into presses
         uint64_t g_wheelPressUntilNs = 0;
 
+        // The window an event belongs to (null for global events).
         SDL_Window* EventWindow(const SDL_Event& event)
         {
             return SDL_GetWindowFromEvent(&event);
@@ -121,7 +130,7 @@ namespace h3::input
             constexpr float kDeadZone = 8000.0f, kScale = 40.0f;
             if (std::abs(pixelsPerSecond) < 1.0f)
                 return 0;
-            float magnitude = std::min(kDeadZone + std::abs(pixelsPerSecond) * kScale * g_mouseSensitivity, 32767.0f);
+            float magnitude = std::min(kDeadZone + std::abs(pixelsPerSecond) * kScale * g_mouseSensitivity, float(kStickMax));
             return int16_t(pixelsPerSecond < 0 ? -magnitude : magnitude);
         }
 
@@ -130,14 +139,16 @@ namespace h3::input
         SDL_Gamepad* g_gamepad = nullptr;
         bool g_log = false;
 
+        // A stick axis from two keys (full deflection either way).
         int16_t Axis(bool negative, bool positive)
         {
-            return int16_t(positive ? 32767 : 0) - int16_t(negative ? 32767 : 0);
+            return int16_t(positive ? kStickMax : 0) - int16_t(negative ? kStickMax : 0);
         }
 
         // The larger deflection of keyboard and gamepad.
         int16_t Merge(int16_t a, int16_t b) { return std::abs(int32_t(a)) >= std::abs(int32_t(b)) ? a : b; }
 
+        // Opens the first connected gamepad if none is open.
         void OpenFirstGamepad()
         {
             if (g_gamepad)
@@ -156,11 +167,11 @@ namespace h3::input
 
     void Initialize()
     {
-        g_log = getenv("H3_LOG_INPUT") != nullptr;
+        g_log = EnvFlag("H3_LOG_INPUT");
         g_startTicks = SDL_GetTicks();
-        if (const char* sensitivity = getenv("H3_MOUSE_SENSITIVITY"))
+        if (const char* sensitivity = EnvString("H3_MOUSE_SENSITIVITY"))
             g_mouseSensitivity = std::max(float(atof(sensitivity)), 0.01f);
-        if (const char* script = getenv("H3_INPUT_SCRIPT"))
+        if (const char* script = EnvString("H3_INPUT_SCRIPT"))
             ParseScript(script);
         OpenFirstGamepad();
     }
@@ -215,8 +226,8 @@ namespace h3::input
         for (const ScriptedPress& press : g_script)
             if ((press.frames ? double(frame) : seconds) >= press.start && (press.frames ? double(frame) : seconds) < press.end)
                 state.buttons |= press.button;
-        state.leftTrigger = keys[SDL_SCANCODE_LSHIFT] ? 255 : 0;  // throw grenade
-        state.rightTrigger = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_E] ? 255 : 0;  // fire
+        state.leftTrigger = keys[SDL_SCANCODE_LSHIFT] ? kTriggerMax : 0;  // throw grenade
+        state.rightTrigger = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_E] ? kTriggerMax : 0;  // fire
         state.thumbLX = Axis(keys[SDL_SCANCODE_A], keys[SDL_SCANCODE_D]);
         state.thumbLY = Axis(keys[SDL_SCANCODE_S], keys[SDL_SCANCODE_W]);
         state.thumbRX = Axis(keys[SDL_SCANCODE_J], keys[SDL_SCANCODE_L]);
@@ -238,18 +249,19 @@ namespace h3::input
         {
             SDL_MouseButtonFlags mouse = SDL_GetMouseState(nullptr, nullptr);
             if (mouse & SDL_BUTTON_LMASK)
-                state.rightTrigger = 255;
+                state.rightTrigger = kTriggerMax;
             if (mouse & SDL_BUTTON_RMASK)
                 state.buttons |= kRightThumb;
             if (mouse & SDL_BUTTON_MMASK)
                 state.buttons |= kB;
         }
         // Each wheel notch is a ~100 ms press of Y (the game needs to see it
-        // held for a frame or two).
-        if (g_mouseWheel > 0 && now >= g_wheelPressUntilNs + 50'000'000)
+        // held for a frame or two), with a 50 ms release between notches.
+        constexpr uint64_t kWheelPressNs = 100'000'000, kWheelGapNs = 50'000'000;
+        if (g_mouseWheel > 0 && now >= g_wheelPressUntilNs + kWheelGapNs)
         {
             g_mouseWheel--;
-            g_wheelPressUntilNs = now + 100'000'000;
+            g_wheelPressUntilNs = now + kWheelPressNs;
         }
         if (now < g_wheelPressUntilNs)
             state.buttons |= kY;
@@ -281,7 +293,8 @@ namespace h3::input
                 if (SDL_GetGamepadButton(g_gamepad, mapping.button))
                     state.buttons |= mapping.bit;
             // SDL triggers are 0..32767; sticks are Y-down, XInput's Y-up.
-            auto trigger = [](int16_t value) { return uint8_t(std::clamp(int32_t(value), 0, 32767) * 255 / 32767); };
+            static constexpr int32_t kSdlAxisMax = 32767;
+            auto trigger = [](int16_t value) { return uint8_t(std::clamp(int32_t(value), 0, kSdlAxisMax) * kTriggerMax / kSdlAxisMax); };
             auto invert = [](int16_t value) { return int16_t(std::clamp(-int32_t(value), -32768, 32767)); };
             state.leftTrigger = std::max(state.leftTrigger, trigger(SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)));
             state.rightTrigger = std::max(state.rightTrigger, trigger(SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)));

@@ -4,12 +4,12 @@
 
 namespace h3::gpu
 {
-    // A stand-in for the Xenos command processor. It consumes the PM4
-    // command stream the game's Direct3D writes into the ring buffer, and
-    // performs everything the CPU can observe: register writes, memory and
-    // fence writes, waits, indirect buffers and interrupts. Nothing is drawn
-    // (draw and state packets are skipped); the point is to keep the game
-    // running until real graphics exist. Reference: Xenia's
+    // The Xenos command processor: the GPU's front end. The game's Direct3D
+    // writes PM4 command packets into a ring buffer in memory; a thread here
+    // consumes them as the real GPU would: register writes, constant and
+    // shader loads, memory and fence writes, waits, indirect buffers,
+    // predicated tiling and interrupts. Draws, resolves and swaps go on to
+    // the renderer (gpu/renderer.h). Reference: Xenia's
     // src/xenia/gpu/command_processor.cc.
     //
     // GPU registers live in guest memory at kGpuRegisterBase (memory.h), where
@@ -36,10 +36,8 @@ namespace h3::gpu
     constexpr uint32_t kOpcodeHostSwap = 0x64;
     constexpr uint32_t kSwapPacketDwords = 64;
 
+    // A type-3 packet header (VdSwap builds its packet with this).
     uint32_t MakePacketType3(uint32_t opcode, uint32_t payloadDwords);
-
-    // Guest address of a GPU (physical) address.
-    uint32_t PhysicalToGuest(uint32_t address);
 
     // GPU register access (big-endian words at kGpuRegisterBase).
     uint32_t ReadRegister(uint32_t index);

@@ -89,6 +89,7 @@ namespace
         GuestFatal("fiber returned", ctx);
     }
 
+    // Where a new fiber's host stack starts: runs the guest fiber routine.
 #ifdef _WIN32
     void WINAPI FiberEntry(void* parameter)
     {

@@ -1,3 +1,6 @@
+// GPU frame capture: a text dump of one frame's draws, resolves and shader
+// loads with the render state behind each (debugging).
+
 #pragma once
 
 #include <cstdint>

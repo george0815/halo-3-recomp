@@ -1,3 +1,7 @@
+// Guest threads as the kernel sees them: guest-visible thread state (KPCR,
+// KTHREAD, stack, TLS), creating and adopting threads, APCs, thread exit,
+// interrupt exclusion (IRQL) and TLS slots.
+
 #pragma once
 
 #include <cstdint>
@@ -74,6 +78,7 @@ namespace h3::kernel
     void LeaveInterrupt();
 
     // Process-wide dynamic TLS slot allocation.
-    uint32_t TlsAlloc();  // 0xFFFFFFFF when none are left
+    constexpr uint32_t kTlsOutOfIndexes = 0xFFFFFFFF;  // TlsAlloc's "no slot left" (TLS_OUT_OF_INDEXES)
+    uint32_t TlsAlloc();  // kTlsOutOfIndexes when none are left
     bool TlsFree(uint32_t slot);
 }

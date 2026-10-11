@@ -7,6 +7,7 @@
 #include <ppc_recomp_shared.h>
 
 #include "imports.h"
+#include "config/env.h"
 #include "module.h"
 #include "../memory.h"
 
@@ -97,7 +98,7 @@ PPC_FUNC(__imp__ExGetXConfigSetting)
 {
     uint32_t category = ctx.r3.u32 & 0xFFFF, setting = ctx.r4.u32 & 0xFFFF;
     uint32_t buffer = ctx.r5.u32, bufferSize = ctx.r6.u32 & 0xFFFF, requiredSize = ctx.r7.u32;
-    static const bool log = getenv("H3_LOG_XCONFIG") != nullptr;
+    static const bool log = EnvFlag("H3_LOG_XCONFIG");
     uint32_t value = 0, size = 4;
     if (category == 3)  // XCONFIG_USER_CATEGORY
     {

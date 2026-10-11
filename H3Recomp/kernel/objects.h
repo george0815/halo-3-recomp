@@ -1,3 +1,7 @@
+// Kernel object types (events, semaphores, mutants, timers, threads, I/O
+// completion ports, files), the handle table, and the wait primitive the
+// KeWaitFor*/NtWaitFor* exports use.
+
 #pragma once
 
 #include <chrono>
@@ -43,8 +47,12 @@ namespace h3::kernel
         virtual bool IsSignaled(uint32_t thread) const = 0;
         // Applies the side effect of a satisfied wait (auto-reset, count--...).
         virtual void Satisfy(uint32_t thread) {}
+        // The value the guest sees in the object's DISPATCHER_HEADER
+        // SignalState field (1/0 for events, the count for semaphores...).
         virtual int32_t SignalState() const = 0;
 
+        // Writes SignalState() into the guest DISPATCHER_HEADER, for objects
+        // that have one (guest code sometimes reads it directly).
         void SyncHeader() const;
 
         ObjectType type;
@@ -147,6 +155,8 @@ namespace h3::kernel
     // Queues a packet on a completion port and wakes waiters.
     void PostCompletion(IoCompletion& port, const IoCompletion::Packet& packet);
 
+    // The lock protecting all kernel object state and waits (like the
+    // console's dispatcher lock).
     std::unique_lock<std::mutex> DispatcherLock();
     // Wakes waiters after a state change. Call with the lock held.
     void NotifyDispatcher();
@@ -183,6 +193,8 @@ namespace h3::kernel
 
     // Handles. Pseudo handles: 0xFFFFFFFE is the current thread.
     constexpr uint32_t kCurrentThreadHandle = 0xFFFFFFFE;
+    // A new handle to object / the object behind a handle (null if invalid) /
+    // closes a handle (false if it wasn't open).
     uint32_t CreateHandle(std::shared_ptr<KernelObject> object);
     std::shared_ptr<KernelObject> LookupHandle(uint32_t handle);
     bool CloseHandle(uint32_t handle);

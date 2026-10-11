@@ -1,3 +1,6 @@
+// The SDL window: creation (with the SDL_GPU device the renderer uses), the
+// event loop, and presenting frames.
+
 #pragma once
 
 #include <cstdint>
@@ -8,8 +11,9 @@ namespace h3::video
     // main thread, so the guest's main thread runs on a thread of its own
     // (see main.cpp) and the host main thread sits in RunEventLoop.
     //
-    // Nothing is drawn yet: the window is cleared every frame and its title
-    // shows how many frames the game has presented through VdSwap.
+    // Each loop iteration shows the renderer's latest frame (scaled to fit,
+    // letterboxed), or before the first one the Bink video's frame buffers,
+    // and the title shows the frame rate.
 
     // Creates the window. Call on the main thread before RunEventLoop.
     bool CreateMainWindow();

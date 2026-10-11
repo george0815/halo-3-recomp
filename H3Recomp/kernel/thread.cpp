@@ -1,3 +1,9 @@
+// Guest threads: allocating a thread's guest-visible state (stack, KPCR,
+// KTHREAD, TLS), binding it to a host thread, starting threads for
+// ExCreateThread, user APC delivery, thread exit, and the TLS slot
+// allocator. Kernel object side of threads (waits, suspend counts) is in
+// objects.cpp.
+
 #include "thread.h"
 #include "module.h"
 #include "objects.h"
@@ -30,6 +36,8 @@ namespace h3::kernel
             uint32_t exitCode;
         };
 
+        // Wraps guest thread state in a kernel Thread object (what handles and waits
+        // refer to) and registers it.
         std::shared_ptr<Thread> MakeThreadObject(GuestThread* guest)
         {
             auto thread = std::make_shared<Thread>();
@@ -40,17 +48,27 @@ namespace h3::kernel
         }
     }
 
+    namespace
+    {
+        // Smallest stack a guest thread gets (Xenia uses the same floor);
+        // some titles pass 0 or tiny sizes.
+        constexpr uint32_t kMinStackSize = 16 * 1024;
+        // Bytes left free at the top of a new stack: room for the back chain
+        // and the LR save area that callees write above r1.
+        constexpr uint32_t kStackTopReserve = 0x100;
+    }
+
     GuestThread* AllocateGuestThread(uint32_t stackSize)
     {
         auto* thread = new GuestThread();
 
-        stackSize = (std::max(stackSize, 0x4000u) + kPageSize4K - 1) & ~(kPageSize4K - 1);
+        stackSize = (std::max(stackSize, kMinStackSize) + kPageSize4K - 1) & ~(kPageSize4K - 1);
         thread->stackLimit = SystemAlloc(stackSize);
         thread->stackBase = thread->stackLimit + stackSize;
 
         // Static TLS first, then the dynamic slots (Xenia's layout). The
         // static block starts as a copy of the XEX's TLS template.
-        uint32_t staticSize = (g_module.tlsDataSize + 15) & ~15u;
+        uint32_t staticSize = AlignUp(g_module.tlsDataSize, 16);  // keep the slots 16-byte aligned
         thread->tlsStatic = SystemAlloc(staticSize + g_module.tlsSlotCount * 4);
         thread->tlsSlots = thread->tlsStatic + staticSize;
         if (g_module.tlsRawDataAddress != 0)
@@ -74,8 +92,7 @@ namespace h3::kernel
 
     void BindGuestThread(GuestThread* thread, PPCContext& ctx)
     {
-        // Leave room for the back chain and LR save area above r1.
-        ctx.r1.u64 = thread->stackBase - 0x100;
+        ctx.r1.u64 = thread->stackBase - kStackTopReserve;
         ctx.r13.u64 = thread->pcr;
         // The recompiled code keeps its own copy of the host FP control
         // register and writes it back whole when it changes the flush mode.
@@ -188,7 +205,7 @@ namespace h3::kernel
                 return slot;
             }
         }
-        return 0xFFFFFFFF;
+        return kTlsOutOfIndexes;
     }
 
     bool TlsFree(uint32_t slot)

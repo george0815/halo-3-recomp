@@ -20,6 +20,8 @@ namespace
     constexpr uint32_t kShaState = 0x04;
     constexpr uint32_t kShaBuffer = 0x18;
 
+    // SHA-1 compression of one 64-byte block into the state in the guest
+    // XECRYPT_SHA_STATE at `state`.
     void ShaTransform(uint32_t state, const uint8_t* block)
     {
         uint32_t w[80];
@@ -53,6 +55,7 @@ namespace
             GuestRef<uint32_t>(state + kShaState + i * 4) = h[i];
     }
 
+    // Resets a guest XECRYPT_SHA_STATE to the SHA-1 initial values.
     void ShaInit(uint32_t state)
     {
         constexpr uint32_t kInitial[5] = { 0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0 };
@@ -62,6 +65,7 @@ namespace
         memset(GuestPtr<uint8_t>(state + kShaBuffer), 0, 64);
     }
 
+    // Hashes `size` more bytes into a guest XECRYPT_SHA_STATE.
     void ShaUpdate(uint32_t state, const uint8_t* input, uint32_t size)
     {
         uint32_t count = GuestRef<uint32_t>(state + kShaCount);
@@ -84,6 +88,7 @@ namespace
         }
     }
 
+    // Pads, finishes, and writes up to outSize bytes of the digest.
     void ShaFinal(uint32_t state, uint8_t* out, uint32_t outSize)
     {
         // The count is 32-bit, as in the console's state struct.
@@ -152,6 +157,8 @@ namespace
     // Little-endian 32-bit limbs.
     using BigNum = std::vector<uint32_t>;
 
+    // Reads a big number stored as `qwords` 64-bit words, least significant first, each
+    // word big-endian (XeCrypt's "QwNe" layout).
     BigNum LoadQwNe(uint32_t address, uint32_t qwords)
     {
         BigNum value(qwords * 2);
@@ -164,6 +171,8 @@ namespace
         return value;
     }
 
+    // Writes a big number in XeCrypt's QwNe layout (see LoadQwNe), zero-padding to
+    // `qwords` words.
     void StoreQwNe(uint32_t address, const BigNum& value, uint32_t qwords)
     {
         for (uint32_t i = 0; i < qwords; i++)
@@ -185,6 +194,7 @@ namespace
         return true;
     }
 
+    // a -= b, for equal-length numbers with a >= b.
     void SubtractInPlace(BigNum& a, const BigNum& b)
     {
         uint64_t borrow = 0;

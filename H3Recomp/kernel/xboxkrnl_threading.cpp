@@ -5,6 +5,7 @@
 #include <ppc_recomp_shared.h>
 
 #include "imports.h"
+#include "config/env.h"
 #include "objects.h"
 #include "thread.h"
 #include "../memory.h"
@@ -80,12 +81,17 @@ namespace
         std::atomic<uint32_t> waiters{ 0 };
     };
 
+    // The wait bucket for a guest critical section. Contended sections block on a host
+    // condition variable; sections hash into a fixed set of buckets rather than each
+    // getting its own.
     CsWaitBucket& WaitBucket(uint32_t cs)
     {
         static CsWaitBucket buckets[64];
         return buckets[(cs >> 3) % 64];
     }
 
+    // Atomic access to a 32-bit word of guest memory (stored big-endian; callers
+    // compare against byte-swapped values).
     std::atomic_ref<uint32_t> GuestAtomic(uint32_t address)
     {
         return std::atomic_ref<uint32_t>(*GuestPtr<uint32_t>(address));
@@ -109,6 +115,8 @@ void h3::kernel::InitCriticalSection(uint32_t cs, uint32_t spinCount)
 
 namespace
 {
+    // Takes the critical section for `thread` if it's free or already owned by it
+    // (recursion). Returns false if another thread owns it.
     bool TryEnterCriticalSection(uint32_t cs, uint32_t thread)
     {
         if (GuestRef<uint32_t>(cs + kCsOwningThread) == thread)
@@ -177,7 +185,8 @@ PPC_FUNC(__imp__RtlEnterCriticalSection)
                 thread, cs, uint32_t(GuestRef<uint32_t>(cs + kCsOwningThread)),
                 int32_t(GuestRef<int32_t>(cs + kCsRecursionCount)), uint32_t(ctx.lr));
             DumpThreadWaits();
-            if (getenv("H3_TRAP_ON_STUCK"))  // debugging: stop in an attached debugger
+            static const bool trapOnStuck = EnvFlag("H3_TRAP_ON_STUCK");
+            if (trapOnStuck)  // debugging: stop in an attached debugger
                 raise(SIGTRAP);
             reported = true;
         }
@@ -220,6 +229,7 @@ PPC_FUNC(__imp__RtlLeaveCriticalSection)
 // SINGLE_LIST_ENTRY is just the next pointer.
 namespace
 {
+    // Atomic access to a guest SLIST_HEADER (8 bytes, swapped as one 64-bit value).
     std::atomic_ref<uint64_t> SListHeader(uint32_t address)
     {
         return std::atomic_ref<uint64_t>(*GuestPtr<uint64_t>(address));
@@ -229,6 +239,7 @@ namespace
     uint64_t SListDepth(uint64_t header) { return (header >> 16) & 0xFFFF; }
     uint64_t SListSequence(uint64_t header) { return header & 0xFFFF; }
 
+    // Packs an SLIST_HEADER: next entry pointer, depth and sequence number.
     uint64_t MakeSListHeader(uint64_t next, uint64_t depth, uint64_t sequence)
     {
         return (next << 32) | ((depth & 0xFFFF) << 16) | (sequence & 0xFFFF);
@@ -291,6 +302,8 @@ namespace
     thread_local uint32_t t_irql = 0;
     std::recursive_mutex g_interruptLock;
 
+    // Sets the calling thread's IRQL. Going to DISPATCH_LEVEL or above takes the
+    // process-wide interrupt lock (see thread.h), dropping below releases it.
     void SetIrql(uint32_t level)
     {
         bool wasRaised = t_irql >= kDispatchLevel;
@@ -302,6 +315,7 @@ namespace
             g_interruptLock.unlock();
     }
 
+    // Raises the IRQL (never lowers it) and returns the old level, as KfRaiseIrql does.
     uint32_t RaiseIrql(uint32_t level)
     {
         uint32_t old = t_irql;
@@ -309,6 +323,8 @@ namespace
         return old;
     }
 
+    // Spins until the guest spin lock word is free, then stores the owner (the KPCR
+    // address) in it.
     void AcquireSpinLock(uint32_t lock)
     {
         auto word = GuestAtomic(lock);
@@ -322,6 +338,7 @@ namespace
         }
     }
 
+    // Releases a guest spin lock.
     void ReleaseSpinLock(uint32_t lock)
     {
         GuestAtomic(lock).store(0);

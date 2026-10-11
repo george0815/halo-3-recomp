@@ -1,4 +1,7 @@
+// D3D call tracing (d3d_trace.h).
+
 #include "debug/d3d_trace.h"
+#include "config/env.h"
 
 #include <ppc_recomp_shared.h>
 
@@ -20,7 +23,7 @@ namespace h3::d3dtrace
         {
             static uint32_t frame = []
             {
-                const char* value = getenv("H3_TRACE_D3D_FRAME");
+                const char* value = EnvString("H3_TRACE_D3D_FRAME");
                 return value ? std::max(uint32_t(strtoul(value, nullptr, 0)), 51u) : 150u;
             }();
             return frame;
@@ -56,6 +59,7 @@ namespace h3::d3dtrace
         std::vector<ThreadStats*> g_registry;
         std::atomic<uint32_t> g_frame{ 0 };
 
+        // The calling thread's counters.
         ThreadStats& Current()
         {
             thread_local ThreadStats* stats = []
@@ -69,6 +73,7 @@ namespace h3::d3dtrace
             return *stats;
         }
 
+        // Writes d3d_trace.txt: call counts and sampled arguments.
         void WriteReport(uint32_t frame)
         {
             std::vector<Stats> merged(kFunctionCount);

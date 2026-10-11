@@ -22,6 +22,7 @@ namespace
     constexpr uint32_t kDisplayHeight = 720;
     constexpr float kRefreshRate = 60.0f;
 
+    // Stores a float into guest memory (big-endian).
     void StoreFloat(uint32_t address, float value)
     {
         GuestRef<uint32_t>(address) = std::bit_cast<uint32_t>(value);

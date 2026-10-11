@@ -59,6 +59,9 @@ namespace h3::kernel
             memcpy(g_base + image.base, image.data.get(), std::min<size_t>(image.dataSize, image.size));
         }
 
+        // Fills the recompiler's function lookup table (guest address -> host function)
+        // from a module's mapping list, so indirect calls (function pointers, vtables)
+        // find the recompiled code.
         void RegisterFunctions(PPCFuncMapping* mappings)
         {
             for (PPCFuncMapping* mapping = mappings; mapping->host != nullptr; mapping++)
@@ -70,6 +73,7 @@ namespace h3::kernel
         // boundaries (halo3.toml) take it in and it gets no function of its
         // own. A function pointer table calls it directly (at the end of the
         // opening cinematic).
+        constexpr uint32_t kThunkAddress = 0x822010D0;
         void Thunk_822010D0(PPCContext& ctx, uint8_t* base)
         {
             sub_82200E38(ctx, base);
@@ -85,10 +89,13 @@ namespace h3::kernel
             GuestFatal("call to code that wasn't recompiled", ctx);
         }
 
+        // Registers default.xex's functions, plus the thunk above, and points every
+        // other code address at MissingFunction so a bad indirect call reports itself
+        // instead of crashing.
         void RegisterExecutableFunctions()
         {
             RegisterFunctions(PPCFuncMappings);
-            PPC_LOOKUP_FUNC(g_base, 0x822010D0) = Thunk_822010D0;
+            PPC_LOOKUP_FUNC(g_base, kThunkAddress) = Thunk_822010D0;
             for (uint64_t address = PPC_CODE_BASE; address < PPC_CODE_BASE + PPC_CODE_SIZE; address += 4)
                 if (PPC_LOOKUP_FUNC(g_base, address) == nullptr)
                     PPC_LOOKUP_FUNC(g_base, address) = MissingFunction;
@@ -111,6 +118,9 @@ namespace h3::kernel
             return entry;
         }
 
+        // Builds the kernel's record of a loaded module: name, image range, entry
+        // point, a copy of its XEX headers (exports and imports are read from them
+        // later) and its loader entry.
         std::unique_ptr<Module> CreateModule(std::string name, const Image& image, const std::vector<uint8_t>& file)
         {
             auto module = std::make_unique<Module>();
@@ -129,6 +139,8 @@ namespace h3::kernel
             return module;
         }
 
+        // The loaded module `name`, loading it from game:\ first if needed (when ctx
+        // allows running its entry point). Null if it can't be found.
         Module* LoadDependency(std::string_view name, PPCContext* ctx)
         {
             if (Module* module = FindModule(name))
@@ -213,6 +225,9 @@ namespace h3::kernel
             return true;
         }
 
+        // The recompiled code for a DLL image, matched by base address and size (each
+        // DLL was recompiled for the base it loads at; see
+        // H3RecompLib/config/modules/).
         const RecompiledModule* FindRecompiledModule(const Image& image)
         {
             for (const RecompiledModule* entry = kRecompiledModules; entry->name != nullptr; entry++)

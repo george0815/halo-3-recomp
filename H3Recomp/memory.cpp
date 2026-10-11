@@ -1,3 +1,8 @@
+// Guest memory implementation: reserving the 4 GiB guest range, aliasing the
+// three views of physical memory onto one block of host memory, and the
+// page-granular heaps (GuestHeap) that the kernel's allocation exports use.
+// Interface and address map: memory.h.
+
 #include "memory.h"
 
 #include <algorithm>
@@ -23,7 +28,6 @@ namespace h3
         // view from another, so all three must alias the same memory. The
         // 0xE0000000 view starts 0x1000 into physical memory (Xenia's
         // memory.cc maps it the same way).
-        constexpr uint32_t kPhysicalSize = 0x20000000;
         constexpr uint32_t kPhysicalViewC = 0xC0000000;
         constexpr uint32_t kPhysicalViewE = 0xE0000000;
         constexpr uint32_t kViewEOffset = 0x1000;
@@ -31,6 +35,8 @@ namespace h3
 #ifndef _WIN32
         int g_physicalFd = -1;
 
+        // Maps `size` bytes of the physical memory file, from `offset`, at guest
+        // address `guest`.
         bool MapPhysicalView(uint32_t guest, uint64_t offset, uint64_t size)
         {
             void* view = mmap(g_base + guest, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, g_physicalFd, offset);
@@ -44,7 +50,7 @@ namespace h3
             if (address >= kPhysicalViewE)
                 return int64_t(address - kPhysicalViewE) + kViewEOffset;
             if (address >= kPhysicalMemoryBase)
-                return (address - kPhysicalMemoryBase) & (kPhysicalSize - 1);
+                return (address - kPhysicalMemoryBase) & (kPhysicalMemorySize - 1);
             return -1;
         }
     }
@@ -66,17 +72,19 @@ namespace h3
 
         // Physical memory is a sparse memfd mapped at each view.
         g_physicalFd = memfd_create("h3-physical", 0);
-        if (g_physicalFd < 0 || ftruncate(g_physicalFd, kPhysicalSize) != 0)
+        if (g_physicalFd < 0 || ftruncate(g_physicalFd, kPhysicalMemorySize) != 0)
             return false;
-        if (!MapPhysicalView(kPhysicalMemoryBase, 0, kPhysicalSize) ||
-            !MapPhysicalView(kPhysicalViewC, 0, kPhysicalSize) ||
-            !MapPhysicalView(kPhysicalViewE, kViewEOffset, kPhysicalSize - kViewEOffset))
+        if (!MapPhysicalView(kPhysicalMemoryBase, 0, kPhysicalMemorySize) ||
+            !MapPhysicalView(kPhysicalViewC, 0, kPhysicalMemorySize) ||
+            !MapPhysicalView(kPhysicalViewE, kViewEOffset, kPhysicalMemorySize - kViewEOffset))
             return false;
 #endif
         g_base = static_cast<uint8_t*>(memory);
         return g_base != nullptr;
     }
 
+    // Releases the host pages behind a range so they read back as zero (and
+    // stop using host memory).
     static void ZeroPages(uint32_t address, uint32_t size)
     {
 #ifdef _WIN32
@@ -94,10 +102,6 @@ namespace h3
 #endif
     }
 
-    static uint64_t AlignUp(uint64_t value, uint64_t alignment)
-    {
-        return (value + alignment - 1) & ~(alignment - 1);
-    }
 
     GuestHeap::GuestHeap(uint32_t base, uint32_t end, uint32_t pageSize)
         : m_base(base), m_end(end), m_pageSize(pageSize)
@@ -111,7 +115,7 @@ namespace h3
 
         std::lock_guard lock(m_mutex);
         uint64_t start = address & ~uint64_t(m_pageSize - 1);
-        uint64_t end = AlignUp(uint64_t(address) + std::max<uint32_t>(size, 1), m_pageSize);
+        uint64_t end = AlignUp64(uint64_t(address) + std::max<uint32_t>(size, 1), m_pageSize);
         if (start < m_base || end > m_end)
             return 0;
 
@@ -134,7 +138,7 @@ namespace h3
     {
         std::lock_guard lock(m_mutex);
         uint64_t alignTo = std::max(alignment, m_pageSize);
-        uint64_t bytes = AlignUp(std::max<uint32_t>(size, 1), m_pageSize);
+        uint64_t bytes = AlignUp64(std::max<uint32_t>(size, 1), m_pageSize);
         low = std::max(low, m_base);
         high = std::min(high, m_end);
 
@@ -162,14 +166,14 @@ namespace h3
         }
 
         // First fit over the gaps between allocations.
-        uint64_t candidate = AlignUp(low, alignTo);
+        uint64_t candidate = AlignUp64(low, alignTo);
         for (const auto& [allocBase, allocSize] : m_allocations)
         {
             if (uint64_t(allocBase) + allocSize <= candidate)
                 continue;
             if (candidate + bytes <= allocBase)
                 break;
-            candidate = AlignUp(uint64_t(allocBase) + allocSize, alignTo);
+            candidate = AlignUp64(uint64_t(allocBase) + allocSize, alignTo);
         }
 
         if (candidate + bytes > high)
@@ -197,7 +201,7 @@ namespace h3
     void GuestHeap::Decommit(uint32_t address, uint32_t size)
     {
         uint32_t start = address & ~(m_pageSize - 1);
-        ZeroPages(start, uint32_t(AlignUp(uint64_t(address) + size, m_pageSize) - start));
+        ZeroPages(start, uint32_t(AlignUp64(uint64_t(address) + size, m_pageSize) - start));
     }
 
     uint64_t GuestHeap::AllocatedBytes() const
@@ -223,22 +227,36 @@ namespace h3
         return true;
     }
 
+    // Heap ranges, following the 360's address map (memory.h).
+    namespace
+    {
+        constexpr uint32_t kVirtual4KBase = 0x00010000;   // the first 64 KiB stay unmapped (null pointer guard)
+        constexpr uint32_t kVirtual64KBase = 0x40000000;  // virtual memory with 64 KiB pages starts here
+        constexpr uint32_t kSystemBase = 0x70000000;      // runtime-owned objects (stacks, KPCR, ...) up to the GPU registers
+    }
+
+    // Virtual memory (NtAllocateVirtualMemory): a 4 KiB-page heap and a
+    // 64 KiB-page heap, as on the console.
     GuestHeap& VirtualHeap(uint32_t pageSize)
     {
-        static GuestHeap heap4k(0x00010000, 0x40000000, kPageSize4K);
-        static GuestHeap heap64k(0x40000000, 0x70000000, kPageSize64K);
+        static GuestHeap heap4k(kVirtual4KBase, kVirtual64KBase, kPageSize4K);
+        static GuestHeap heap64k(kVirtual64KBase, kSystemBase, kPageSize64K);
         return pageSize >= kPageSize64K ? heap64k : heap4k;
     }
 
+    // Physical memory (MmAllocatePhysicalMemoryEx), handed out through the
+    // 0xA0000000 view.
     GuestHeap& PhysicalHeap()
     {
-        static GuestHeap heap(kPhysicalMemoryBase, 0xC0000000, kPageSize4K);
+        static GuestHeap heap(kPhysicalMemoryBase, kPhysicalMemoryBase + kPhysicalMemorySize, kPageSize4K);
         return heap;
     }
 
+    // Guest memory the runtime itself allocates (thread stacks, KPCR,
+    // KTHREAD, TLS, kernel object stand-ins the game can see).
     GuestHeap& SystemHeap()
     {
-        static GuestHeap heap(0x70000000, kGpuRegisterBase, kPageSize4K);
+        static GuestHeap heap(kSystemBase, kGpuRegisterBase, kPageSize4K);
         return heap;
     }
 

@@ -4,6 +4,7 @@
 #include <ppc_recomp_shared.h>
 
 #include "imports.h"
+#include "config/env.h"
 #include "objects.h"
 #include "vfs.h"
 #include "../memory.h"
@@ -22,6 +23,12 @@
 
 using namespace h3;
 using namespace h3::kernel;
+
+namespace
+{
+    // Serial number reported for every volume (any value works; "H3M3").
+    constexpr uint32_t kVolumeSerialNumber = 0x48334D33;
+}
 
 namespace
 {
@@ -100,8 +107,8 @@ namespace
     constexpr uint64_t kUseFilePointer = 0xFFFFFFFFFFFFFFFEull;
     constexpr uint64_t kWriteToEnd = 0xFFFFFFFFFFFFFFFFull;
 
-    const bool g_logFiles = getenv("H3_LOG_FILES") != nullptr;
-    const bool g_logReads = getenv("H3_LOG_READS") != nullptr;
+    const bool g_logFiles = EnvFlag("H3_LOG_FILES");
+    const bool g_logReads = EnvFlag("H3_LOG_READS");
 
     struct File : KernelObject
     {
@@ -140,6 +147,7 @@ namespace
         bool listed = false;
     };
 
+    // Seeks a host file to a 64-bit offset (fseeko/_fseeki64). Returns 0 on success.
     int Seek(std::FILE* stream, uint64_t offset)
     {
 #ifdef _WIN32
@@ -166,6 +174,8 @@ namespace
         bool directory = false;
     };
 
+    // Size, attributes and timestamps of a host file, as the guest's file info classes
+    // report them.
     FileInfo QueryFileInfo(const std::filesystem::path& path, bool writable)
     {
         std::error_code error;
@@ -185,12 +195,14 @@ namespace
     {
         for (uint32_t i = 0; i < 4; i++)
             GuestRef<uint64_t>(out + i * 8) = info.time;
-        GuestRef<uint64_t>(out + 0x20) = (info.size + 0xFFF) & ~0xFFFull;
+        GuestRef<uint64_t>(out + 0x20) = AlignUp64(info.size, kPageSize4K);
         GuestRef<uint64_t>(out + 0x28) = info.size;
         GuestRef<uint32_t>(out + 0x30) = info.attributes;
         GuestRef<uint32_t>(out + 0x34) = 0;
     }
 
+    // Finishes a guest I/O request: writes the IO_STATUS_BLOCK, signals its event,
+    // queues its APC or completion port packet.
     void CompleteIo(uint32_t iosb, uint32_t status, uint32_t information, uint32_t eventHandle)
     {
         if (iosb != 0)
@@ -323,6 +335,8 @@ namespace
         return same && MatchPattern(pattern.substr(1), name.substr(1));
     }
 
+    // Copies a guest ANSI_STRING (length, max length, buffer pointer) into a host
+    // string.
     std::string AnsiString(uint32_t string)
     {
         if (string == 0)
@@ -543,7 +557,7 @@ PPC_FUNC(__imp__NtQueryInformationFile)
         GuestRef<uint32_t>(out + 0x24) = 0;
         break;
     case 5:
-        GuestRef<uint64_t>(out + 0x00) = (info.size + 0xFFF) & ~0xFFFull;
+        GuestRef<uint64_t>(out + 0x00) = AlignUp64(info.size, kPageSize4K);
         GuestRef<uint64_t>(out + 0x08) = info.size;
         GuestRef<uint32_t>(out + 0x10) = 1;
         *GuestPtr<uint8_t>(out + 0x14) = file->deleteOnClose;
@@ -709,7 +723,7 @@ PPC_FUNC(__imp__NtQueryDirectoryFile)
     for (uint32_t i = 0; i < 4; i++)
         GuestRef<uint64_t>(out + 0x08 + i * 8) = info.time;
     GuestRef<uint64_t>(out + 0x28) = info.size;
-    GuestRef<uint64_t>(out + 0x30) = (info.size + 0xFFF) & ~0xFFFull;
+    GuestRef<uint64_t>(out + 0x30) = AlignUp64(info.size, kPageSize4K);
     GuestRef<uint32_t>(out + 0x38) = info.attributes;
     GuestRef<uint32_t>(out + 0x3C) = uint32_t(name.size());
     memcpy(GuestPtr<char>(out + 0x40), name.data(), name.size());
@@ -760,7 +774,7 @@ PPC_FUNC(__imp__NtQueryVolumeInformationFile)
         if (length < size)
             break;
         GuestRef<uint64_t>(out + 0x00) = 0;
-        GuestRef<uint32_t>(out + 0x08) = 0x48334D33;
+        GuestRef<uint32_t>(out + 0x08) = kVolumeSerialNumber;
         GuestRef<uint32_t>(out + 0x0C) = 0;
         GuestRef<uint32_t>(out + 0x10) = 0;
         break;

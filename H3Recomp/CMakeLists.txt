@@ -1,9 +1,19 @@
+# The runtime executable: kernel, GPU, audio, input and window code linked
+# with the recompiled game (H3RecompLib). See docs/ARCHITECTURE.md.
+
 add_executable(H3Recomp
     main.cpp
     memory.cpp
     gpu/command_processor.cpp
     gpu/frame_capture.cpp
     gpu/renderer.cpp
+    gpu/renderer/copy.cpp
+    gpu/renderer/debug.cpp
+    gpu/renderer/draw.cpp
+    gpu/renderer/resolve.cpp
+    gpu/renderer/shaders.cpp
+    gpu/renderer/targets.cpp
+    gpu/renderer/textures.cpp
     gpu/texture.cpp
     input/input.cpp
     debug/first_calls.cpp

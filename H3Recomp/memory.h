@@ -1,3 +1,10 @@
+// Guest memory: the 360's 32-bit address space, reserved as one 4 GiB block
+// of host memory. Guest addresses are offsets from g_base; GuestPtr/GuestRef
+// turn them into host pointers (GuestRef also handles big-endian values).
+// Also the page allocators (GuestHeap) behind the kernel's memory exports.
+//
+// See docs/ARCHITECTURE.md ("Key concepts") for the big picture.
+
 #pragma once
 
 #include <cstddef>
@@ -29,11 +36,30 @@ namespace h3
     //   0xE0000000 - 0xFFFFFFFF  and again, starting 0x1000 in (memory.cpp)
     constexpr uint32_t kGpuRegisterBase = 0x7FC80000;
     constexpr uint32_t kPhysicalMemoryBase = 0xA0000000;
+    // The 360 has 512 MiB of physical memory, so physical addresses (what the
+    // GPU and audio hardware see) fit in 29 bits; the high bits of a guest
+    // address only pick one of the three views onto it.
+    constexpr uint32_t kPhysicalMemorySize = 0x20000000;
+    constexpr uint32_t kPhysicalAddressMask = kPhysicalMemorySize - 1;
     constexpr uint32_t kPageSize4K = 0x1000;
     constexpr uint32_t kPageSize64K = 0x10000;
+    constexpr uint32_t kPageSize16M = 0x1000000;
 
+    // Rounds value up to a multiple of alignment (a power of two).
+    constexpr uint32_t AlignUp(uint32_t value, uint32_t alignment) { return (value + alignment - 1) & ~(alignment - 1); }
+    constexpr uint64_t AlignUp64(uint64_t value, uint64_t alignment) { return (value + alignment - 1) & ~(alignment - 1); }
+
+    // Host address of guest address 0 (set by InitGuestMemory).
     extern uint8_t* g_base;
 
+    // Physical address (as hardware sees it) of a guest address in one of
+    // the physical views, and the guest address (in the 0xA0000000 view)
+    // of a physical address.
+    constexpr uint32_t GuestToPhysical(uint32_t address) { return address & kPhysicalAddressMask; }
+    constexpr uint32_t PhysicalToGuest(uint32_t physical) { return kPhysicalMemoryBase + (physical & kPhysicalAddressMask); }
+
+    // Reserves the 4 GiB guest range and maps the physical memory views.
+    // Returns false if the host can't reserve it.
     bool InitGuestMemory();
 
     template <typename T>
@@ -55,6 +81,7 @@ namespace h3
     class GuestHeap
     {
     public:
+        // A heap over guest addresses [base, end) handing out pageSize pages.
         GuestHeap(uint32_t base, uint32_t end, uint32_t pageSize);
 
         // Returns the guest address, or 0 if the range is full or (for a
@@ -85,6 +112,8 @@ namespace h3
         std::map<uint32_t, uint32_t> m_allocations;  // base -> size
     };
 
+    // The heap for virtual allocations with the given page size (4 KiB or
+    // 64 KiB), for physical memory, and for the runtime's own guest objects.
     GuestHeap& VirtualHeap(uint32_t pageSize);
     GuestHeap& PhysicalHeap();
     GuestHeap& SystemHeap();

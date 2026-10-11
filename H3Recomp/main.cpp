@@ -1,3 +1,10 @@
+// Entry point of the runtime. Sets up the host side (guest memory, window,
+// GPU and XMA workers, the folders that stand in for the 360's disc and hard
+// drive), loads default.xex, and runs the game's entry point on its own
+// thread while the host main thread runs the SDL event loop.
+//
+// See docs/ARCHITECTURE.md for how the pieces fit together.
+
 #include <ppc_recomp_shared.h>
 
 #include "memory.h"
@@ -21,6 +28,19 @@
 // must fit inside the 4 GiB guest range.
 static_assert(PPC_IMAGE_BASE + PPC_IMAGE_SIZE + PPC_CODE_SIZE * 2 <= h3::kGuestMemorySize);
 
+namespace
+{
+    // Halo 3's XEX header asks for a 64 KiB main thread stack. We give it at
+    // least this much: the headroom costs nothing (pages are committed
+    // lazily), and an overflow would silently corrupt neighbouring memory.
+    constexpr uint32_t kMinMainStackSize = 1024 * 1024;
+
+    // The 360 hard drive has two cache partitions (cache0:, cache1:) that
+    // Halo 3 streams map data into.
+    constexpr int kCachePartitionCount = 2;
+}
+
+// Usage: H3Recomp [path to default.xex]   (default: private/default.xex)
 int main(int argc, char* argv[])
 {
     // Point this at default_patched.xex when recompiling with a title update.
@@ -38,7 +58,7 @@ int main(int argc, char* argv[])
     // mounts its own cache file system and links cache0:/cache1: to it. We
     // don't emulate the raw partition, so back the caches with host folders
     // and link them up front.
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < kCachePartitionCount; i++)
     {
         std::string cache = "Cache" + std::to_string(i);
         std::filesystem::create_directories(xexDir / "hdd" / cache);
@@ -54,6 +74,9 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    // The window owns the SDL_GPU device the renderer draws with, so it comes
+    // before the GPU. The XMA decoder must be ready before the game first
+    // reads its registers.
     if (!h3::video::CreateMainWindow())
         return 1;
 
@@ -67,10 +90,8 @@ int main(int argc, char* argv[])
     // wants on the host main thread.
     std::thread([]
     {
-        // Halo 3's header asks for a 64 KiB main stack. Give it at least 1 MiB:
-        // the headroom is free, and an overflow would silently corrupt memory.
         PPCContext ctx{};
-        h3::kernel::AdoptHostThread(ctx, std::max(h3::kernel::g_module.stackSize, 0x100000u));
+        h3::kernel::AdoptHostThread(ctx, std::max(h3::kernel::g_module.stackSize, kMinMainStackSize));
 
         printf("Entering guest at _xstart\n");
         fflush(stdout);

@@ -15,8 +15,12 @@ using namespace h3::kernel;
 
 namespace
 {
-    // Driver handles carry this tag above the client index, as on the console.
+    // Driver handles carry this tag ("AU") above the client index, as on
+    // the console; the low 16 bits are the index.
     constexpr uint32_t kDriverTag = 0x41550000;
+    constexpr uint32_t kDriverIndexMask = 0xFFFF;
+    // XAudioGetSpeakerConfig's value for 5.1 output (what Xenia reports).
+    constexpr uint32_t kSpeakerConfig51 = 0x00010001;
 }
 
 // DWORD XAudioRegisterRenderDriverClient(LPDWORD callbackAndArg, LPDWORD driver)
@@ -37,21 +41,21 @@ PPC_FUNC(__imp__XAudioRegisterRenderDriverClient)
 // DWORD XAudioUnregisterRenderDriverClient(DWORD driver)
 PPC_FUNC(__imp__XAudioUnregisterRenderDriverClient)
 {
-    apu::UnregisterClient(ctx.r3.u32 & 0xFFFF);
+    apu::UnregisterClient(ctx.r3.u32 & kDriverIndexMask);
     ctx.r3.u64 = 0;
 }
 
 // DWORD XAudioSubmitRenderDriverFrame(DWORD driver, const float* samples)
 PPC_FUNC(__imp__XAudioSubmitRenderDriverFrame)
 {
-    apu::SubmitFrame(ctx.r3.u32 & 0xFFFF, ctx.r4.u32);
+    apu::SubmitFrame(ctx.r3.u32 & kDriverIndexMask, ctx.r4.u32);
     ctx.r3.u64 = 0;
 }
 
 // DWORD XAudioGetSpeakerConfig(LPDWORD config): 5.1, as Xenia reports.
 PPC_FUNC(__imp__XAudioGetSpeakerConfig)
 {
-    GuestRef<uint32_t>(ctx.r3.u32) = 0x00010001;
+    GuestRef<uint32_t>(ctx.r3.u32) = kSpeakerConfig51;
     ctx.r3.u64 = 0;
 }
 

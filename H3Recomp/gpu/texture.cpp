@@ -1,4 +1,9 @@
+// Xenos texture decoding (texture.h): fetch constant parsing, layout
+// (tiling, packed mips), format conversion and untiling.
+
 #include "gpu/texture.h"
+
+#include "memory.h"
 
 #include <algorithm>
 #include <cstring>
@@ -29,6 +34,8 @@ namespace h3::gpu::texture
             Convert convert = Convert::Copy;
         };
 
+        // How a xenos::TextureFormat is stored (block size, bytes) and which
+        // host format/conversion decodes it. blockBytes 0: unsupported.
         Format FormatFor(uint32_t format)
         {
             switch (format)
@@ -99,6 +106,7 @@ namespace h3::gpu::texture
             }
         }
 
+        // Smallest n with 2^n >= value.
         uint32_t Log2Ceil(uint32_t value)
         {
             uint32_t log2 = 0;
@@ -107,6 +115,7 @@ namespace h3::gpu::texture
             return log2;
         }
 
+        // Byte-swaps a block in place for a fetch constant endian mode.
         void Swap(uint8_t* data, uint32_t bytes, uint32_t endian)
         {
             switch (endian)
@@ -215,7 +224,7 @@ namespace h3::gpu::texture
         {
             pitchBlocks = std::max(fetch.pitch, fetch.width) / f.blockSize;
             if (fetch.tiled)
-                pitchBlocks = (pitchBlocks + 31) & ~31u;
+                pitchBlocks = AlignUp(pitchBlocks, kTileSize);
             offsetX = offsetY = 0;
             if (fetch.explicitOffset)
             {
@@ -224,13 +233,13 @@ namespace h3::gpu::texture
                 return;
             }
             uint32_t log2w = Log2Ceil(fetch.width), log2h = Log2Ceil(fetch.height);
-            if (fetch.packedMips && std::min(log2w, log2h) <= 4)
+            if (fetch.packedMips && std::min(log2w, log2h) <= kPackedMipMaxSizeLog2)
             {
                 // Xenia's GetPackedTileOffset for the first packed level.
                 if (log2w > log2h)
-                    offsetY = 16 / f.blockSize;
+                    offsetY = kPackedMipMaxSize / f.blockSize;
                 else
-                    offsetX = 16 / f.blockSize;
+                    offsetX = kPackedMipMaxSize / f.blockSize;
             }
         }
     }
@@ -248,6 +257,13 @@ namespace h3::gpu::texture
             logBpp;
     }
 
+    // Fetch constant layout (Xenia's xe_gpu_texture_fetch_t):
+    //   word 0: type : 2, signs : 8 @2, clamp x/y/z : 3 each @10, pitch/32 : 9 @22, tiled @31
+    //   word 1: format : 6, endian : 2 @6, stacked @10, base address (4 KB units) @12
+    //   word 2: size (layout depends on the dimension; see below)
+    //   word 3: swizzle : 12 @1, exp adjust : 6 @13, filters @19..27
+    //   word 4: mip min/max level : 4 each @2/@6
+    //   word 5: dimension : 2 @9, packed mips @11, mip address (4 KB units) @12
     FetchConstant ParseFetchConstant(const uint32_t words[6])
     {
         FetchConstant fetch;
@@ -303,10 +319,10 @@ namespace h3::gpu::texture
         Layout(fetch, f, pitchBlocks, offsetX, offsetY);
         uint32_t rows = (fetch.height + f.blockSize - 1) / f.blockSize + offsetY;
         if (fetch.tiled)
-            rows = (rows + 31) & ~31u;
+            rows = AlignUp(rows, kTileSize);
         uint32_t rowBytes = pitchBlocks * f.blockBytes;
         if (!fetch.tiled)
-            rowBytes = (rowBytes + 255) & ~255u;
+            rowBytes = AlignUp(rowBytes, kLinearRowAlignment);
         return rows * rowBytes;
     }
 
@@ -319,7 +335,7 @@ namespace h3::gpu::texture
         Layout(fetch, f, pitchBlocks, offsetX, offsetY);
         uint32_t blocksX = (fetch.width + f.blockSize - 1) / f.blockSize;
         uint32_t blocksY = (fetch.height + f.blockSize - 1) / f.blockSize;
-        uint32_t linearRowBytes = (pitchBlocks * f.blockBytes + 255) & ~255u;
+        uint32_t linearRowBytes = AlignUp(pitchBlocks * f.blockBytes, kLinearRowAlignment);
 
         // Host layout: compressed formats stay in blocks (rows of blocks);
         // block conversions expand to texels.
@@ -366,18 +382,18 @@ namespace h3::gpu::texture
         // Levels from packedLevel on share one tile (Xenia's
         // GetPackedMipLevel / GetPackedMipOffset).
         uint32_t log2Min = std::min(log2w, log2h);
-        uint32_t packedLevel = fetch.packedMips ? (log2Min > 4 ? log2Min - 4 : 0) : ~0u;
+        uint32_t packedLevel = fetch.packedMips ? (log2Min > kPackedMipMaxSizeLog2 ? log2Min - kPackedMipMaxSizeLog2 : 0) : ~0u;
         auto alignUp = [](uint32_t value, uint32_t alignment) { return (value + alignment - 1) / alignment * alignment; };
         // Level l's storage: power-of-two dimensions, 32x32-block aligned,
         // linear rows 256-byte aligned, each level 4 KB aligned.
         auto stridePitch = [&](uint32_t level) { return std::max(1u, (1u << log2w) >> level); };
         auto strideBytes = [&](uint32_t level) {
-            uint32_t pitchBlocks = alignUp(alignUp(stridePitch(level), f.blockSize) / f.blockSize, 32);
+            uint32_t pitchBlocks = alignUp(alignUp(stridePitch(level), f.blockSize) / f.blockSize, kTileSize);
             uint32_t rowBytes = pitchBlocks * f.blockBytes;
             if (!fetch.tiled)
-                rowBytes = alignUp(rowBytes, 256);
-            uint32_t rows = alignUp(alignUp(std::max(1u, (1u << log2h) >> level), f.blockSize) / f.blockSize, 32);
-            return alignUp(rowBytes * rows, 4096);
+                rowBytes = alignUp(rowBytes, kLinearRowAlignment);
+            uint32_t rows = alignUp(alignUp(std::max(1u, (1u << log2h) >> level), f.blockSize) / f.blockSize, kTileSize);
+            return alignUp(rowBytes * rows, kLevelAlignment);
         };
         uint32_t address = fetch.mipAddress;
         for (uint32_t level = 1; level <= maxLevel; level++)
@@ -396,7 +412,7 @@ namespace h3::gpu::texture
                     tailAddress += strideBytes(l);
                 mip.address = tailAddress;
                 mip.pitch = stridePitch(std::max(packedLevel, 1u));
-                uint32_t baseLevel = log2Min > 4 ? log2Min - 4 : 0;
+                uint32_t baseLevel = log2Min > kPackedMipMaxSizeLog2 ? log2Min - kPackedMipMaxSizeLog2 : 0;
                 uint32_t packedMip = level - baseLevel;
                 uint32_t x = 0, y = 0;
                 if (packedMip < 3)
@@ -450,7 +466,7 @@ namespace h3::gpu::texture
             result.width = result.pitch = levelSize(fetch.width, l);
             result.height = levelSize(fetch.height, l);
             if (l < level)
-                result.address += (GuestSize(result) + 4095) & ~4095u;
+                result.address += AlignUp(GuestSize(result), kLevelAlignment);
         }
         return result;
     }

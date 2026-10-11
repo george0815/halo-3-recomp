@@ -10,6 +10,7 @@
 #include <ppc_recomp_shared.h>
 
 #include "imports.h"
+#include "config/env.h"
 #include "objects.h"
 #include "vfs.h"
 #include "../memory.h"
@@ -41,9 +42,10 @@ namespace
     constexpr uint32_t kContentTypeSavedGame = 1;
     constexpr uint32_t kContentDataSize = 0x134;
 
+    // H3_LOG_CONTENT=1: log content (save) package calls.
     bool LogContent()
     {
-        static const bool log = getenv("H3_LOG_CONTENT") != nullptr;
+        static const bool log = EnvFlag("H3_LOG_CONTENT");
         return log;
     }
 
@@ -57,6 +59,7 @@ namespace
         std::u16string displayName;
     };
 
+    // Reads a guest XCONTENT_DATA (layout above) into host form.
     ContentData ReadContentData(uint32_t address)
     {
         ContentData data;
@@ -93,6 +96,8 @@ namespace
         return out;
     }
 
+    // value as upper-case hex, zero-padded to `digits` (content folder names use
+    // these).
     std::string Hex(uint64_t value, int digits)
     {
         char text[32];

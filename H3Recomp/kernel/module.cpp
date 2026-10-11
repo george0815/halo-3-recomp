@@ -1,3 +1,5 @@
+// Reads ModuleInfo (module.h) from the XEX's optional headers.
+
 #include "module.h"
 
 #include <xex.h>

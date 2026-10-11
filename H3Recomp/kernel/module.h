@@ -1,3 +1,6 @@
+// Facts about the running XEX that the kernel needs (stack size, TLS layout,
+// system flags), read from its optional headers when it's loaded.
+
 #pragma once
 
 #include <cstdint>

@@ -1,3 +1,5 @@
+// XAudio render driver: audio output (see the comment below).
+
 #pragma once
 
 #include <cstdint>
