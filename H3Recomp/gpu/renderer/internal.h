@@ -26,6 +26,7 @@
 #include <SDL3/SDL.h>
 #include <shaderc/shaderc.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -101,6 +102,20 @@ namespace h3::gpu::renderer::internal
     // 1x, 2x (one above the other), 4x (2x2).
     inline uint32_t SamplesX(uint32_t msaa) { return msaa == 2 ? 2 : 1; }
     inline uint32_t SamplesY(uint32_t msaa) { return msaa == 0 ? 1 : 2; }
+
+    // Render scale (settings.ini render_scale, H3_RENDER_SCALE overrides):
+    // render targets and the textures resolved from them are this many
+    // times the guest's size in each direction, so the game renders at
+    // 1280x720 times the scale. Set once by Initialize.
+    // (At most config::kMaxRenderScale.)
+    inline uint32_t g_renderScale = 1;
+
+    // Host render target size (sample space times the render scale).
+    inline uint32_t TargetWidth() { return kRenderTargetWidth * g_renderScale; }
+    inline uint32_t TargetHeight() { return kRenderTargetHeight * g_renderScale; }
+    // Host texels per guest pixel along x / y for an MSAA mode.
+    inline uint32_t GridX(uint32_t msaa) { return SamplesX(msaa) * g_renderScale; }
+    inline uint32_t GridY(uint32_t msaa) { return SamplesY(msaa) * g_renderScale; }
     // The current surface's MSAA mode (RB_SURFACE_INFO bits 16-17).
     inline uint32_t SurfaceMsaa() { return (ReadRegister(kRegRbSurfaceInfo) >> 16) & 3; }
 
@@ -315,15 +330,25 @@ namespace h3::gpu::renderer::internal
 
     // Host texture standing in for a resolve destination in memory: a tiled
     // pitch x height image of bpp-byte texels at physical address base.
+    // The host texture is g_renderScale times pitch x height (HostWidth /
+    // HostHeight); positions inside it are guest texels times the scale.
     struct ResolvedTexture
     {
         uint32_t base = 0, size = 0;
-        uint32_t pitch = 0, height = 0, bpp = 4;
+        uint32_t pitch = 0, height = 0, bpp = 4;  // guest layout (texels)
         uint32_t xenosFormat = 0;  // the resolve's destination texture format
         SDL_GPUTextureFormat hostFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
         SDL_GPUTexture* texture = nullptr;
         uint32_t generation = 0;  // bumped by every resolve into it
         bool depthFloat = false;  // depth resolves: from a 20e4 float depth buffer
+
+        // Smallest host texture side: one 32x32 macro tile.
+        static constexpr uint32_t kMinSize = 32;
+        // Host texture size, and the guest-texel size it stands for.
+        uint32_t GuestWidth() const { return std::max(pitch, kMinSize); }
+        uint32_t GuestHeight() const { return std::max(height, kMinSize); }
+        uint32_t HostWidth() const { return GuestWidth() * g_renderScale; }
+        uint32_t HostHeight() const { return GuestHeight() * g_renderScale; }
     };
 
     // The resolved texture covering an address (physical, or through a CPU
@@ -357,7 +382,9 @@ namespace h3::gpu::renderer::internal
         float colorExpBias[4];     // 2^RB_COLOR_INFO exp bias, per render target
         float alphaRef;
         float pixelScale[2];       // host texels per guest pixel
-        uint32_t pad2;
+        float renderScale;         // g_renderScale
+        float targetSize[2];       // host render target size (texels)
+        uint32_t pad2[2];
     };
 
     // SystemConstants::flags bits (must match translator.h).
@@ -366,6 +393,7 @@ namespace h3::gpu::renderer::internal
     constexpr uint32_t kSystemFlagVteShift = 2;          // 3 bits: PA_CL_VTE_CNTL position formats
     constexpr uint32_t kSystemFlagAlphaFuncShift = 5;    // 3 bits: alpha test function
     constexpr uint32_t kSystemFlagAlphaTest = 1u << 8;
+    constexpr uint32_t kSystemFlagSnapToPixels = 1u << 9;  // snap vertices to guest pixels
     constexpr uint32_t kSystemFlagClampColorShift = 12;  // 4 bits: clamp color output i
 
     // Texture/sampler bindings for a shader's textures, filling the texture

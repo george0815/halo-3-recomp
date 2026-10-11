@@ -25,6 +25,9 @@ namespace h3::kernel
     // hard drive (cache partitions, saves; writable). Set before booting.
     void SetContentRoot(std::filesystem::path root);
     void SetUserDataRoot(std::filesystem::path root);
+    // The hard drive's host folder (for host-side files such as the saved
+    // profile settings).
+    std::filesystem::path UserDataRoot();
 
     // ObCreateSymbolicLink / ObDeleteSymbolicLink. Link names are like "d:".
     void AddSymbolicLink(std::string_view link, std::string_view target);

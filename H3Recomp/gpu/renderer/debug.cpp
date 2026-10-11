@@ -122,13 +122,15 @@ namespace h3::gpu::renderer::internal
         snprintf(path, sizeof(path), "draw_%u_%04u.png", dumpFrame, g_frameDraws);
         // Host targets are in sample space: a 4x surface covers 2x2 texels
         // per pixel.
-        DumpTexture(targets.color[index], kDumpTargetWidth, kDumpTargetHeight, path, targets.colorFormat[index]);
+        DumpTexture(targets.color[index], kDumpTargetWidth * g_renderScale, kDumpTargetHeight * g_renderScale, path, targets.colorFormat[index]);
     }
 
     void DumpMemoryAtSwap()
     {
-        // H3_DUMP_MEMORY=<frame>:<physical address>:<bytes>[,...]: save guest
-        // memory at that swap as mem_<frame>_<address>.bin.
+        // H3_DUMP_MEMORY=<frame>:<address>:<bytes>[,...]: save guest memory
+        // at that swap as mem_<frame>_<address>.bin. Addresses below
+        // 0x80000000 are physical; others are guest addresses as is (the
+        // executable's data at 0x82..., the physical views).
         static const char* spec = EnvString("H3_DUMP_MEMORY");
         if (!spec)
             return;
@@ -144,7 +146,9 @@ namespace h3::gpu::renderer::internal
                 snprintf(path, sizeof(path), "mem_%u_%08X.bin", g_swaps, address);
                 if (FILE* file = fopen(path, "wb"))
                 {
-                    fwrite(GuestPtr<uint8_t>(PhysicalToGuest(address)), 1, bytes, file);
+                    constexpr uint32_t kFirstVirtual = 0x80000000;
+                    uint32_t guest = address >= kFirstVirtual ? address : PhysicalToGuest(address);
+                    fwrite(GuestPtr<uint8_t>(guest), 1, bytes, file);
                     fclose(file);
                 }
             }
@@ -170,7 +174,8 @@ namespace h3::gpu::renderer::internal
         SDL_GPUTextureFormat format = FindResolved(frontbuffer)->hostFormat;
         if (const char* address = EnvString("H3_DUMP_ADDRESS"))
             if (ResolvedTexture* resolved = FindResolved(uint32_t(strtoul(address, nullptr, 16))))
-                texture = resolved->texture, width = resolved->pitch, height = resolved->height, format = resolved->hostFormat;
+                texture = resolved->texture, width = resolved->pitch * g_renderScale, height = resolved->height * g_renderScale,
+                format = resolved->hostFormat;
         char path[64];
         snprintf(path, sizeof(path), "frame_%u.png", g_swaps);
         DumpTexture(texture, width, height, path, format);

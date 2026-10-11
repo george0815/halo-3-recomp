@@ -24,6 +24,7 @@ and GPU behaviour.
 
 ```
 H3Recomp/            runtime: entry point, guest memory, kernel imports
+H3Launcher/          Qt launcher: settings, profile, controls (optional)
 H3RecompLib/config/  XenonRecomp config + jump tables for Halo 3
 H3RecompLib/ppc/     generated C++ (ignored)
 H3RecompLib/modules/ generated C++ for the DLLs the game loads (ignored)
@@ -40,6 +41,7 @@ docs/                dumping guide, roadmap
 ## Building
 
 Requires CMake 3.20+, Ninja, Clang 18+, SDL3, shaderc and a Vulkan driver.
+The launcher additionally needs Qt 6 (Widgets); without it, it is skipped.
 XMA audio needs a patched FFmpeg, built once by `tools/build_ffmpeg.sh`
 (downloads FFmpeg 7.1; needs curl, make and a C compiler).
 
@@ -61,12 +63,41 @@ build/release/H3Recomp/H3Recomp private/default.xex
 
 The game's hard drive (cache partitions, saves) is created in `private/hdd/`,
 and compiled host shaders are cached in `private/shadercache/` (safe to delete).
-Delete `private/hdd/` to start from a clean console.
+Delete `private/hdd/` to start from a clean console (this also clears the
+saved profile settings, `private/hdd/profile_settings.bin`).
+
+### Launcher
+
+`build/release/H3Launcher/H3Launcher` edits the settings and starts the game.
+Keyboard, mouse (right-click goes back) or a gamepad; the layout follows the
+window size.
+It finds `private/default.xex` by itself (or use GAME LOCATION, or pass the
+path as its argument). Its menus use Halo 3's own font, read from the game's
+`maps/fonts/font_package.bin`.
+
+- **Video**: window size, fullscreen (F11 or Alt+Enter toggles it in game),
+  vsync, and the render resolution: 1x (native 1280x720), 2x or 3x.
+- **Controls**: up to three keys or mouse buttons per action, mouse
+  sensitivity and inversion. Gamepads always use the standard layout.
+- **Debug**: the logging and tracing switches below (set in `settings.ini`
+  and applied by the game at start, so they work without the launcher too),
+  writing the console output to `private/h3recomp.log`, and unlocking every
+  campaign mission.
+- **Profile**: gamertag, a gamer picture (shown on the launcher's profile
+  card; Halo 3 itself shows your emblem), and the profile options Halo 3
+  copies into a new player profile (invert look, vibration, auto-aim,
+  auto-center).
+
+Settings are saved to `settings.ini` next to `default.xex` (plain text, safe
+to edit by hand; see `H3Recomp/config/settings.h`), and the game reads them
+at start. Whatever the game saves to your profile (its own settings, controls
+and emblem) persists in `private/hdd/profile_settings.bin`.
 
 ### Controls
 
 Controller 0 is the keyboard and mouse merged with the first gamepad SDL
-finds.
+finds. The keyboard and mouse bindings are set in the launcher; the
+defaults:
 
 | Key | Controller |
 |---|---|
@@ -89,7 +120,7 @@ finds.
 | Middle mouse button | B (melee) |
 | Mouse wheel | Y (switch weapons) |
 
-`H3_MOUSE_SENSITIVITY=<factor>` scales mouse look (default 1).
+`H3_MOUSE_SENSITIVITY=<factor>` overrides the launcher's mouse sensitivity.
 
 `H3_INPUT_SCRIPT="40-40.4:down,f900-905:a"` holds buttons between two
 times (seconds since start, or presented frames with `f`) for testing
@@ -108,6 +139,8 @@ Environment variables:
 | `H3_LOG_MEMORY=1` | Log physical memory allocations |
 | `H3_LOG_GPU=1` | Log ring buffer setup, the first use of each PM4 opcode, and frame counts |
 | `H3_RENDER=0` | Turn host rendering off (the GPU command stream is still processed) |
+| `H3_RENDER_SCALE=<1-3>` | Override the launcher's render resolution |
+| `H3_LAUNCHER_SCREENSHOT=out.png` | (H3Launcher) render the launcher window to a PNG and exit; `H3_LAUNCHER_KEYS="Down,Return"` sends keys first. Works with `QT_QPA_PLATFORM=offscreen` |
 | `H3_NO_TEXTURES=1` | Bind gray placeholders instead of textures decoded from memory |
 | `H3_NO_WRITEBACK=1` | Don't copy small resolves back to guest memory |
 | `H3_DUMP_FRAME=<n>` | Save the n-th presented frame as `frame_<n>.png` |
@@ -126,9 +159,10 @@ Environment variables:
 | `H3_LOG_FPS=1` | Log presented frames per second and the slowest frame, once a second |
 | `H3_LOG_SLOW=1` | Log shader translations, pipeline creations and texture uploads that take 20 ms or more (pipelines with their shaders' cache names) |
 | `H3_DUMP_GLSL=1` | Write each translated shader's GLSL to the working directory as `<cache name>.glsl` |
-| `H3_DUMP_MEMORY=<frame>:<physical address>:<bytes>[,...]` | Save guest memory at that swap as `mem_<frame>_<address>.bin` (hex address) |
+| `H3_DUMP_MEMORY=<frame>:<address>:<bytes>[,...]` | Save guest memory at that swap as `mem_<frame>_<address>.bin` (hex address; below 0x80000000 physical, otherwise a guest address such as the executable's data) |
 | `H3_WATCH_WRITES=<first>-<last>:<physical address>:<bytes>` | Linux: write-protect that range during those frames and log every host instruction that writes it to `write_watch.txt` (offsets into the executable; `addr2line`/`nm` them) |
 | `H3_PROFILE=<first>-<last>` | Sample host CPU time between those frames into `profile.txt`; `tools/h3profile.py` symbolizes it |
+| `H3_WATCH_READS=<first>-<last>:<address>:<bytes>` | Like `H3_WATCH_WRITES`, but every access (reads too); writes `read_watch.txt` |
 | `H3_TRAP_ON_STUCK=1` | Raise SIGTRAP when a thread is stuck on a critical section (for an attached debugger) |
 
 CMake option `-DH3_TRACE_D3D=ON` counts and samples calls into the game's

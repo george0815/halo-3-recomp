@@ -183,7 +183,7 @@ void main()
             return;
         // The source isn't read in Fill mode; bind something valid.
         CopyConstants constants = { { 0, 0, 0, 0 }, { int32_t(CopyMode::Fill), 0, 1, 1 }, { color[0], color[1], color[2], color[3] } };
-        RunCopyPass(g_placeholder2D, destination, format, kRenderTargetWidth, kRenderTargetHeight, SDL_Rect{ x, y, int(w), int(h) },
+        RunCopyPass(g_placeholder2D, destination, format, TargetWidth(), TargetHeight(), SDL_Rect{ x, y, int(w), int(h) },
             constants);
     }
 }

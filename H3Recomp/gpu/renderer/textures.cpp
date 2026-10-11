@@ -30,6 +30,9 @@ namespace h3::gpu::renderer::internal
         constexpr uint32_t kNever = ~0u;
         // Fetch constant swizzle for X, Y, Z, W in order (3 bits each).
         constexpr uint32_t kIdentitySwizzle = 0x688;
+        // Where the host-to-guest texel ratio goes in a texture's system
+        // constant word 3 (translator.h, tfetch.w).
+        constexpr uint32_t kTextureScaleShift = 8;
         // Fetch constant dimension values (texture.h).
         constexpr uint32_t kDimension2D = 1, kDimension3D = 2, kDimensionCube = 3;
         // Faces of a cube map.
@@ -329,6 +332,9 @@ namespace h3::gpu::renderer::internal
                         constants[2] = 0;
                         constants[3] = 1;
                     }
+                    // Resolved textures are render-scale times the guest's
+                    // size; the shader divides texture sizes by this.
+                    constants[3] |= g_renderScale << kTextureScaleShift;
                 }
                 else if (usable && fetch.dimension <= kDimension2D)
                 {

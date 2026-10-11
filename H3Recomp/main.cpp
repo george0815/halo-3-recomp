@@ -8,6 +8,7 @@
 #include <ppc_recomp_shared.h>
 
 #include "memory.h"
+#include "config/settings.h"
 #include "gpu/command_processor.h"
 #include "apu/xma_decoder.h"
 #include "gpu/renderer.h"
@@ -23,6 +24,8 @@
 #include <filesystem>
 #include <string>
 #include <thread>
+
+#include <unistd.h>
 
 // The recompiler's function lookup table lives right after the image and
 // must fit inside the 4 GiB guest range.
@@ -53,6 +56,30 @@ int main(int argc, char* argv[])
     h3::kernel::SetContentRoot(std::filesystem::is_directory(xexDir / "game") ? xexDir / "game" : xexDir);
     std::filesystem::create_directories(xexDir / "hdd");
     h3::kernel::SetUserDataRoot(xexDir / "hdd");
+
+    // The launcher's settings (window, render scale, profile, controls),
+    // next to the XEX. Without the file everything is at its default.
+    {
+        h3::config::Settings settings;
+        std::filesystem::path settingsPath = xexDir / h3::config::kFileName;
+        bool loaded = h3::config::Load(settingsPath, settings);
+        // Debug options: the log file, then the H3_* switches (before
+        // anything reads them; a variable set in the real environment wins).
+        if (settings.debug.logToFile)
+        {
+            std::filesystem::path logPath = xexDir / h3::config::kLogFileName;
+            if (freopen(logPath.string().c_str(), "w", stdout))
+            {
+                dup2(fileno(stdout), fileno(stderr));
+                setvbuf(stdout, nullptr, _IOLBF, 0);
+            }
+        }
+        for (const auto& [name, value] : settings.debug.environment)
+            setenv(name.c_str(), value.c_str(), 0);
+        if (loaded)
+            printf("Settings: %s\n", settingsPath.string().c_str());
+        h3::config::SetActive(settings);
+    }
 
     // On the console Halo 3 reads its cache header from the raw partition,
     // mounts its own cache file system and links cache0:/cache1: to it. We

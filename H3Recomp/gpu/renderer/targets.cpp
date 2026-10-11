@@ -58,8 +58,8 @@ namespace h3::gpu::renderer::internal
             bool fromGamma = from.xenosFormat == kColorFormat8888Gamma, toGamma = to.xenosFormat == kColorFormat8888Gamma;
             SDL_GPUTextureFormat encodedFormat = fromGamma ? to.format : from.format;
             auto convert = [&](CopyMode mode) {
-                ConvertCopy(from.texture, to.texture, to.format, kRenderTargetWidth, kRenderTargetHeight, 0, 0, 0, 0,
-                    kRenderTargetWidth, kRenderTargetHeight, mode);
+                ConvertCopy(from.texture, to.texture, to.format, TargetWidth(), TargetHeight(), 0, 0, 0, 0, TargetWidth(),
+                    TargetHeight(), mode);
             };
             if (Is7e3(from.xenosFormat) && !IsFloatHostFormat(to.format))
                 convert(CopyMode::FloatTo7e3);
@@ -68,8 +68,8 @@ namespace h3::gpu::renderer::internal
             else
             {
                 SDL_GPUBlitInfo blit{};
-                blit.source = { from.texture, 0, 0, 0, 0, kRenderTargetWidth, kRenderTargetHeight };
-                blit.destination = { to.texture, 0, 0, 0, 0, kRenderTargetWidth, kRenderTargetHeight };
+                blit.source = { from.texture, 0, 0, 0, 0, TargetWidth(), TargetHeight() };
+                blit.destination = { to.texture, 0, 0, 0, 0, TargetWidth(), TargetHeight() };
                 blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
                 blit.filter = SDL_GPU_FILTER_NEAREST;
                 SDL_BlitGPUTexture(Commands(), &blit);
@@ -92,8 +92,8 @@ namespace h3::gpu::renderer::internal
         info.format = target.format;
         info.usage = depth ? (SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER)
                            : (SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
-        info.width = kRenderTargetWidth;
-        info.height = kRenderTargetHeight;
+        info.width = TargetWidth();
+        info.height = TargetHeight();
         info.layer_count_or_depth = 1;
         info.num_levels = 1;
         info.sample_count = SDL_GPU_SAMPLECOUNT_1;

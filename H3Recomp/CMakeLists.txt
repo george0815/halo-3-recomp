@@ -19,6 +19,7 @@ add_executable(H3Recomp
     debug/first_calls.cpp
     debug/profiler.cpp
     debug/write_watch.cpp
+    hooks/campaign.cpp
     hooks/fibers.cpp
     hooks/xma.cpp
     kernel/imports.cpp
@@ -67,7 +68,7 @@ if (H3_TRACE_D3D)
     target_sources(H3Recomp PRIVATE debug/d3d_trace.cpp debug/d3d_trace_hooks.cpp)
 endif()
 
-target_link_libraries(H3Recomp PRIVATE H3RecompLib H3Shader PkgConfig::SHADERC SDL3::SDL3 ${H3_MODULES} ${H3_MODULE_STUBS})
+target_link_libraries(H3Recomp PRIVATE H3RecompLib H3Shader H3Config PkgConfig::SHADERC SDL3::SDL3 ${H3_MODULES} ${H3_MODULE_STUBS})
 
 # FFmpeg with the xmaframes decoder (XMA audio), built by tools/build_ffmpeg.sh.
 set(H3_FFMPEG_DIR "${PROJECT_SOURCE_DIR}/build/ffmpeg")

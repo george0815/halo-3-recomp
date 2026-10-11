@@ -135,6 +135,20 @@ void xe_write_vertex(vec4 position, vec4 outputs[16])
     if ((xe_sys.flags & 8u) != 0u)
         position.z *= position.w;
     gl_Position = vec4(position.xyz * xe_sys.ndc_scale.xyz + position.w * xe_sys.ndc_offset.xyz, position.w);
+    // Flags bit 9 (screen-space draws at a render scale): move the corner
+    // to the guest pixel boundary the console's coverage rule implies.
+    // Host texels map to guest pixels in blocks of pixel_scale, offset by
+    // half a block; an edge covers guest pixel k from k = ceil(edge) on.
+    if ((xe_sys.flags & 512u) != 0u && gl_Position.w != 0.0)
+    {
+        vec2 size = vec2(xe_sys.target_width, xe_sys.target_height);
+        vec2 block = vec2(xe_sys.pixel_scale_x, xe_sys.pixel_scale_y);
+        vec2 ndc = gl_Position.xy / gl_Position.w;
+        vec2 host = vec2(ndc.x + 1.0, 1.0 - ndc.y) * 0.5 * size;
+        host = ceil(host / block - 0.5 - 1.0e-3) * block;
+        ndc = vec2(host.x / size.x * 2.0 - 1.0, 1.0 - host.y / size.y * 2.0);
+        gl_Position.xy = ndc * gl_Position.w;
+    }
 }
 
 // The shader body is called from a single site: the optimizer inlines every
@@ -1134,15 +1148,18 @@ void main()
                               oz = volume ? f.TextureOffset(2) : 0.0f;
                         bool offset = ox != 0.0f || oy != 0.0f || oz != 0.0f;
                         std::string offsetVector = volume ? Format("vec3(%.9g, %.9g, %.9g)", ox, oy, oz) : Format("vec2(%.9g, %.9g)", ox, oy);
+                        // The guest's texture size: the host texture can be
+                        // larger (resolves at a render scale).
+                        std::string size = Format("(%s(textureSize(%s, 0)) / xe_texture_scale(%uu))", sizeType, sampler.c_str(),
+                            f.TextureConstIndex());
                         if (f.TextureUnnormalized())
                         {
                             if (offset)
                                 coords = Format("(%s + %s)", coords.c_str(), offsetVector.c_str());
-                            coords = Format("(%s / %s(textureSize(%s, 0)))", coords.c_str(), sizeType, sampler.c_str());
+                            coords = Format("(%s / %s)", coords.c_str(), size.c_str());
                         }
                         else if (offset)
-                            coords = Format("(%s + %s / %s(textureSize(%s, 0)))", coords.c_str(), offsetVector.c_str(), sizeType,
-                                sampler.c_str());
+                            coords = Format("(%s + %s / %s)", coords.c_str(), offsetVector.c_str(), size.c_str());
                     }
                     std::string sample;
                     float bias = f.TextureLodBias();
@@ -1163,9 +1180,8 @@ void main()
                 {
                     // Bilinear weights: the fractional texel position.
                     uint32_t binding = TextureBindingFor(f.TextureConstIndex(), f.TextureDim());
-                    std::string size = "vec2(textureSize(xe_texture%u, 0).xy)";
-                    Line(Format(("vec2 texel = vec2(%s, %s) * " + size + " - 0.5;").c_str(), coordinate(0).c_str(),
-                        coordinate(1).c_str(), binding));
+                    Line(Format("vec2 texel = vec2(%s, %s) * (vec2(textureSize(xe_texture%u, 0).xy) / xe_texture_scale(%uu)) - 0.5;",
+                        coordinate(0).c_str(), coordinate(1).c_str(), binding, f.TextureConstIndex()));
                     std::string writes = DestinationWrites(f, "fetched");
                     if (!writes.empty())
                         Line(Format("vec4 fetched = vec4(fract(texel), 0.0, 0.0); vec4 dst = %s; %s %s = dst;", dst.c_str(),
@@ -1232,7 +1248,7 @@ void main()
                 out += Format("layout(std140, set = %u, binding = 1) uniform XeSystem\n{\n"
                               "    uvec4 bools[2];\n    uvec4 loops[8];\n    uvec4 vfetch[96];\n"
                               "    vec4 ndc_scale;\n    vec4 ndc_offset;\n    uint ps_param_gen;\n    uint flags;\n    uint rect_indices;\n"
-                              "    uvec4 tfetch[32];\n    vec4 color_exp_bias;\n    float alpha_ref;\n    float pixel_scale_x;\n    float pixel_scale_y;\n} xe_sys;\n",
+                              "    uvec4 tfetch[32];\n    vec4 color_exp_bias;\n    float alpha_ref;\n    float pixel_scale_x;\n    float pixel_scale_y;\n    float render_scale;\n    float target_width;\n    float target_height;\n} xe_sys;\n",
                     uniformSet);
                 for (const TextureBinding& texture : m_info.textures)
                     out += Format("layout(set = %u, binding = %u) uniform %s xe_texture%u;\n", textureSet, texture.binding,
@@ -1288,18 +1304,27 @@ vec4 xe_max4(vec4 v)
     if (v.z > v.w) return vec4(v.z);
     return vec4(v.w);
 }
+// Host texels per guest texel of a fetch constant's texture (tfetch.w bits
+// 8-15; resolved textures are larger at a render scale).
+float xe_texture_scale(uint fetchConstant)
+{
+    uint scale = (xe_sys.tfetch[fetchConstant].w >> 8) & 0xFFu;
+    return scale == 0u ? 1.0 : float(scale);
+}
+
 // The texture fetch constant's view of a sample (xe_sys.tfetch, set for
 // textures decoded from memory): per-component sign mode (signed, biased,
 // gamma), then the swizzle, then the exponent adjustment.
 vec4 xe_texture_result(vec4 v, uint fetchConstant)
 {
     uvec4 t = xe_sys.tfetch[fetchConstant];
-    if (t.w == 0u)
+    uint apply = t.w & 0xFFu;
+    if (apply == 0u)
         return v;
     for (int i = 0; i < 4; i++)
     {
         uint sign = (t.y >> (2 * i)) & 3u;
-        if (sign == 1u && t.w == 2u)
+        if (sign == 1u && apply == 2u)
         {
             float s = floor(v[i] * 65535.0 + 0.5);
             v[i] = max((s >= 32768.0 ? s - 65536.0 : s) / 32767.0, -1.0);
@@ -1374,8 +1399,11 @@ vec3 xe_cube_direction(vec3 stf)
                 else
                 {
                     out += "    for (int i = 0; i < 16; i++) r[i] = xe_in[i];\n";
+                    // The pixel position: samples of one guest pixel share
+                    // it, but at a render scale above 1 it keeps steps of
+                    // 1/scale so screen-space lookups stay sharp.
                     out += "    if (xe_sys.ps_param_gen < 64u)\n"
-                           "        r[xe_sys.ps_param_gen] = vec4(floor(gl_FragCoord.xy / vec2(xe_sys.pixel_scale_x, xe_sys.pixel_scale_y)), gl_FrontFacing ? 0.0 : -0.0, 0.0);\n";
+                           "        r[xe_sys.ps_param_gen] = vec4(floor(gl_FragCoord.xy * xe_sys.render_scale / vec2(xe_sys.pixel_scale_x, xe_sys.pixel_scale_y)) / xe_sys.render_scale, gl_FrontFacing ? 0.0 : -0.0, 0.0);\n";
                     for (uint32_t i = 0; i < 4; i++)
                         if (m_info.colorTargetMask & (1u << i))
                             out += Format("    vec4 xe_color%u = vec4(0.0);\n", i);

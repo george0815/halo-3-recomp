@@ -1,0 +1,6 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/">
+        <file alias="launcher_background.jpg">../assets/launcher_background_hd.jpg</file>
+    </qresource>
+</RCC>

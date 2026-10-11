@@ -97,10 +97,16 @@ Rough phases. Each one is a large amount of work; that's fine.
 - [x] Local profile signed in on user 0 (`kernel/xam_user.cpp`), profile
       setting defaults, notifications, content packages as host folders
       (`kernel/xam_content.cpp`), offline XNet basics (`kernel/xnet.cpp`)
-- [ ] Persist profile settings; Xbox Live features
+- [x] Persist profile settings (`hdd/profile_settings.bin`); gamertag and
+      profile defaults from the launcher
+- [x] Launcher (`H3Launcher/`, Qt): video, controls, profile; writes
+      `settings.ini`, which the runtime reads (`H3Recomp/config/settings.h`)
+- [ ] Xbox Live features
 
 ## 5. Native improvements
-- [ ] Resolution/framerate unlocks (engine tick vs render decoupling)
+- [x] Internal resolution scale (1x-3x render targets and resolves;
+      screen-space draws snap to guest pixels), window size, fullscreen
+- [ ] Framerate unlock (engine tick vs render decoupling)
 - [ ] Replace hot recompiled functions with hand-written source
 
 ## 6. Decompilation (optional, long-term)

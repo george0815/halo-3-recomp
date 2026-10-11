@@ -48,7 +48,8 @@ shader caches) stays local.
 | `H3Recomp/video/` | The SDL window, presentation, event loop |
 | `H3Recomp/hooks/` | Host replacements for specific game functions (fibers, XMA registers) |
 | `H3Recomp/debug/` | Optional debugging tools (profiler, write watch, tracing) |
-| `H3Recomp/config/` | Runtime settings (`env.h`: the `H3_*` environment switches) |
+| `H3Recomp/config/` | Runtime settings: `settings.h` (the launcher's `settings.ini`, shared with the launcher as the `H3Config` library) and `env.h` (the `H3_*` environment switches) |
+| `H3Launcher/` | The Qt launcher: edits `settings.ini`, starts the game; draws its menus with the game's own font (`halo_font.h` decodes `font_package.bin`) |
 | `H3RecompLib/` | Build glue for the recompiled code: recompiler configs, generated sources (ignored) |
 | `tools/` | Pipeline scripts (recompile, FFmpeg build), XEX inspector, shader test tool |
 | `thirdparty/XenonRecomp/` | The recompiler (submodule, with local patches; see `private/`) |
@@ -56,8 +57,9 @@ shader caches) stays local.
 
 ## How a frame of the game runs
 
-1. **Boot** (`H3Recomp/main.cpp`): reserve the 4 GiB guest address space
-   (`memory.cpp`), open the window, start the GPU and XMA workers, load the
+1. **Boot** (`H3Recomp/main.cpp`): read `settings.ini` (written by the
+   launcher), reserve the 4 GiB guest address space (`memory.cpp`), open the
+   window, start the GPU and XMA workers, load the
    XEX (`kernel/modules.cpp`), then run the game's entry point `_xstart` on
    a thread of its own. The host main thread runs the SDL event loop.
 2. **Game code** is the recompiled C++. Every guest function is a C++
@@ -107,6 +109,11 @@ shader caches) stays local.
 - **EDRAM**: Xenos renders into 10 MB of embedded memory, then *resolves*
   (copies) results to main memory. The renderer keeps render targets as host
   textures and resolves into host textures standing in for guest memory.
+- **Render scale**: render targets and resolved textures are
+  `g_renderScale` times the guest's size (`gpu/renderer/internal.h`);
+  everything that addresses them in guest pixels multiplies by it, shaders
+  divide texture sizes by it (`xe_texture_scale`), and CPU write-backs are
+  scaled down first.
 
 ## Debugging
 

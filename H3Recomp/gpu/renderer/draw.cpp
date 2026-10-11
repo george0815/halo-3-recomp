@@ -491,7 +491,7 @@ namespace h3::gpu::renderer::internal
                     return;
 
             uint32_t surfaceMsaa = SurfaceMsaa();
-            int32_t gridX = int32_t(SamplesX(surfaceMsaa)), gridY = int32_t(SamplesY(surfaceMsaa));
+            int32_t gridX = int32_t(GridX(surfaceMsaa)), gridY = int32_t(GridY(surfaceMsaa));
             Flush();
             for (uint32_t v = 0; v + 2 < count; v += 3)
             {
@@ -506,8 +506,8 @@ namespace h3::gpu::renderer::internal
                 int32_t y0 = int32_t(std::floor(std::min({ ys[0], ys[1], ys[2] }) + 0.5f)) * gridY;
                 int32_t x1 = int32_t(std::floor(std::max({ xs[0], xs[1], xs[2] }) + 0.5f)) * gridX;
                 int32_t y1 = int32_t(std::floor(std::max({ ys[0], ys[1], ys[2] }) + 0.5f)) * gridY;
-                x0 = std::clamp(x0, 0, int32_t(kRenderTargetWidth)), x1 = std::clamp(x1, x0, int32_t(kRenderTargetWidth));
-                y0 = std::clamp(y0, 0, int32_t(kRenderTargetHeight)), y1 = std::clamp(y1, y0, int32_t(kRenderTargetHeight));
+                x0 = std::clamp(x0, 0, int32_t(TargetWidth())), x1 = std::clamp(x1, x0, int32_t(TargetWidth()));
+                y0 = std::clamp(y0, 0, int32_t(TargetHeight())), y1 = std::clamp(y1, y0, int32_t(TargetHeight()));
                 FillRect(target->texture, target->format, x0, y0, uint32_t(x1 - x0), uint32_t(y1 - y0), color);
             }
         }
@@ -548,21 +548,24 @@ namespace h3::gpu::renderer::internal
             WindowOffset(offsetX, offsetY);
             bool windowOffsetEnabled = (modeControl >> 16) & 1;
             float windowX = windowOffsetEnabled ? float(offsetX) : 0.0f, windowY = windowOffsetEnabled ? float(offsetY) : 0.0f;
-            // D3D-style pixel centers sit on integers; the host's are at +0.5.
-            if (!(ReadRegister(kRegPaSuVtxCntl) & 1))
-                windowX += 0.5f, windowY += 0.5f;
 
             // Render targets are in sample space: scale by this surface's
             // samples per pixel (D3D clears 1x surfaces through a 4x view; the
-            // menu draws its G-buffer at 4x and lights it at 1x).
+            // menu draws its G-buffer at 4x and lights it at 1x), times the
+            // render scale.
             uint32_t surfaceMsaa = SurfaceMsaa();
-            float gridX = float(SamplesX(surfaceMsaa)), gridY = float(SamplesY(surfaceMsaa));
-            float width = float(kRenderTargetWidth), height = float(kRenderTargetHeight);
+            float gridX = float(GridX(surfaceMsaa)), gridY = float(GridY(surfaceMsaa));
+            float width = float(TargetWidth()), height = float(TargetHeight());
             system.pixelScale[0] = gridX, system.pixelScale[1] = gridY;
+            system.renderScale = float(g_renderScale);
+            // D3D-style pixel centers sit on integers; the host's are at +0.5.
+            if (!(ReadRegister(kRegPaSuVtxCntl) & 1))
+                windowX += 0.5f, windowY += 0.5f;
             system.ndcScale[0] = xScale * gridX * 2.0f / width;
             system.ndcOffset[0] = (xOffset + windowX) * gridX * 2.0f / width - 1.0f;
             system.ndcScale[1] = -yScale * gridY * 2.0f / height;
             system.ndcOffset[1] = 1.0f - (yOffset + windowY) * gridY * 2.0f / height;
+            system.targetSize[0] = width, system.targetSize[1] = height;
             system.ndcScale[2] = zScale;
             system.ndcOffset[2] = zOffset;
             draw.viewport = { 0.0f, 0.0f, width, height, 0.0f, 1.0f };
@@ -576,10 +579,10 @@ namespace h3::gpu::renderer::internal
                 x0 += offsetX, x1 += offsetX, y0 += offsetY, y1 += offsetY;
             x0 = int32_t(float(x0) * gridX), x1 = int32_t(std::min(float(x1) * gridX, kMaxCoordinate));
             y0 = int32_t(float(y0) * gridY), y1 = int32_t(std::min(float(y1) * gridY, kMaxCoordinate));
-            x0 = std::clamp(x0, 0, int32_t(kRenderTargetWidth));
-            x1 = std::clamp(x1, x0, int32_t(kRenderTargetWidth));
-            y0 = std::clamp(y0, 0, int32_t(kRenderTargetHeight));
-            y1 = std::clamp(y1, y0, int32_t(kRenderTargetHeight));
+            x0 = std::clamp(x0, 0, int32_t(TargetWidth()));
+            x1 = std::clamp(x1, x0, int32_t(TargetWidth()));
+            y0 = std::clamp(y0, 0, int32_t(TargetHeight()));
+            y1 = std::clamp(y1, y0, int32_t(TargetHeight()));
             draw.scissor = { x0, y0, x1 - x0, y1 - y0 };
 
             static const bool logScissor = EnvFlag("H3_LOG_SCISSOR");
@@ -813,6 +816,15 @@ namespace h3::gpu::renderer::internal
         StageVertexData(*g_vertexShader, system);
         draw->vertexTextures = BindTextures(*g_vertexShader, system);
         draw->pixelTextures = BindTextures(*g_pixelShader, system);
+
+        // At a render scale, screen-space draws (rectangle lists, or no
+        // viewport scale: D3D's full-screen passes and the UI) have their
+        // corners snapped to whole guest pixels. Their edges can sit on pixel
+        // centers, which covers the whole pixel on the console but only part
+        // of the scaled pixel here, leaving stale host texels along the edge.
+        // 3D geometry keeps its sub-pixel edges.
+        if (g_renderScale > 1 && (primitive == kPrimRectangleList || !(vte & 1)))
+            system.flags |= kSystemFlagSnapToPixels;
 
         std::vector<uint32_t> indices = GuestIndices(initiator, indexBase, dmaSize);
         if (primitive == kPrimRectangleList)

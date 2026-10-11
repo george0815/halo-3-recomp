@@ -1,49 +1,109 @@
-// XInput emulation (input.h). The keyboard/mouse layout is listed in the
-// README ("Controls"). The keyboard, the mouse and a gamepad are merged:
-// buttons OR together, sticks take the larger deflection.
+// XInput emulation (input.h). Keyboard and mouse bindings come from the
+// [controls] section of settings.ini (config/settings.h, edited with the
+// launcher; the defaults are listed in the README, "Controls"). The
+// keyboard, the mouse and a gamepad are merged: buttons OR together, sticks
+// take the larger deflection.
 
 #include "input/input.h"
 #include "config/env.h"
+#include "config/settings.h"
 
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace h3::input
 {
     namespace
     {
-        // Keyboard layout (README "Controls"): WASD left stick, IJKL right
-        // stick (look), arrow keys the D-pad (menus), the rest buttons and
-        // triggers. The mouse is below.
-        struct KeyButton
+        using config::Action;
+
+        // One parsed binding from settings.ini: a key, a mouse button, or
+        // the mouse wheel.
+        struct Binding
         {
-            SDL_Scancode key;
-            uint16_t button;
+            enum class Kind : uint8_t { Key, MouseButton, Wheel } kind;
+            SDL_Scancode key = SDL_SCANCODE_UNKNOWN;
+            SDL_MouseButtonFlags mouseMask = 0;
         };
-        constexpr KeyButton kKeyButtons[] = {
-            { SDL_SCANCODE_SPACE, kA },
-            { SDL_SCANCODE_RETURN, kA },
-            { SDL_SCANCODE_BACKSPACE, kB },
-            { SDL_SCANCODE_V, kB },
-            { SDL_SCANCODE_F, kX },
-            { SDL_SCANCODE_Q, kY },
-            { SDL_SCANCODE_G, kLeftShoulder },
-            { SDL_SCANCODE_R, kRightShoulder },
-            { SDL_SCANCODE_ESCAPE, kStart },
-            { SDL_SCANCODE_TAB, kBack },
-            { SDL_SCANCODE_C, kLeftThumb },
-            { SDL_SCANCODE_Z, kRightThumb },
-            { SDL_SCANCODE_UP, kDpadUp },
-            { SDL_SCANCODE_DOWN, kDpadDown },
-            { SDL_SCANCODE_LEFT, kDpadLeft },
-            { SDL_SCANCODE_RIGHT, kDpadRight },
-        };
+        // g_bindings[action]: everything bound to it (window thread only).
+        std::array<std::vector<Binding>, config::kActionCount> g_bindings;
+
+        // The XInput button each button action presses (0 for the stick
+        // directions and triggers, which are handled separately).
+        constexpr uint16_t ButtonFor(Action action)
+        {
+            switch (action)
+            {
+            case Action::Jump: return kA;
+            case Action::Melee: return kB;
+            case Action::Equipment: return kX;
+            case Action::SwitchWeapon: return kY;
+            case Action::LeftBumper: return kLeftShoulder;
+            case Action::RightBumper: return kRightShoulder;
+            case Action::Crouch: return kLeftThumb;
+            case Action::Zoom: return kRightThumb;
+            case Action::Pause: return kStart;
+            case Action::Scoreboard: return kBack;
+            case Action::DpadUp: return kDpadUp;
+            case Action::DpadDown: return kDpadDown;
+            case Action::DpadLeft: return kDpadLeft;
+            case Action::DpadRight: return kDpadRight;
+            default: return 0;
+            }
+        }
+
+        // Turns the binding names from the settings into Binding entries.
+        // Unknown names are reported and skipped.
+        void ParseBindings(const config::ControlSettings& controls)
+        {
+            static const struct
+            {
+                std::string_view name;
+                SDL_MouseButtonFlags mask;
+            } kMouseButtons[] = {
+                { config::kMouseLeft, SDL_BUTTON_LMASK },
+                { config::kMouseRight, SDL_BUTTON_RMASK },
+                { config::kMouseMiddle, SDL_BUTTON_MMASK },
+                { config::kMouseX1, SDL_BUTTON_X1MASK },
+                { config::kMouseX2, SDL_BUTTON_X2MASK },
+            };
+            for (size_t action = 0; action < config::kActionCount; action++)
+            {
+                g_bindings[action].clear();
+                for (const std::string& name : controls.bindings[action])
+                {
+                    Binding binding{ Binding::Kind::Key };
+                    if (name == config::kMouseWheel)
+                        binding.kind = Binding::Kind::Wheel;
+                    else if (auto mouse = std::find_if(std::begin(kMouseButtons), std::end(kMouseButtons),
+                                 [&](const auto& entry) { return entry.name == name; });
+                             mouse != std::end(kMouseButtons))
+                    {
+                        binding.kind = Binding::Kind::MouseButton;
+                        binding.mouseMask = mouse->mask;
+                    }
+                    else
+                    {
+                        binding.key = SDL_GetScancodeFromName(name.c_str());
+                        if (binding.key == SDL_SCANCODE_UNKNOWN)
+                        {
+                            fprintf(stderr, "[input] unknown key \"%s\" bound to %s\n", name.c_str(),
+                                config::Describe(Action(action)).key);
+                            continue;
+                        }
+                    }
+                    g_bindings[action].push_back(binding);
+                }
+            }
+        }
 
         // H3_INPUT_SCRIPT="20-20.2:down,f900-905:a": buttons held between two
         // times, in seconds since start or (with f) presented frames, for
@@ -105,7 +165,8 @@ namespace h3::input
         // Mouse: click the window to capture it (F1 or losing focus lets go).
         // Movement drives the right stick; the stick deflection follows the
         // mouse's speed over a short window, since the game samples the pad
-        // only once per frame. H3_MOUSE_SENSITIVITY scales it (default 1).
+        // only once per frame. The mouse_sensitivity setting scales it
+        // (H3_MOUSE_SENSITIVITY overrides it).
         struct MouseMotion
         {
             uint64_t ticksNs;
@@ -114,6 +175,7 @@ namespace h3::input
         constexpr uint64_t kMouseWindowNs = 50'000'000;
         std::vector<MouseMotion> g_mouseMotion;  // window thread only
         float g_mouseSensitivity = 1.0f;
+        float g_mouseInvertY = 1.0f;    // -1 to invert vertical mouse look
         int g_mouseWheel = 0;           // notches not yet turned into presses
         uint64_t g_wheelPressUntilNs = 0;
 
@@ -169,6 +231,10 @@ namespace h3::input
     {
         g_log = EnvFlag("H3_LOG_INPUT");
         g_startTicks = SDL_GetTicks();
+        const config::ControlSettings& controls = config::Active().controls;
+        ParseBindings(controls);
+        g_mouseSensitivity = controls.mouseSensitivity;
+        g_mouseInvertY = controls.invertMouse ? -1.0f : 1.0f;
         if (const char* sensitivity = EnvString("H3_MOUSE_SENSITIVITY"))
             g_mouseSensitivity = std::max(float(atof(sensitivity)), 0.01f);
         if (const char* script = EnvString("H3_INPUT_SCRIPT"))
@@ -219,52 +285,62 @@ namespace h3::input
     {
         GamepadState state;
         const bool* keys = SDL_GetKeyboardState(nullptr);
-        for (const KeyButton& mapping : kKeyButtons)
-            if (keys[mapping.key])
-                state.buttons |= mapping.button;
-        double seconds = double(SDL_GetTicks() - g_startTicks) / 1000.0;
-        for (const ScriptedPress& press : g_script)
-            if ((press.frames ? double(frame) : seconds) >= press.start && (press.frames ? double(frame) : seconds) < press.end)
-                state.buttons |= press.button;
-        state.leftTrigger = keys[SDL_SCANCODE_LSHIFT] ? kTriggerMax : 0;  // throw grenade
-        state.rightTrigger = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_E] ? kTriggerMax : 0;  // fire
-        state.thumbLX = Axis(keys[SDL_SCANCODE_A], keys[SDL_SCANCODE_D]);
-        state.thumbLY = Axis(keys[SDL_SCANCODE_S], keys[SDL_SCANCODE_W]);
-        state.thumbRX = Axis(keys[SDL_SCANCODE_J], keys[SDL_SCANCODE_L]);
-        state.thumbRY = Axis(keys[SDL_SCANCODE_K], keys[SDL_SCANCODE_I]);
-
-        // Mouse (captured): look, left button fires, right button zooms
-        // (right stick click), middle button melees (B), the wheel switches
-        // weapons (Y).
         uint64_t now = SDL_GetTicksNS();
-        std::erase_if(g_mouseMotion, [&](const MouseMotion& m) { return now - m.ticksNs > kMouseWindowNs; });
-        float dx = 0, dy = 0;
-        for (const MouseMotion& m : g_mouseMotion)
-            dx += m.dx, dy += m.dy;
-        constexpr float kWindowSeconds = float(kMouseWindowNs) / 1e9f;
-        state.thumbRX = Merge(state.thumbRX, MouseAxis(dx / kWindowSeconds));
-        state.thumbRY = Merge(state.thumbRY, MouseAxis(-dy / kWindowSeconds));
+
+        // Mouse buttons and the wheel only count while the mouse is captured
+        // (the click that captures it isn't a press).
         SDL_Window* focus = SDL_GetMouseFocus();
-        if (focus && SDL_GetWindowRelativeMouseMode(focus))
-        {
-            SDL_MouseButtonFlags mouse = SDL_GetMouseState(nullptr, nullptr);
-            if (mouse & SDL_BUTTON_LMASK)
-                state.rightTrigger = kTriggerMax;
-            if (mouse & SDL_BUTTON_RMASK)
-                state.buttons |= kRightThumb;
-            if (mouse & SDL_BUTTON_MMASK)
-                state.buttons |= kB;
-        }
-        // Each wheel notch is a ~100 ms press of Y (the game needs to see it
-        // held for a frame or two), with a 50 ms release between notches.
+        bool captured = focus && SDL_GetWindowRelativeMouseMode(focus);
+        SDL_MouseButtonFlags mouse = captured ? SDL_GetMouseState(nullptr, nullptr) : 0;
+
+        // Each wheel notch is a ~100 ms press of whatever "Mouse Wheel" is
+        // bound to (the game needs to see it held for a frame or two), with
+        // a 50 ms release between notches.
         constexpr uint64_t kWheelPressNs = 100'000'000, kWheelGapNs = 50'000'000;
         if (g_mouseWheel > 0 && now >= g_wheelPressUntilNs + kWheelGapNs)
         {
             g_mouseWheel--;
             g_wheelPressUntilNs = now + kWheelPressNs;
         }
-        if (now < g_wheelPressUntilNs)
-            state.buttons |= kY;
+        bool wheel = now < g_wheelPressUntilNs;
+
+        // Whether any binding of an action is held.
+        auto held = [&](Action action)
+        {
+            for (const Binding& binding : g_bindings[size_t(action)])
+            {
+                switch (binding.kind)
+                {
+                case Binding::Kind::Key: if (keys[binding.key]) return true; break;
+                case Binding::Kind::MouseButton: if (mouse & binding.mouseMask) return true; break;
+                case Binding::Kind::Wheel: if (wheel) return true; break;
+                }
+            }
+            return false;
+        };
+
+        for (size_t action = 0; action < config::kActionCount; action++)
+            if (uint16_t button = ButtonFor(Action(action)); button && held(Action(action)))
+                state.buttons |= button;
+        double seconds = double(SDL_GetTicks() - g_startTicks) / 1000.0;
+        for (const ScriptedPress& press : g_script)
+            if ((press.frames ? double(frame) : seconds) >= press.start && (press.frames ? double(frame) : seconds) < press.end)
+                state.buttons |= press.button;
+        state.leftTrigger = held(Action::Grenade) ? kTriggerMax : 0;
+        state.rightTrigger = held(Action::Fire) ? kTriggerMax : 0;
+        state.thumbLX = Axis(held(Action::MoveLeft), held(Action::MoveRight));
+        state.thumbLY = Axis(held(Action::MoveBack), held(Action::MoveForward));
+        state.thumbRX = Axis(held(Action::LookLeft), held(Action::LookRight));
+        state.thumbRY = Axis(held(Action::LookDown), held(Action::LookUp));
+
+        // Mouse movement (captured) adds to the look stick.
+        std::erase_if(g_mouseMotion, [&](const MouseMotion& m) { return now - m.ticksNs > kMouseWindowNs; });
+        float dx = 0, dy = 0;
+        for (const MouseMotion& m : g_mouseMotion)
+            dx += m.dx, dy += m.dy;
+        constexpr float kWindowSeconds = float(kMouseWindowNs) / 1e9f;
+        state.thumbRX = Merge(state.thumbRX, MouseAxis(dx / kWindowSeconds));
+        state.thumbRY = Merge(state.thumbRY, MouseAxis(-dy * g_mouseInvertY / kWindowSeconds));
 
         if (g_gamepad)
         {

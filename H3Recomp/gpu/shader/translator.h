@@ -33,15 +33,19 @@ namespace h3::gpu::shader
     //                            bit 1: round depth to 24-bit float,
     //                            bits 2-4: PA_CL_VTE_CNTL XY/Z divided by W,
     //                            W not reciprocal,
+    //                            bit 9: snap screen-space corners to guest
+    //                            pixels (render scale above 1),
     //                            bits 12-15: clamp color output i to 0..1
     //                            (fixed-point targets kept as host floats)
     //   uint  rect_indices;      rectangle lists: dword offset of the guest
     //                            vertex indices (3 per rectangle, host-endian)
     //                            in the vertex memory buffer
     //   uvec4 tfetch[32];        per texture fetch constant: x = swizzle,
-    //                            y = sign modes, z = exp adjust, w = apply
-    //                            (textures decoded from memory; 2: signed
-    //                            components are 16-bit)
+    //                            y = sign modes, z = exp adjust, w bits
+    //                            0-7 = apply them (textures decoded from
+    //                            memory; 2: signed components are 16-bit),
+    //                            w bits 8-15 = host texels per guest texel
+    //                            (0 = 1; resolves at a render scale)
     //   vec4  color_exp_bias;    pixel shaders: color output i *= [i]
     //   float alpha_ref;         alpha test reference (flags bits 5-8:
     //                            function, enable)
@@ -50,6 +54,10 @@ namespace h3::gpu::shader
     //                            pixel parameters are the guest pixel's
     //                            integer position (D3D9 pixel centers),
     //                            once per pixel as the console shades
+    //   float render_scale;      the renderer's render scale: pixel
+    //                            positions step by 1/render_scale
+    //   float target_width, _height; host render target size (flags bit 9:
+    //                            snap screen-space corners to guest pixels)
     struct TextureBinding
     {
         uint32_t fetchConstant;

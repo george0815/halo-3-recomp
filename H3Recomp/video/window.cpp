@@ -1,7 +1,10 @@
-// The SDL window and event loop (window.h).
+// The SDL window and event loop (window.h). Window size, fullscreen and
+// vsync come from settings.ini ([video]); F11 or Alt+Enter toggles
+// fullscreen.
 
 #include "video/window.h"
 #include "config/env.h"
+#include "config/settings.h"
 
 #include "video/bink_view.h"
 #include "gpu/renderer.h"
@@ -24,6 +27,11 @@ namespace h3::debug
     void UpdateWriteWatch(uint32_t frame);
 }
 
+namespace h3::hooks
+{
+    void UpdateCampaignUnlock();
+}
+
 namespace h3::kernel
 {
     void DumpWaitTotals();
@@ -33,10 +41,6 @@ namespace h3::video
 {
     namespace
     {
-        // Halo 3 outputs 1280x720.
-        constexpr int kDefaultWidth = 1280;
-        constexpr int kDefaultHeight = 720;
-
         SDL_Window* g_window = nullptr;
         SDL_Renderer* g_renderer = nullptr;
         SDL_GPUDevice* g_device = nullptr;
@@ -134,7 +138,11 @@ namespace h3::video
             return false;
         }
 
-        g_window = SDL_CreateWindow("Halo 3 Recomp", kDefaultWidth, kDefaultHeight, SDL_WINDOW_RESIZABLE);
+        // Size and mode from settings.ini ([video]). Fullscreen is
+        // borderless at the desktop resolution (no mode switch).
+        const config::VideoSettings& video = config::Active().video;
+        SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | (video.fullscreen ? SDL_WINDOW_FULLSCREEN : 0);
+        g_window = SDL_CreateWindow("Halo 3 Recomp", video.width, video.height, flags);
         if (!g_window)
         {
             fprintf(stderr, "[video] SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -160,7 +168,7 @@ namespace h3::video
                 return false;
             }
         }
-        SDL_SetRenderVSync(g_renderer, 1);
+        SDL_SetRenderVSync(g_renderer, video.vsync ? 1 : 0);
         if (g_device && !gpu::renderer::Initialize(g_device))
             fprintf(stderr, "[video] host rendering is off\n");
 
@@ -186,6 +194,14 @@ namespace h3::video
                     return exitCode;
                 if (event.type == g_quitEvent)
                     return event.user.code;
+                // F11 or Alt+Enter toggles fullscreen.
+                if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
+                    (event.key.scancode == SDL_SCANCODE_F11 || (event.key.scancode == SDL_SCANCODE_RETURN && (event.key.mod & SDL_KMOD_ALT))))
+                {
+                    bool fullscreen = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0;
+                    SDL_SetWindowFullscreen(g_window, !fullscreen);
+                    continue;
+                }
                 input::HandleEvent(event);
             }
             input::Update(g_framesPresented.load());
@@ -255,5 +271,6 @@ namespace h3::video
         debug::UpdateTraceWindow(frame);
         debug::UpdateProfiler(frame);
         debug::UpdateWriteWatch(frame);
+        hooks::UpdateCampaignUnlock();
     }
 }

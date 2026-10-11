@@ -6,8 +6,11 @@
 // then protected again. Results go to write_watch.txt as offsets into the
 // executable (symbolize with nm, like tools/h3profile.py).
 //
-// Linux x86-64 only; meant for finding which recompiled function writes a
-// piece of guest memory.
+// H3_WATCH_READS (same syntax) watches every access instead (the range is
+// made inaccessible) and writes read_watch.txt.
+//
+// Linux x86-64 only; meant for finding which recompiled function writes (or
+// reads) a piece of guest memory.
 
 #include "memory.h"
 #include "config/env.h"
@@ -18,6 +21,7 @@
 #include <ucontext.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -35,12 +39,15 @@ namespace h3::debug
 
         uint32_t g_first = 0, g_last = 0, g_address = 0, g_bytes = 0;
         bool g_virtual = false;  // g_address is a plain guest address, not physical
+        bool g_reads = false;    // H3_WATCH_READS: catch reads too
+        int g_protection = PROT_READ;  // while armed: PROT_READ (writes fault) or PROT_NONE (all)
         std::atomic<bool> g_armed{ false };
         struct Site
         {
             uint64_t rip;
             uint64_t count;
             uint32_t firstOffset;
+            uint32_t minOffset, maxOffset;  // range of offsets it touched
         };
         Site g_sites[kMaxSites];
         size_t g_siteCount = 0;
@@ -92,10 +99,12 @@ namespace h3::debug
                 if (g_sites[i].rip == rip)
                 {
                     g_sites[i].count++;
+                    g_sites[i].minOffset = std::min(g_sites[i].minOffset, offset);
+                    g_sites[i].maxOffset = std::max(g_sites[i].maxOffset, offset);
                     return;
                 }
             if (g_siteCount < kMaxSites)
-                g_sites[g_siteCount++] = { rip, 1, offset };
+                g_sites[g_siteCount++] = { rip, 1, offset, offset, offset };
         }
 
         // A write hit a protected page: record it, unprotect the page and
@@ -141,7 +150,7 @@ namespace h3::debug
             if (t_page)
             {
                 if (g_armed.load())
-                    mprotect(t_page, size_t(sysconf(_SC_PAGESIZE)), PROT_READ);
+                    mprotect(t_page, size_t(sysconf(_SC_PAGESIZE)), g_protection);
                 t_page = nullptr;
             }
         }
@@ -149,17 +158,18 @@ namespace h3::debug
         // Writes write_watch.txt.
         void Write()
         {
-            FILE* file = fopen("write_watch.txt", "w");
+            const char* name = g_reads ? "read_watch.txt" : "write_watch.txt";
+            FILE* file = fopen(name, "w");
             if (!file)
                 return;
             fprintf(file, "# base %lx\n", static_cast<unsigned long>(reinterpret_cast<uint64_t>(&__executable_start)));
             std::lock_guard lock(g_mutex);
             for (size_t i = 0; i < g_siteCount; i++)
-                fprintf(file, "%lx %lu first offset 0x%X\n",
+                fprintf(file, "%lx %lu first offset 0x%X range 0x%X-0x%X\n",
                     static_cast<unsigned long>(g_sites[i].rip - reinterpret_cast<uint64_t>(&__executable_start)),
-                    static_cast<unsigned long>(g_sites[i].count), g_sites[i].firstOffset);
+                    static_cast<unsigned long>(g_sites[i].count), g_sites[i].firstOffset, g_sites[i].minOffset, g_sites[i].maxOffset);
             fclose(file);
-            fprintf(stderr, "[watch] %zu write sites -> write_watch.txt\n", g_siteCount);
+            fprintf(stderr, "[watch] %zu access sites -> %s\n", g_siteCount, name);
         }
     }
 
@@ -168,6 +178,8 @@ namespace h3::debug
     {
         static const bool parsed = [] {
             const char* spec = EnvString("H3_WATCH_WRITES");
+            if (!spec && (spec = EnvString("H3_WATCH_READS")))
+                g_reads = true, g_protection = PROT_NONE;
             if (!spec)
                 return false;
             char* end;
@@ -197,7 +209,7 @@ namespace h3::debug
         if (frame == g_first && !g_armed.load())
         {
             g_armed = true;
-            Protect(PROT_READ);
+            Protect(g_protection);
             fprintf(stderr, "[watch] armed at frame %u\n", frame);
         }
         else if (frame == g_last + 1 && g_armed.load())

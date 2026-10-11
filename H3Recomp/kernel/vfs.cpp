@@ -24,6 +24,7 @@ namespace h3::kernel
         std::mutex g_mutex;
         std::vector<Mount> g_mounts;
         std::map<std::string, std::string> g_links;  // lowercase link -> target
+        std::filesystem::path g_userDataRoot;  // the Harddisk0 mount
 
         // Lower-case ASCII copy of text (guest paths compare case-insensitively).
         std::string Lower(std::string_view text)
@@ -85,7 +86,17 @@ namespace h3::kernel
 
     void SetUserDataRoot(std::filesystem::path root)
     {
+        {
+            std::lock_guard lock(g_mutex);
+            g_userDataRoot = root;
+        }
         SetMount("\\Device\\Harddisk0", std::move(root), true);
+    }
+
+    std::filesystem::path UserDataRoot()
+    {
+        std::lock_guard lock(g_mutex);
+        return g_userDataRoot;
     }
 
     void AddSymbolicLink(std::string_view link, std::string_view target)

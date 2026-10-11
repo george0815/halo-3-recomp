@@ -6,6 +6,7 @@
 #include "gpu/renderer.h"
 
 #include "config/env.h"
+#include "config/settings.h"
 #include "gpu/renderer/internal.h"
 
 #include <algorithm>
@@ -98,6 +99,11 @@ namespace h3::gpu::renderer
         sampler.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         sampler.max_lod = kDefaultMaxLod;
         g_sampler = SDL_CreateGPUSampler(device, &sampler);
+        // Render scale: settings.ini, or H3_RENDER_SCALE.
+        int scale = int(EnvNumber("H3_RENDER_SCALE", uint32_t(config::Active().video.renderScale)));
+        g_renderScale = uint32_t(std::clamp(scale, 1, config::kMaxRenderScale));
+        if (g_renderScale > 1)
+            fprintf(stderr, "[render] render scale %ux\n", g_renderScale);
         g_noTextures = EnvFlag("H3_NO_TEXTURES");
         g_noWriteBack = EnvFlag("H3_NO_WRITEBACK");
         CreatePlaceholders(device);
@@ -150,11 +156,12 @@ namespace h3::gpu::renderer
         Frame frame;
         if (ResolvedTexture* texture = FindResolved(frontbuffer))
         {
+            // The host texture is at the render scale.
             frame.texture = texture->texture;
-            frame.textureWidth = std::max(texture->pitch, 32u);
-            frame.textureHeight = std::max(texture->height, 32u);
-            frame.width = std::min(width ? width : texture->pitch, texture->pitch);
-            frame.height = std::min(height ? height : texture->height, texture->height);
+            frame.textureWidth = texture->HostWidth();
+            frame.textureHeight = texture->HostHeight();
+            frame.width = std::min(width ? width : texture->pitch, texture->pitch) * g_renderScale;
+            frame.height = std::min(height ? height : texture->height, texture->height) * g_renderScale;
         }
 
         g_swaps++;

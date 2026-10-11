@@ -6,6 +6,11 @@
 //
 // Small resolves are also copied back into guest memory, because the CPU
 // reads some of them (Halo's auto exposure reads back the scene luminance).
+//
+// With a render scale above 1 the render targets, and so the resolved
+// textures, are larger than the guest's: resolved textures keep their guest
+// layout (pitch, height, offsets in guest texels) and every host position
+// is that times g_renderScale. Write-backs are scaled down first.
 
 #include "gpu/renderer/internal.h"
 
@@ -172,8 +177,31 @@ namespace h3::gpu::renderer::internal
             SDL_ReleaseGPUFence(g_device, pending.fence);
         }
 
-        // Starts copying a rectangle of a resolved texture back to guest
-        // memory. Submits the command buffer to get a fence.
+        // Guest-sized textures that scaled write-backs are averaged into,
+        // kept for reuse: (format, width, height) -> texture.
+        std::unordered_map<uint64_t, SDL_GPUTexture*> g_writeBackScratch;
+
+        // A width x height scratch texture of a format for WriteBackResolve.
+        SDL_GPUTexture* WriteBackScratch(SDL_GPUTextureFormat format, uint32_t width, uint32_t height)
+        {
+            SDL_GPUTexture*& texture = g_writeBackScratch[(uint64_t(format) << 32) | (uint64_t(width) << 16) | height];
+            if (!texture)
+            {
+                SDL_GPUTextureCreateInfo info{};
+                info.type = SDL_GPU_TEXTURETYPE_2D;
+                info.format = format;
+                info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+                info.width = width;
+                info.height = height;
+                info.layer_count_or_depth = 1;
+                info.num_levels = 1;
+                texture = SDL_CreateGPUTexture(g_device, &info);
+            }
+            return texture;
+        }
+
+        // Starts copying a rectangle (guest texels) of a resolved texture
+        // back to guest memory. Submits the command buffer to get a fence.
         // PERF: creates a download transfer buffer each time (a few per
         // frame); pooling them like draw.cpp's upload buffers would save the
         // allocations.
@@ -181,14 +209,28 @@ namespace h3::gpu::renderer::internal
         {
             if (texture.hostFormat == SDL_GPU_TEXTUREFORMAT_R11G11B10_UFLOAT)  // not the guest's 10_11_11 layout
                 return;
+            // At a render scale, average each guest texel's block of host
+            // texels into a guest-sized texture first, and download that.
+            SDL_GPUTexture* source = texture.texture;
+            uint32_t sourceX = x0, sourceY = y0;
+            if (g_renderScale > 1)
+            {
+                source = WriteBackScratch(texture.hostFormat, w, h);
+                if (!source)
+                    return;
+                int32_t scale = int32_t(g_renderScale);
+                ConvertCopy(texture.texture, source, texture.hostFormat, w, h, int32_t(x0) * scale, int32_t(y0) * scale, 0, 0, w, h,
+                    CopyMode::Value, false, 1.0f, scale, scale);
+                sourceX = sourceY = 0;
+            }
             uint32_t bpp = texture.bpp, bytes = w * h * bpp;
             SDL_GPUTransferBufferCreateInfo info{ SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, bytes, 0 };
             SDL_GPUTransferBuffer* download = SDL_CreateGPUTransferBuffer(g_device, &info);
             SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(Commands());
             SDL_GPUTextureRegion region{};
-            region.texture = texture.texture;
-            region.x = x0;
-            region.y = y0;
+            region.texture = source;
+            region.x = sourceX;
+            region.y = sourceY;
             region.w = w;
             region.h = h;
             region.d = 1;
@@ -268,8 +310,8 @@ namespace h3::gpu::renderer::internal
             info.type = SDL_GPU_TEXTURETYPE_2D;
             info.format = hostFormat;
             info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
-            info.width = std::max(created.pitch, kMacroTileSize);
-            info.height = std::max(created.height, kMacroTileSize);
+            info.width = created.HostWidth();
+            info.height = created.HostHeight();
             info.layer_count_or_depth = 1;
             info.num_levels = 1;
             created.texture = SDL_CreateGPUTexture(g_device, &info);
@@ -307,13 +349,13 @@ namespace h3::gpu::renderer::internal
                 snprintf(path, sizeof(path), "resolve_%u_%02u_%08X_%ux%u.png", dumpFrame, g_frameResolves, destBase, w, h);
             else
                 snprintf(path, sizeof(path), "resolve_%u_%u.png", dumpFrame, dumpResolve);
-            DumpTexture(texture.texture, texture.pitch, texture.height, path, texture.hostFormat);
+            DumpTexture(texture.texture, texture.pitch * g_renderScale, texture.height * g_renderScale, path, texture.hostFormat);
             static const bool dumpSource = EnvFlag("H3_DUMP_SOURCE");
             if (dumpSource && !depthSource &&
                 (target.format == SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM || target.format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT))
             {
                 snprintf(path, sizeof(path), "source_%u_%02u.png", dumpFrame, g_frameResolves);
-                DumpTexture(target.texture, kDumpTargetWidth, kDumpTargetHeight, path, target.format);
+                DumpTexture(target.texture, kDumpTargetWidth * g_renderScale, kDumpTargetHeight * g_renderScale, path, target.format);
             }
         }
     }
@@ -349,7 +391,9 @@ namespace h3::gpu::renderer::internal
 
     SDL_GPUTexture* ResolvedView(ResolvedTexture& resolved, const texture::FetchConstant& fetch, uint32_t address)
     {
-        uint32_t hostWidth = std::max(resolved.pitch, kMacroTileSize), hostHeight = std::max(resolved.height, kMacroTileSize);
+        // Positions and sizes in guest texels; host ones are times the scale.
+        uint32_t guestWidth = resolved.GuestWidth(), guestHeight = resolved.GuestHeight();
+        const uint32_t scale = g_renderScale;
         uint32_t x, y;
         ResolvedOffset(resolved, address, x, y);
         uint32_t width = fetch.width, height = fetch.height;
@@ -360,8 +404,8 @@ namespace h3::gpu::renderer::internal
             (fetch.format == kFormat8888 || fetch.format == kFormat8888A);
         SDL_GPUTextureFormat format = depthBytes ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM : resolved.hostFormat;
         // The whole texture as is: no copy needed.
-        if (!fetch.valid || x >= hostWidth || y >= hostHeight || width == 0 || height == 0 ||
-            (x == 0 && y == 0 && width == hostWidth && height == hostHeight && !depthBytes))
+        if (!fetch.valid || x >= guestWidth || y >= guestHeight || width == 0 || height == 0 ||
+            (x == 0 && y == 0 && width == guestWidth && height == guestHeight && !depthBytes))
             return resolved.texture;
         uint32_t key[] = { GuestToPhysical(address), width, height, uint32_t(format) };
         SubTexture& sub = g_subTextures[Hash(key, sizeof(key))];
@@ -373,22 +417,22 @@ namespace h3::gpu::renderer::internal
             info.type = SDL_GPU_TEXTURETYPE_2D;
             info.format = format;
             info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
-            info.width = width;
-            info.height = height;
+            info.width = width * scale;
+            info.height = height * scale;
             info.layer_count_or_depth = 1;
             info.num_levels = 1;
             sub.texture = SDL_CreateGPUTexture(g_device, &info);
             if (!sub.texture)
                 return resolved.texture;
         }
-        uint32_t w = std::min(width, hostWidth - x), h = std::min(height, hostHeight - y);
+        uint32_t w = std::min(width, guestWidth - x) * scale, h = std::min(height, guestHeight - y) * scale;
         if (depthBytes)
-            ConvertCopy(resolved.texture, sub.texture, format, width, height, int32_t(x), int32_t(y), 0, 0, w, h,
-                CopyMode::DepthBytes, resolved.depthFloat);
+            ConvertCopy(resolved.texture, sub.texture, format, width * scale, height * scale, int32_t(x * scale), int32_t(y * scale), 0, 0,
+                w, h, CopyMode::DepthBytes, resolved.depthFloat);
         else
         {
             SDL_GPUBlitInfo blit{};
-            blit.source = { resolved.texture, 0, 0, x, y, w, h };
+            blit.source = { resolved.texture, 0, 0, x * scale, y * scale, w, h };
             blit.destination = { sub.texture, 0, 0, 0, 0, w, h };
             blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
             blit.filter = SDL_GPU_FILTER_NEAREST;
@@ -402,7 +446,7 @@ namespace h3::gpu::renderer::internal
         {
             char path[96];
             snprintf(path, sizeof(path), "view_%u_%04u_%08X_%ux%u.png", g_swaps + 1, g_frameDraws, address, width, height);
-            DumpTexture(sub.texture, width, height, path, format);
+            DumpTexture(sub.texture, width * scale, height * scale, path, format);
         }
         return sub.texture;
     }
@@ -497,13 +541,18 @@ namespace h3::gpu::renderer::internal
                 g_swaps + 1, g_frameResolves + 1, source, x0, y0, x1, y1, destBase, destPitchReg, destFormat, destInfo, texture->base,
                 texture->pitch, texture->height, destX, destY, ReadRegister(kRegRbSurfaceInfo));
 
-        // The copy itself.
+        // The copy itself, in host texels: the source rectangle is in
+        // samples times the render scale, the destination in texels times
+        // the render scale; each destination texel averages one pixel's
+        // samples.
         Flush();
-        uint32_t textureWidth = std::max(texture->pitch, kMacroTileSize), textureHeight = std::max(texture->height, kMacroTileSize);
-        int32_t sampleX0 = x0 * samplesX, sampleY0 = y0 * samplesY;
-        auto copy = [&](CopyMode copyMode, float scale) {
-            ConvertCopy(target->texture, texture->texture, texture->hostFormat, textureWidth, textureHeight, sampleX0, sampleY0,
-                int32_t(destX), int32_t(destY), w, h, copyMode, depthFloat, scale, samplesX, samplesY);
+        const int32_t scale = int32_t(g_renderScale);
+        int32_t sampleX0 = x0 * samplesX * scale, sampleY0 = y0 * samplesY * scale;
+        int32_t hostDestX = int32_t(destX) * scale, hostDestY = int32_t(destY) * scale;
+        uint32_t hostW = w * uint32_t(scale), hostH = h * uint32_t(scale);
+        auto copy = [&](CopyMode copyMode, float colorScale) {
+            ConvertCopy(target->texture, texture->texture, texture->hostFormat, texture->HostWidth(), texture->HostHeight(), sampleX0,
+                sampleY0, hostDestX, hostDestY, hostW, hostH, copyMode, depthFloat, colorScale, samplesX, samplesY);
         };
         if (depthSource)
         {
@@ -521,8 +570,8 @@ namespace h3::gpu::renderer::internal
         else
         {
             SDL_GPUBlitInfo blit{};
-            blit.source = { target->texture, 0, 0, uint32_t(x0), uint32_t(y0), w, h };
-            blit.destination = { texture->texture, 0, 0, destX, destY, w, h };
+            blit.source = { target->texture, 0, 0, uint32_t(sampleX0), uint32_t(sampleY0), hostW, hostH };
+            blit.destination = { texture->texture, 0, 0, uint32_t(hostDestX), uint32_t(hostDestY), hostW, hostH };
             blit.load_op = SDL_GPU_LOADOP_LOAD;
             blit.filter = SDL_GPU_FILTER_NEAREST;
             SDL_BlitGPUTexture(Commands(), &blit);
