@@ -333,10 +333,14 @@ namespace h3::gpu::renderer
                     double(g_passCounters[i].pixels) / kCountLogInterval / 1e6);
                 g_passCounters[i] = {};
             }
-            fprintf(stderr, "\n");
+            static uint64_t loggedSyncs = 0;
+            fprintf(stderr, " memexport syncs %.1f\n", double(g_memExportSyncs - loggedSyncs) / kCountLogInterval);
+            loggedSyncs = g_memExportSyncs;
         }
         DumpFrameAtSwap(frontbuffer, frame.texture, frame.width, frame.height, frameFormat);
 
+        EndFrameQueries();
+        PollOcclusionQueries();
         FenceMemExports();
         SubmitFrame();
         if (frame.texture)
@@ -354,6 +358,14 @@ namespace h3::gpu::renderer
                 fprintf(stderr, "[render] nothing resolved at the front buffer %08X yet\n", frontbuffer);
             }
         }
+    }
+
+    bool OnOcclusionReport(uint32_t address)
+    {
+        if (!g_enabled)
+            return false;
+        internal::OnOcclusionReport(address);
+        return true;
     }
 
     bool AcquireFrame(Frame& frame)

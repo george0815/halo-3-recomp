@@ -421,7 +421,8 @@ namespace h3::gpu::renderer::internal
                 fprintf(stderr, " (%g,%g %g,%g %g,%g)", value(v * kClearVertexFloats), value(v * kClearVertexFloats + 1),
                     value((v + 1) * kClearVertexFloats), value((v + 1) * kClearVertexFloats + 1), value((v + 2) * kClearVertexFloats),
                     value((v + 2) * kClearVertexFloats + 1));
-            fprintf(stderr, " color %g %g %g %g\n", value(3), value(4), value(5), value(6));
+            fprintf(stderr, " z %g color %g %g %g %g clip %08X\n", value(2), value(3), value(4), value(5), value(6),
+                ReadRegister(kRegPaClClipCntl));
         }
 
         // PA_SU_SC_MODE_CNTL polygon offset enables, per facing (bit 13,
@@ -568,7 +569,10 @@ namespace h3::gpu::renderer::internal
         uint32_t indexBytes = uint32_t(std::max<size_t>(g_indexStaging.size(), 1) * 4);
         bool memoryCycle = g_memoryBase == 0;
         bool indexCycle = g_indexBase == 0;
-        if (EnsureBuffer(g_memoryBuffer, g_memoryBufferSize, g_memoryBase * 4 + memoryBytes, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ))
+        // Compute-writable too: this frame's memory exports are scattered
+        // into it (ScatterFrameExports).
+        if (EnsureBuffer(g_memoryBuffer, g_memoryBufferSize, g_memoryBase * 4 + memoryBytes,
+                SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ | SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_WRITE))
             memoryCycle = false;
         if (EnsureBuffer(g_indexBuffer, g_indexBufferSize, g_indexBase * 4 + indexBytes, SDL_GPU_BUFFERUSAGE_INDEX))
             indexCycle = false;
@@ -588,6 +592,20 @@ namespace h3::gpu::renderer::internal
         destination = { g_indexBuffer, g_indexBase * 4, indexBytes };
         SDL_UploadToGPUBuffer(copy, &source, &destination, indexCycle);
         SDL_EndGPUCopyPass(copy);
+        // Particle state the frame's exports have written since: GPU
+        // particles are drawn right after their update.
+        {
+            std::vector<std::pair<uint64_t, uint32_t>> ranges;
+            ranges.reserve(g_stagedRanges.size());
+            for (const auto& [key, offset] : g_stagedRanges)
+                ranges.push_back({ (uint64_t(GuestToPhysical(uint32_t(key >> 32))) << 32) | uint32_t(key), offset });
+            ScatterFrameExports(g_memoryBuffer, ranges);
+        }
+        if (!g_vsDataChecks.empty())
+        {
+            VerifyVsData(g_memoryBuffer, g_stagedRanges);
+            commands = Commands();
+        }
         // Next flush's offsets, 16-byte aligned.
         g_memoryBase = AlignUp(g_memoryBase * 4 + memoryBytes, 16) / 4;
         g_indexBase = AlignUp(g_indexBase * 4 + indexBytes, 16) / 4;
@@ -734,6 +752,17 @@ namespace h3::gpu::renderer::internal
             !ShaderReady(*g_pixelShader, !g_asyncShaders))
             return;
 
+        // Vertex data that exports in flight write (GPU particles drawn
+        // from the state their update just exported): wait for it. And
+        // after a run of export dispatches, submit them with a fence right
+        // away: fenced only at the frame's end, next frame's wait above
+        // waited for the whole frame (20 fps).
+        if (!g_vertexShader->info.usesMemExport)
+        {
+            SyncMemExportsFor(*g_vertexShader);
+            FenceMemExports();
+        }
+
         // Memory export (occlusion tests, Halo's water): run the shader's
         // compute variant for the writes (memexport.cpp). Shaders that only
         // write memory have nothing to rasterize; drawing them would put
@@ -750,6 +779,15 @@ namespace h3::gpu::renderer::internal
         TargetSet targets = CurrentTargets(*g_pixelShader, colorMask, depthControl, mode);
         if (targets.colorCount == 0 && !targets.depth)
             return;
+        // Occlusion query draws (depth-only, between EVENT_WRITE_ZPD
+        // reports) go into the query id texture to count their samples.
+        uint32_t queryId = targets.depth ? OcclusionQueryDraw(mode) : 0;
+        if (queryId)
+        {
+            targets.color[0] = OcclusionQueryTexture();
+            targets.colorFormat[0] = SDL_GPU_TEXTUREFORMAT_R32_UINT;
+            targets.colorCount = 1;
+        }
 
         SDL_GPUPrimitiveType topology;
         if (!HostTopology(primitive, topology))
@@ -780,6 +818,46 @@ namespace h3::gpu::renderer::internal
         desc.depthControl = targets.depth ? depthControl : 0;
         desc.stencilMasks = targets.depth ? stencilRefMask & 0xFFFF00 : 0;  // not the reference (dynamic state)
         desc.psColorTargetMask = g_pixelShader->info.colorTargetMask;
+        LogVertexData(*g_vertexShader, initiator);
+        if (!queryId && targets.colorCount && HighlightDraw(*g_vertexShader))
+        {
+            // Show what the shader reads: each vertex fetch range and its
+            // first dwords as floats (big-endian in memory).
+            static uint32_t logged = 0;
+            if (logged++ < 6)
+                for (uint32_t index : g_vertexShader->info.vertexFetchConstants)
+                {
+                    VertexFetch fetch = ReadVertexFetch(index);
+                    fprintf(stderr, "[render]   vfetch %u: valid %d address %08X dwords %u endian %u:", index, fetch.valid, fetch.address,
+                        fetch.dwords, fetch.endian);
+                    for (uint32_t i = 0; fetch.valid && i < std::min(fetch.dwords, 24u); i++)
+                    {
+                        uint32_t bits = __builtin_bswap32(GuestRef<uint32_t>(PhysicalToGuest(fetch.address) + i * 4).value);
+                        float f;
+                        memcpy(&f, &bits, 4);
+                        fprintf(stderr, " %g", f);
+                    }
+                    fprintf(stderr, " | draw count %u\n", initiator >> 16);
+                }
+            desc.ps = kHighlightPixelShader;
+            desc.blend[0] = 0x00010001;
+            desc.colorMask = (desc.colorMask & ~0xFu) | 0xF;
+            desc.psColorTargetMask = 1;
+            desc.depthControl = 0;
+            desc.rasterizer &= ~kRasterizerMask;
+        }
+        if (queryId)
+        {
+            constexpr uint32_t kAllChannels = 0xF;
+            constexpr uint32_t kBlendOneZero = 0x00010001;  // RB_BLENDCONTROL: no blending
+            desc.ps = kOcclusionQueryPixelShader;
+            desc.blend[0] = kBlendOneZero;
+            desc.colorMask = kAllChannels;
+            desc.psColorTargetMask = 1;
+            // No depth writes: the query only tests.
+            constexpr uint32_t kDepthWriteEnable = 1u << 2;
+            desc.depthControl &= ~kDepthWriteEnable;
+        }
         // Culling, for real triangles only: rectangle lists are expanded in
         // the vertex shader and tessellated patches drawn as host grids,
         // neither in the guest's winding. Culling both faces draws nothing.
@@ -792,6 +870,8 @@ namespace h3::gpu::renderer::internal
             return;
         if (triangles && !noCull)
             desc.rasterizer = cull;
+        if (ReadRegister(kRegPaClClipCntl) & kClipCntlClipDisable)
+            desc.rasterizer |= kRasterizerNoDepthClip;
         SDL_GPUGraphicsPipeline* pipeline = GetPipeline(desc);
         if (!pipeline)
             return;
@@ -836,6 +916,13 @@ namespace h3::gpu::renderer::internal
         StageVertexData(*g_vertexShader, system);
         draw->vertexTextures = BindTextures(*g_vertexShader, system);
         draw->pixelTextures = BindTextures(*g_pixelShader, system);
+        if (desc.ps == kHighlightPixelShader)
+            draw->pixelTextures.clear();
+        if (queryId)
+        {
+            draw->pixelTextures.clear();  // the query shader samples nothing
+            system.queryId = queryId;
+        }
 
         // At a render scale, screen-space draws (rectangle lists, or no
         // viewport scale: D3D's full-screen passes and the UI) have their

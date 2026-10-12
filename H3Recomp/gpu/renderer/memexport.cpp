@@ -29,6 +29,7 @@
 
 #include <bit>
 #include <cstdio>
+#include <unordered_map>
 
 namespace h3::gpu::renderer::internal
 {
@@ -121,6 +122,7 @@ namespace h3::gpu::renderer::internal
             SDL_GPUBuffer* exports = nullptr;         // records, read-write
             SDL_GPUTransferBuffer* download = nullptr;
             uint32_t records = 0;  // record capacity of this dispatch
+            std::vector<Stream> streams;  // physical ranges it writes
         };
         std::vector<Slot> g_freeSlots;
 
@@ -131,6 +133,7 @@ namespace h3::gpu::renderer::internal
         {
             SDL_GPUFence* fence;
             std::vector<Slot> slots;
+            uint32_t frame = 0;  // g_swaps when submitted
         };
         std::vector<Batch> g_batches;
 
@@ -183,6 +186,137 @@ namespace h3::gpu::renderer::internal
             return true;
         }
 
+        // Exports landing in this frame's input arena. Within a frame Halo
+        // spawns particles with one dispatch and updates them with the next,
+        // which reads the spawn's output; staged once a frame from guest
+        // memory (where exports arrive only a frame or two later), the
+        // update read empty slots and wrote dead particles back: no muzzle
+        // flashes, no splashes. So after each dispatch, a scatter pass writes
+        // its records into the arena's copies of the ranges they fall in,
+        // and later dispatches in the same command buffer see them.
+        constexpr uint32_t kMaxScatterRanges = 16;
+        struct ScatterInfo  // std140
+        {
+            uint32_t capacity, rangeCount, unused[2];
+            uint32_t ranges[kMaxScatterRanges][4];  // physical base, bytes, arena dword offset, unused
+        };
+        const char* kScatterShader = R"(#version 450
+layout(local_size_x = 64) in;
+layout(std430, set = 0, binding = 0) readonly buffer XeRecords { uint records[]; };
+layout(std430, set = 1, binding = 0) buffer XeArena { uint arena[]; };
+layout(std140, set = 2, binding = 0) uniform XeScatter
+{
+    uvec4 counts;  // x: record capacity, y: ranges
+    uvec4 ranges[16];
+};
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= min(records[0], counts.x))
+        return;
+    uint address = records[2u + i * 2u] & ~3u, value = records[3u + i * 2u];
+    for (uint r = 0u; r < counts.y; r++)
+    {
+        uvec4 range = ranges[r];
+        if (address >= range.x && address - range.x < range.y)
+            arena[range.z + (address - range.x) / 4u] = value;
+    }
+}
+)";
+        SDL_GPUComputePipeline* g_scatterPipeline = nullptr;
+
+        // This frame's dispatches so far (their record buffers stay alive
+        // until applied, a frame or more later), to replay into ranges
+        // staged after them: the spawn dispatch runs before anything has
+        // staged the particle buffer the update then reads.
+        struct FrameExport
+        {
+            SDL_GPUBuffer* records;
+            uint32_t capacity;
+            std::vector<Stream> streams;
+        };
+        std::vector<FrameExport> g_frameExports;
+        uint32_t g_frameExportsFrame = ~0u;
+
+        // Records a scatter of a dispatch's records into the arena ranges
+        // overlapping its streams (all staged ranges, or only `only`:
+        // (key, dword offset) pairs just staged).
+        void ScatterRecords(SDL_GPUCommandBuffer* commands, SDL_GPUBuffer* records, uint32_t capacity, const std::vector<Stream>& streams,
+            SDL_GPUBuffer* target, const std::vector<std::pair<uint64_t, uint32_t>>& ranges);
+
+        void ScatterIntoArena(SDL_GPUCommandBuffer* commands, SDL_GPUBuffer* records, uint32_t capacity, const std::vector<Stream>& streams,
+            const std::vector<std::pair<uint64_t, uint32_t>>* only = nullptr)
+        {
+            static const bool disabled = EnvFlag("H3_NO_EXPORT_SCATTER");
+            InputArena& arena = g_arenas[g_swaps % kArenaFrames];
+            if (disabled || !arena.buffer || arena.frame != g_swaps)
+                return;
+            std::vector<std::pair<uint64_t, uint32_t>> all;
+            if (!only)
+                all.assign(arena.ranges.begin(), arena.ranges.end());
+            ScatterRecords(commands, records, capacity, streams, arena.buffer, only ? *only : all);
+        }
+
+        // Scatters a dispatch's records into a buffer holding copies of
+        // guest ranges ((physical address << 32 | dwords), dword offset),
+        // where they overlap its streams.
+        void ScatterRecords(SDL_GPUCommandBuffer* commands, SDL_GPUBuffer* records, uint32_t capacity, const std::vector<Stream>& streams,
+            SDL_GPUBuffer* target, const std::vector<std::pair<uint64_t, uint32_t>>& ranges)
+        {
+            ScatterInfo info{};
+            info.capacity = capacity;
+            for (const auto& [key, offset] : ranges)
+            {
+                uint32_t base = uint32_t(key >> 32), bytes = uint32_t(key) * 4;
+                bool overlaps = false;
+                for (const Stream& stream : streams)
+                    overlaps = overlaps || (base < stream.base + stream.bytes && stream.base < base + bytes);
+                if (!overlaps || info.rangeCount == kMaxScatterRanges)
+                    continue;
+                uint32_t* range = info.ranges[info.rangeCount++];
+                range[0] = base, range[1] = bytes, range[2] = offset;
+            }
+            static const bool log = EnvFlag("H3_LOG_MEMEXPORT");
+            static uint32_t logged = 0;
+            if (log && logged++ < 40)
+            {
+                fprintf(stderr, "[render] memexport scatter f%u: %u ranges of %zu staged; streams", g_swaps, info.rangeCount, ranges.size());
+                for (const Stream& stream : streams)
+                    fprintf(stderr, " %08X+%u", stream.base, stream.bytes);
+                for (uint32_t r = 0; r < info.rangeCount; r++)
+                    fprintf(stderr, " | range %08X+%u @%u", info.ranges[r][0], info.ranges[r][1], info.ranges[r][2]);
+                fprintf(stderr, "\n");
+            }
+            if (!info.rangeCount)
+                return;
+            if (!g_scatterPipeline)
+            {
+                std::vector<uint8_t> spirv = CompileSpirv(ShaderStage::Compute, kScatterShader, "memexport_scatter.spv");
+                if (spirv.empty())
+                    return;
+                SDL_GPUComputePipelineCreateInfo create{};
+                create.code_size = spirv.size();
+                create.code = spirv.data();
+                create.entrypoint = "main";
+                create.format = SDL_GPU_SHADERFORMAT_SPIRV;
+                create.num_readonly_storage_buffers = 1;
+                create.num_readwrite_storage_buffers = 1;
+                create.num_uniform_buffers = 1;
+                create.threadcount_x = kThreadsPerGroup;
+                create.threadcount_y = create.threadcount_z = 1;
+                g_scatterPipeline = SDL_CreateGPUComputePipeline(g_device, &create);
+                if (!g_scatterPipeline)
+                    return;
+            }
+            SDL_GPUStorageBufferReadWriteBinding writable{ target, false };
+            SDL_GPUComputePass* pass = SDL_BeginGPUComputePass(commands, nullptr, 0, &writable, 1);
+            SDL_BindGPUComputePipeline(pass, g_scatterPipeline);
+            SDL_BindGPUComputeStorageBuffers(pass, 0, &records, 1);
+            SDL_PushGPUComputeUniformData(commands, 0, &info, sizeof(info));
+            SDL_DispatchGPUCompute(pass, (capacity + kThreadsPerGroup - 1) / kThreadsPerGroup, 1, 1);
+            SDL_EndGPUComputePass(pass);
+        }
+
         // One piece of input to stage: guest data (key: address and dwords,
         // or 0 for data that isn't shared, like indices).
         struct InputPiece
@@ -229,7 +363,9 @@ namespace h3::gpu::renderer::internal
                         arena.capacity, arena.used, needed, pieces.size());
                 SDL_GPUBufferCreateInfo buffer{};
                 buffer.size = arena.capacity;
-                buffer.usage = SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ;
+                // Written too: dispatches' exports are scattered into it
+                // for the next dispatches (ScatterIntoArena).
+                buffer.usage = SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ | SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_WRITE;
                 arena.buffer = SDL_CreateGPUBuffer(g_device, &buffer);
                 SDL_GPUTransferBufferCreateInfo transfer{ SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, arena.capacity, 0 };
                 arena.upload = SDL_CreateGPUTransferBuffer(g_device, &transfer);
@@ -243,6 +379,7 @@ namespace h3::gpu::renderer::internal
                 }
             }
             uint32_t start = arena.used;
+            std::vector<std::pair<uint64_t, uint32_t>> staged;  // ranges new this time
             uint8_t* mapped = needed ? static_cast<uint8_t*>(SDL_MapGPUTransferBuffer(g_device, arena.upload, false)) : nullptr;
             for (InputPiece& piece : pieces)
             {
@@ -255,7 +392,10 @@ namespace h3::gpu::renderer::internal
                 *piece.offset = arena.used / 4;
                 memcpy(mapped + arena.used, piece.data, size_t(piece.dwords) * 4);
                 if (piece.key)
+                {
                     arena.ranges.emplace(piece.key, arena.used / 4);
+                    staged.push_back({ piece.key, arena.used / 4 });
+                }
                 arena.used += AlignUp(piece.dwords * 4, 16);
             }
             if (mapped)
@@ -266,6 +406,11 @@ namespace h3::gpu::renderer::internal
                 SDL_GPUBufferRegion destination{ arena.buffer, start, arena.used - start };
                 SDL_UploadToGPUBuffer(copy, &source, &destination, false);
                 SDL_EndGPUCopyPass(copy);
+                // Guest memory lacks this frame's exports so far: replay
+                // them into the new copies, in order.
+                if (g_frameExportsFrame == g_swaps)
+                    for (const FrameExport& earlier : g_frameExports)
+                        ScatterIntoArena(Commands(), earlier.records, earlier.capacity, earlier.streams, &staged);
             }
             return arena.buffer;
         }
@@ -335,11 +480,42 @@ namespace h3::gpu::renderer::internal
         {
             const uint32_t* results = static_cast<const uint32_t*>(SDL_MapGPUTransferBuffer(g_device, slot.download, false));
             uint32_t count = std::min(results[0], slot.records);
+            // Pages written (one dispatch can write far-apart streams; the
+            // span between them may hold live resolves).
+            constexpr uint32_t kPageShift = 12;
+            std::vector<uint32_t> pages;
+            uint32_t lastPage = ~0u;
             for (uint32_t i = 0; i < count; i++)
             {
                 const uint32_t* record = results + kRecordHeaderDwords + i * kRecordDwords;
-                memcpy(GuestPtr<uint8_t>(PhysicalToGuest(record[0] & ~3u)), &record[1], 4);  // already in memory byte order
+                uint32_t address = record[0] & ~3u;
+                memcpy(GuestPtr<uint8_t>(PhysicalToGuest(address)), &record[1], 4);  // already in memory byte order
+                // H3_TRACE_EXPORTS=<hex address>-<hex end>: log every record
+                // applied in that physical range (frame, address, float).
+                static const char* trace = EnvString("H3_TRACE_EXPORTS");
+                static uint32_t traceBegin = trace ? uint32_t(strtoul(trace, nullptr, 16)) : 0;
+                static uint32_t traceEnd = trace && strchr(trace, '-') ? uint32_t(strtoul(strchr(trace, '-') + 1, nullptr, 16)) : 0;
+                if (address >= traceBegin && address < traceEnd)
+                {
+                    uint32_t bits = __builtin_bswap32(record[1]);
+                    float value;
+                    memcpy(&value, &bits, 4);
+                    fprintf(stderr, "[trace] f%u %08X %g\n", g_swaps, address, value);
+                }
+                uint32_t page = address >> kPageShift;
+                if (page != lastPage)
+                    pages.push_back(lastPage = page);
             }
+            // Memory the game reads back as a texture may still have a
+            // resolved texture standing in for it (resolve.cpp), which would
+            // hide what was just written. Halo's flare visibility samples
+            // exported occlusion results at 0x04443000, where the water
+            // ripples resolve too: the stale ripple texture kept tac lights
+            // shining through rocks.
+            std::sort(pages.begin(), pages.end());
+            pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
+            for (uint32_t page : pages)
+                InvalidateResolved(page << kPageShift, (page + 1) << kPageShift);
             // H3_LOG_MEMEXPORT: records per completed dispatch (the first
             // few hundred).
             static const bool log = EnvFlag("H3_LOG_MEMEXPORT");
@@ -359,6 +535,26 @@ namespace h3::gpu::renderer::internal
                     fprintf(stderr, " %08X=%g", record[0], value);
                 }
                 fprintf(stderr, "\n");
+            }
+            // H3_CHECK_EXPORT_DUPES: count addresses one dispatch writes
+            // more than once with different values (their order is the
+            // export shader's atomic order, so the result is arbitrary).
+            static const bool dupes = EnvFlag("H3_CHECK_EXPORT_DUPES");
+            if (dupes)
+            {
+                std::unordered_map<uint32_t, uint32_t> seen;
+                uint32_t conflicting = 0, first = 0;
+                for (uint32_t i = 0; i < count; i++)
+                {
+                    const uint32_t* record = results + kRecordHeaderDwords + i * kRecordDwords;
+                    auto [it, inserted] = seen.emplace(record[0] & ~3u, record[1]);
+                    if (!inserted && it->second != record[1] && conflicting++ == 0)
+                        first = record[0];
+                }
+                static uint32_t logged = 0;
+                if (conflicting && logged++ < 200)
+                    fprintf(stderr, "[dupes] f%u: %u of %u records conflict (first %08X), streams %08X+%u\n", g_swaps, conflicting, count, first,
+                        slot.streams.empty() ? 0 : slot.streams[0].base, slot.streams.empty() ? 0 : slot.streams[0].bytes);
             }
             SDL_UnmapGPUTransferBuffer(g_device, slot.download);
         }
@@ -457,6 +653,11 @@ namespace h3::gpu::renderer::internal
         memset(&system, 0, sizeof(system));
         SetControlConstants(system);
 
+        // Vertex data written by exports still in flight (a particle
+        // update reading what this frame's spawns or last frame's update
+        // wrote): wait for them first, as the console would see them.
+        SyncMemExportsFor(vs);
+
         // Vertex data the shader fetches, then the indices if any (staged
         // in the frame's input arena).
         std::vector<InputPiece> pieces;
@@ -523,6 +724,7 @@ namespace h3::gpu::renderer::internal
             return;
         }
         slot.records = info.capacity;
+        slot.streams = streams;
         SDL_GPUCommandBuffer* commands = Commands();
         SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commands);
         SDL_GPUBufferLocation zero{ g_zeroBuffer, 0 }, header{ slot.exports, 0 };
@@ -540,6 +742,13 @@ namespace h3::gpu::renderer::internal
         SDL_PushGPUComputeUniformData(commands, 2, &info, sizeof(info));
         SDL_DispatchGPUCompute(pass, (info.vertexCount + kThreadsPerGroup - 1) / kThreadsPerGroup, 1, 1);
         SDL_EndGPUComputePass(pass);
+        ScatterIntoArena(commands, slot.exports, info.capacity, streams);
+        if (g_frameExportsFrame != g_swaps)
+        {
+            g_frameExports.clear();
+            g_frameExportsFrame = g_swaps;
+        }
+        g_frameExports.push_back({ slot.exports, info.capacity, streams });
 
         copy = SDL_BeginGPUCopyPass(commands);
         SDL_GPUBufferRegion results{ slot.exports, 0, exportBytes };
@@ -549,13 +758,98 @@ namespace h3::gpu::renderer::internal
         g_unfenced.push_back(std::move(slot));
     }
 
+    void ScatterFrameExports(SDL_GPUBuffer* target, const std::vector<std::pair<uint64_t, uint32_t>>& ranges)
+    {
+        static const bool disabled = EnvFlag("H3_NO_EXPORT_SCATTER");
+        if (disabled || g_frameExportsFrame != g_swaps || ranges.empty())
+            return;
+        for (const FrameExport& dispatch : g_frameExports)
+            ScatterRecords(Commands(), dispatch.records, dispatch.capacity, dispatch.streams, target, ranges);
+    }
+
+    std::string FrameExportsOverlapping(uint32_t begin, uint32_t end)
+    {
+        std::string text;
+        if (g_frameExportsFrame != g_swaps)
+            return text;
+        char item[48];
+        for (size_t i = 0; i < g_frameExports.size(); i++)
+            for (const Stream& stream : g_frameExports[i].streams)
+                if (begin < stream.base + stream.bytes && end > stream.base)
+                {
+                    snprintf(item, sizeof(item), " #%zu:%08X+%u", i, stream.base, stream.bytes);
+                    text += item;
+                }
+        return text;
+    }
+
+    bool MemExportPending(uint32_t begin, uint32_t end)
+    {
+        // Exports from earlier frames only: this frame's dispatches all
+        // write the same particle streams, so waiting on them would stall
+        // every dispatch (96 waits a frame in Sierra, 10 fps).
+        for (const Batch& batch : g_batches)
+        {
+            if (batch.frame >= g_swaps)
+                continue;
+            for (const Slot& slot : batch.slots)
+                for (const Stream& stream : slot.streams)
+                    if (begin < stream.base + stream.bytes && end > stream.base)
+                        return true;
+        }
+        return false;
+    }
+
+    void SyncMemExportsFor(const Shader& shader)
+    {
+        // H3_MEMEXPORT_ASYNC=1: never wait (results land a frame or two
+        // late, as before; GPU particles then simulate on stale state and
+        // short effects - muzzle flashes, splashes - go missing).
+        static const bool async = EnvFlag("H3_MEMEXPORT_ASYNC");
+        if (async || g_batches.empty() || g_batches.front().frame >= g_swaps)
+            return;
+        bool pending = false;
+        for (uint32_t index : shader.info.vertexFetchConstants)
+        {
+            VertexFetch fetch = ReadVertexFetch(index);
+            if (fetch.valid && fetch.dwords && MemExportPending(fetch.address, fetch.address + fetch.dwords * 4))
+            {
+                pending = true;
+                break;
+            }
+        }
+        if (!pending)
+            return;
+        // Wait for the earlier frames' batches (usually done by now) and
+        // apply them, oldest first.
+        SlowTimer timer{ "memexport sync" };
+        size_t done = 0;
+        for (; done < g_batches.size() && g_batches[done].frame < g_swaps; done++)
+        {
+            Batch& batch = g_batches[done];
+            SDL_WaitForGPUFences(g_device, true, &batch.fence, 1);
+            for (Slot& slot : batch.slots)
+            {
+                CompleteSlot(slot);
+                RecycleSlot(std::move(slot));
+            }
+            SDL_ReleaseGPUFence(g_device, batch.fence);
+        }
+        g_batches.erase(g_batches.begin(), g_batches.begin() + done);
+        // Guest memory changed under this frame's input arena: upload
+        // ranges again from now on (what's already recorded keeps its
+        // copies). Draws stage per flush and see the new memory as is.
+        g_arenas[g_swaps % kArenaFrames].ranges.clear();
+        g_memExportSyncs++;
+    }
+
     void FenceMemExports()
     {
         if (g_unfenced.empty() || !g_commands)
             return;
         SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(g_commands);
         g_commands = nullptr;
-        g_batches.push_back({ fence, std::move(g_unfenced) });
+        g_batches.push_back({ fence, std::move(g_unfenced), g_swaps });
         g_unfenced.clear();
     }
 

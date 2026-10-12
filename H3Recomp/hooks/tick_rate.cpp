@@ -25,6 +25,7 @@
 #include "config/settings.h"
 #include "memory.h"
 
+#include <algorithm>
 #include <cstdio>
 
 using namespace h3;
@@ -57,7 +58,15 @@ namespace
     // H3_LOG_TICK_RATE).
     constexpr uint32_t kGameTimeSlot = 188;
     uint32_t g_gameTime = 0;
+}
 
+namespace h3::debug
+{
+    void ProvideWatchAddress(uint32_t address);  // debug/write_watch.cpp
+}
+
+namespace
+{
     // Runs original(ctx, base) with the game options' tick rate replaced by
     // the configured one.
     template <typename F>
@@ -75,12 +84,14 @@ namespace
             uint32_t tls = GuestRef<uint32_t>(ctx.r13.u32);
             options = GuestRef<uint32_t>(tls + kGameOptionsSlot);
         }
+        g_gameTime = GuestRef<uint32_t>(uint32_t(GuestRef<uint32_t>(ctx.r13.u32)) + kGameTimeSlot);
+        // H3_WATCH_WRITES with address 0: watch this game time (debugging).
+        debug::ProvideWatchAddress(g_gameTime);
         if (!options)
         {
             original(ctx, base);
             return;
         }
-        g_gameTime = GuestRef<uint32_t>(uint32_t(GuestRef<uint32_t>(ctx.r13.u32)) + kGameTimeSlot);
         uint32_t field = options + kTickRateOffset;
         int16_t saved = int16_t(GuestRef<int16_t>(field));
         GuestRef<int16_t>(field) = int16_t(rate);
@@ -125,4 +136,38 @@ namespace h3::hooks
             uint32_t(GuestRef<uint16_t>(g_gameTime + 4)), secondsPerTick, uint32_t(GuestRef<uint32_t>(g_gameTime + 12)),
             float(GuestRef<float>(g_gameTime + 16)));
     }
+}
+
+
+// HaloScript game_reverted (sub_822D7BB0; r4 = the script thread): true
+// while the game time tick equals the tick the last game state load
+// restored (kRevertTickAddress). Cinematic skips depend on it: the
+// level script saves the game when a cutscene starts, and the end (or a
+// skip) reverts to that save; the script, back where it saved, asks
+// game_reverted and moves past the cutscene. Its check polls once per
+// script period, which seems to scale with the tick rate: at 60 ticks it
+// first ran a tick after the revert tick, got false and replayed the
+// cutscene forever (The Ark's intro). So the revert counts for the ticks
+// one original 30 Hz tick spans: exactly the original at 30.
+namespace
+{
+    constexpr uint32_t kRevertTickAddress = 0x828C4A50 + 0x1F35C;  // main game globals + 0x1F35C
+    // HaloScript returns a boolean as the high byte of the value word.
+    constexpr uint32_t kScriptTrue = 0x01000000;
+}
+PPC_FUNC_IMPL(__imp__sub_820AB8A0);  // script function return (r3 thread, r4 value)
+PPC_FUNC_IMPL(__imp__sub_822D7BB0);
+PPC_FUNC(sub_822D7BB0)
+{
+    uint32_t gameTime = GuestRef<uint32_t>(uint32_t(GuestRef<uint32_t>(ctx.r13.u32)) + kGameTimeSlot);
+    uint32_t tick = GuestRef<uint32_t>(gameTime + 12);
+    uint32_t revertTick = GuestRef<uint32_t>(kRevertTickAddress);
+    uint32_t window = uint32_t(std::max(1, h3::hooks::GameTickRate() / config::kOriginalTickRate));
+    bool reverted = tick - revertTick < window;  // unsigned: ticks before the revert don't count
+    static const bool log = EnvFlag("H3_LOG_TICK_RATE");
+    if (log)
+        fprintf(stderr, "[hooks] game_reverted: tick %u, revert tick %u -> %d\n", tick, revertTick, reverted);
+    ctx.r3.u64 = ctx.r4.u64;
+    ctx.r4.u64 = reverted ? kScriptTrue : 0;
+    sub_820AB8A0(ctx, base);
 }

@@ -6,6 +6,10 @@
 // then protected again. Results go to write_watch.txt as offsets into the
 // executable (symbolize with nm, like tools/h3profile.py).
 //
+// Address 0 means "provided by code later" (ProvideWatchAddress, e.g.
+// H3_LOG_TICK_RATE hands over game_time_globals when a map starts): the
+// watch arms on the first swap from <first swap> on once it has an address.
+//
 // H3_WATCH_READS (same syntax) watches every access instead (the range is
 // made inaccessible) and writes read_watch.txt.
 //
@@ -42,6 +46,8 @@ namespace h3::debug
         bool g_reads = false;    // H3_WATCH_READS: catch reads too
         int g_protection = PROT_READ;  // while armed: PROT_READ (writes fault) or PROT_NONE (all)
         std::atomic<bool> g_armed{ false };
+        bool g_done = false;                       // reported; never re-arm
+        std::atomic<uint32_t> g_provided{ 0 };     // physical address from ProvideWatchAddress
         struct Site
         {
             uint64_t rip;
@@ -173,6 +179,12 @@ namespace h3::debug
         }
     }
 
+    void ProvideWatchAddress(uint32_t address)
+    {
+        if (!g_armed.load())
+            g_provided = GuestToPhysical(address);
+    }
+
     // Called on every swap.
     void UpdateWriteWatch(uint32_t frame)
     {
@@ -206,7 +218,9 @@ namespace h3::debug
         }();
         if (!parsed)
             return;
-        if (frame == g_first && !g_armed.load())
+        if (!g_address && g_provided.load())
+            g_address = g_provided.load();
+        if (frame >= g_first && frame <= g_last && g_address && !g_armed.load() && !g_done)
         {
             g_armed = true;
             Protect(g_protection);
@@ -215,6 +229,7 @@ namespace h3::debug
         else if (frame == g_last + 1 && g_armed.load())
         {
             g_armed = false;
+            g_done = true;
             Protect(PROT_READ | PROT_WRITE);
             Write();
         }
@@ -224,5 +239,6 @@ namespace h3::debug
 namespace h3::debug
 {
     void UpdateWriteWatch(uint32_t) {}
+    void ProvideWatchAddress(uint32_t) {}
 }
 #endif

@@ -155,6 +155,8 @@ Environment variables:
 | `H3_DUMP_RESOLVE=<n>\|all` | With `H3_DUMP_FRAME`: save that frame's n-th resolve (or all of them) as PNGs |
 | `H3_LOG_RESOLVES=1` | Log every resolve (source, rectangle, destination, format) |
 | `H3_LOG_USER=1`, `H3_LOG_CONTENT=1`, `H3_LOG_NOTIFY=1` | Log profile, content and notification calls |
+| F10 (key) | Like F9, plus what each draw of the frame changed in color target 0: a crop of the changed rectangle per draw (`draw_<frame>_<n>_<x>_<y>.png`), listed in `deep_capture.txt`. The game freezes until it finishes (up to a minute or so); let it finish |
+| F9 (key) / `H3_CAPTURE_AT=<frame>` | Capture the next frame (or that frame) into `captures/capture_<n>/`: `gpu_capture.txt`, the shaders, the presented frame and every resolve |
 | `H3_GPU_CAPTURE=<frame>` | Write `gpu_capture.txt`: every draw, resolve and shader load in that frame (counted in swaps) with the render state |
 | `H3_DUMP_DRAWS=<first>-<last>` | With `H3_DUMP_FRAME`: save color target 0 after each of those draws (numbered like the capture's `draw #n`), 2304x1280 (render targets are in sample space: a 4x surface's pixel is 2x2 texels) |
 | `H3_SKIP_DRAWS=<first>-<last>[,...]` | Drop those draws (numbered like the capture's `draw #n`) in every frame, to find which draw causes an artifact |
@@ -168,6 +170,10 @@ Environment variables:
 | `H3_APPROX_GAMMA=1` | Approximate the 8_8_8_8_GAMMA piecewise-linear curve as gamma 2 (the old behaviour), to compare |
 | `H3_LOG_CARRYOVER=1` | Log every EDRAM format switch (base, formats, rectangle carried over) |
 | `H3_FULL_CARRYOVER=1` | Carry whole render targets over on EDRAM format switches instead of only what changed, to compare |
+| `H3_FAKE_ZPD=1` | Report every occlusion query as visible (the old behaviour) instead of counting samples (tac lights, light glows) |
+| `H3_MEMEXPORT_ASYNC=1` | Don't wait for earlier frames' memory exports before reading their data (the old behaviour) |
+| `H3_NO_EXPORT_SCATTER=1` | Don't copy a memory export's results into the data later dispatches in the same frame read (GPU particles spawned and updated in one frame: muzzle flashes, splashes) |
+| `H3_HIGHLIGHT_VS=<hash>` | Draw that vertex shader's draws (hash prefix of a captured `gpu_shaders/vs_<hash>.bin`; `list` prints them) in magenta with depth test off, and log their vertex fetch data |
 | `H3_NO_CULL=1` | Don't cull faces (PA_SU_SC_MODE_CNTL), to compare |
 | `H3_NO_POLY_OFFSET=1` | Ignore polygon offset (depth bias: Halo's decals and shadow maps) |
 | `H3_NO_STENCIL_RESTORE=1` | Don't turn stencil drawn through a color view (Halo's dither pattern) into stencil |
@@ -177,7 +183,7 @@ Environment variables:
 | `H3_DUMP_SOURCE=1` | With `H3_DUMP_RESOLVE`: also save each resolve's source render target as `source_<frame>_<n>.png` |
 | `H3_DUMP_VIEWS=1` | With `H3_DUMP_FRAME`: save each part of a resolved texture copied out for sampling at another size (`view_*.png`) |
 | `H3_DUMP_SCALE=<n>` | Divide 16-bit float colors by n in dumps (Halo's final 7e3 target holds 32x values) |
-| `H3_SNAPSHOT_EVERY=<n>` | Save every n-th presented frame as `frame_<n>.png` (from frame `H3_SNAPSHOT_FROM`, if set) |
+| `H3_SNAPSHOT_EVERY=<n>` | Save every n-th presented frame as `frame_<n>.png` (from frame `H3_SNAPSHOT_FROM` to `H3_SNAPSHOT_TO`, if set) |
 | `H3_LOG_CLEARS=1` | Log D3D clears (screen-space rectangle draws) with their rectangles, color and surface |
 | `H3_LOG_AUDIO=1` | Log audio frames submitted and their peak level, once a second |
 | `H3_AUDIO_DUMP=<file>` | Also write the audio output as raw 6-channel 48 kHz float (`ffmpeg -f f32le -ac 6 -ar 48000 -i <file> out.wav`) |

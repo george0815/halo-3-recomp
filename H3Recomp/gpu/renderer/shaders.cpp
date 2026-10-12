@@ -184,6 +184,16 @@ namespace h3::gpu::renderer::internal
             return it->second.get();
 
         auto entry = std::make_unique<Shader>();
+        // The capture's name for it (frame_capture.cpp: FNV-1a over the
+        // big-endian dwords, as in guest memory), for debug switches.
+        entry->captureHash = 0xCBF29CE484222325ull;
+        for (uint32_t i = 0; i < count; i++)
+        {
+            uint32_t big = __builtin_bswap32(dwords[i]);
+            const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&big);
+            for (int b = 0; b < 4; b++)
+                entry->captureHash = (entry->captureHash ^ bytes[b]) * 0x100000001B3ull;
+        }
         shader::TranslationResult translated = shader::Translate(vertex, dwords, count);
         if (!translated.ok)
             LogOnce("shader translation failed: " + translated.error);

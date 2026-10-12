@@ -31,3 +31,4 @@ compile_commands.json
 Thumbs.db
 
 __pycache__/
+captures/

@@ -7,6 +7,7 @@
 #include "config/settings.h"
 
 #include "video/bink_view.h"
+#include "gpu/frame_capture.h"
 #include "gpu/renderer.h"
 #include "input/input.h"
 
@@ -195,6 +196,20 @@ namespace h3::video
                     return exitCode;
                 if (event.type == g_quitEvent)
                     return event.user.code;
+                // F9: capture the next frame for debugging (captures/,
+                // gpu/frame_capture.h).
+                if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.scancode == SDL_SCANCODE_F9)
+                {
+                    gpu::capture::RequestCapture();
+                    fprintf(stderr, "[video] F9: capture requested\n");
+                }
+                // F10: the same plus color target 0 after every draw (slow:
+                // the game pauses while hundreds of images are written).
+                if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.scancode == SDL_SCANCODE_F10)
+                {
+                    gpu::capture::RequestCapture(true);
+                    fprintf(stderr, "[video] F10: deep capture requested\n");
+                }
                 // F11 or Alt+Enter toggles fullscreen.
                 if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
                     (event.key.scancode == SDL_SCANCODE_F11 || (event.key.scancode == SDL_SCANCODE_RETURN && (event.key.mod & SDL_KMOD_ALT))))

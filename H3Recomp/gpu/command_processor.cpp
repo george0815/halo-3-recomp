@@ -623,6 +623,7 @@ namespace h3::gpu
                 uint32_t initiator = reader.Read();
                 WriteRegister(kRegVgtEventInitiator, initiator & kEventTypeMask);
                 uint32_t address = ReadRegister(kRegRbSampleCountAddr);
+                capture::OnZpd(initiator, address);
                 static const bool logZpd = EnvFlag("H3_LOG_ZPD");
                 if (logZpd)
                 {
@@ -632,7 +633,11 @@ namespace h3::gpu
                 }
                 if (address == 0)
                     break;
-                // Samples "passing" per event; any positive amount works.
+                // The renderer counts real samples (gpu/renderer/queries.cpp).
+                if (renderer::OnOcclusionReport(address))
+                    break;
+                // Rendering off: samples "passing" per event; any positive
+                // amount works.
                 constexpr uint32_t kFakeSamplesPerEvent = 1000;
                 static uint32_t passed = 0;
                 passed += kFakeSamplesPerEvent;

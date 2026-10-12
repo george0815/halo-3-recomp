@@ -5,6 +5,9 @@
 
 #include <cstdint>
 
+#include <cstdint>
+#include <string>
+
 namespace h3::gpu
 {
     // Debug aid: with H3_GPU_CAPTURE=<frame>, writes gpu_capture.txt with
@@ -25,7 +28,26 @@ namespace h3::gpu
         // A packet was skipped by predication.
         void OnPredicatedSkip(uint32_t opcode);
 
+        // An occlusion query report (EVENT_WRITE_ZPD) to a sample count
+        // address.
+        void OnZpd(uint32_t initiator, uint32_t address);
+
         // A swap: ends the frame.
         void OnSwap(uint32_t frame);
+
+        // F9 (video/window.cpp; any thread): capture the next frame into a
+        // new folder, captures/capture_<n>/: gpu_capture.txt, the shaders,
+        // the presented frame and every resolve (the renderer's dumps use
+        // HotkeyFrame/HotkeyDirectory). For scenes a script can't reach.
+        void RequestCapture(bool deep = false);
+        // Whether the current hotkey capture is a deep one (F10): the
+        // renderer also saves color target 0 after every draw.
+        bool HotkeyDeep();
+        // The frame the last hotkey capture targets (0: none) and its folder.
+        // Command processor thread.
+        uint32_t HotkeyFrame();
+        const std::string& HotkeyDirectory();
+        // A file name inside the current capture's folder (as is without one).
+        std::string CapturePath(const std::string& name);
     }
 }

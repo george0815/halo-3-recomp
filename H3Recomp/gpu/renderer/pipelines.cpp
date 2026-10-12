@@ -297,9 +297,15 @@ namespace h3::gpu::renderer::internal
         SDL_GPUGraphicsPipeline* CreatePipeline(const PipelineDesc& desc)
         {
             HostShader* vs = FindHostShader(desc.vs);
-            HostShader* ps = FindHostShader(desc.ps);
             SDL_GPUShader* vertexShader = vs ? WaitForShader(*vs) : nullptr;
-            SDL_GPUShader* pixelShader = ps ? WaitForShader(*ps) : nullptr;
+            // Occlusion query draws write their query id (queries.cpp).
+            SDL_GPUShader* pixelShader = nullptr;
+            if (desc.ps == kOcclusionQueryPixelShader)
+                pixelShader = OcclusionQueryFragmentShader();
+            else if (desc.ps == kHighlightPixelShader)
+                pixelShader = HighlightFragmentShader();
+            else if (HostShader* ps = FindHostShader(desc.ps))
+                pixelShader = WaitForShader(*ps);
             if (!vertexShader || !pixelShader)
                 return nullptr;
 
@@ -330,7 +336,12 @@ namespace h3::gpu::renderer::internal
                                                            : SDL_GPU_CULLMODE_NONE;
             info.rasterizer_state.front_face =
                 (desc.rasterizer & kRasterizerFrontClockwise) ? SDL_GPU_FRONTFACE_CLOCKWISE : SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
-            info.rasterizer_state.enable_depth_clip = true;
+            // Depth clipping unless the guest turned clipping off
+            // (PA_CL_CLIP_CNTL): D3D's clear rectangles carry a z just below
+            // 0 (-3.7e-9) and rely on that; clipped, the letterbox edges of
+            // Halo's cutscenes were never cleared and old bloom glowed
+            // through them as a yellow haze.
+            info.rasterizer_state.enable_depth_clip = !(desc.rasterizer & kRasterizerNoDepthClip);
             info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             bool depth = desc.depthFormat != 0;
             if (depth)

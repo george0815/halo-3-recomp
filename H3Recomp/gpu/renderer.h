@@ -42,6 +42,11 @@ namespace h3::gpu::renderer
     // physical address), width x height.
     void OnSwap(uint32_t frontbuffer, uint32_t width, uint32_t height);
 
+    // An occlusion query report (EVENT_WRITE_ZPD) to a guest address: the
+    // renderer counts the samples and writes the report. False if rendering
+    // is off (the caller writes a fake one).
+    bool OnOcclusionReport(uint32_t address);
+
     // Main thread: the most recently presented frame, if any.
     struct Frame
     {

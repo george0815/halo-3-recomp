@@ -49,6 +49,7 @@ namespace h3::gpu::renderer::internal
     // Registers the renderer reads beyond gpu/registers.h
     // ------------------------------------------------------------------
 
+    constexpr uint32_t kRegPaClClipCntl = 0x2204;   // bit 16: clip disable; bits 0-5: user clip planes
     constexpr uint32_t kRegPaSuScModeCntl = 0x2205;  // culling, poly offset; bit 16: window offset enable; bit 21: primitive reset enable
     constexpr uint32_t kRegPaClVteCntl = 0x2206;     // which viewport scale/offset parts apply; bits 8-10 position formats
     constexpr uint32_t kRegRbDepthControl = 0x2200;  // depth/stencil test state
@@ -251,6 +252,7 @@ namespace h3::gpu::renderer::internal
         shader::ShaderInfo info;       // what it reads (constants, fetches, textures)
         std::string cacheName;         // SPIR-V file in the shader cache (also its id)
         std::vector<uint32_t> microcode;  // kept for memexport vertex shaders (compute variant, memexport.cpp)
+        uint64_t captureHash = 0;      // FNV-1a of the guest microcode, as H3_GPU_CAPTURE names gpu_shaders/
     };
 
     // Shaders most recently loaded by the command stream (IM_LOAD).
@@ -307,7 +309,10 @@ namespace h3::gpu::renderer::internal
     constexpr uint32_t kRasterizerCullFront = 1u << 0;
     constexpr uint32_t kRasterizerCullBack = 1u << 1;
     constexpr uint32_t kRasterizerFrontClockwise = 1u << 2;  // else counter-clockwise
-    constexpr uint32_t kRasterizerMask = 7;
+    constexpr uint32_t kRasterizerMask = 7;               // the PA_SU_SC_MODE_CNTL bits above
+    // PA_CL_CLIP_CNTL clip disable: no depth clipping (depth is clamped).
+    constexpr uint32_t kRasterizerNoDepthClip = 1u << 3;
+    constexpr uint32_t kClipCntlClipDisable = 1u << 16;
     static_assert(sizeof(PipelineDesc) == 16 + 16 * 4);
 
     // Polygon offset (depth bias) of a draw, from PA_SU_SC_MODE_CNTL and
@@ -516,6 +521,9 @@ namespace h3::gpu::renderer::internal
     SDL_GPUTexture* ResolvedView(ResolvedTexture& resolved, const texture::FetchConstant& fetch, uint32_t address);
     // Executes the resolve the current registers describe.
     void Resolve();
+    // Forgets resolved textures overlapping physical memory [begin, end)
+    // that something else wrote (memexport), so fetches decode the memory.
+    void InvalidateResolved(uint32_t begin, uint32_t end);
     // Completes write-backs whose GPU downloads finished (wait: all of them).
     void PollWriteBacks(bool wait = false);
     // Frees views of resolved textures (ResolvedView) that went unused for
@@ -551,7 +559,8 @@ namespace h3::gpu::renderer::internal
         float pixelScale[2];       // host texels per guest pixel
         float renderScale;         // g_renderScale
         float targetSize[2];       // host render target size (texels)
-        uint32_t pad2[2];
+        uint32_t queryId;          // occlusion query draws: the id written (queries.cpp)
+        uint32_t pad2;
     };
 
     // SystemConstants::flags bits (must match translator.h).
@@ -609,6 +618,69 @@ namespace h3::gpu::renderer::internal
     void FenceMemExports();
     // Writes back memexport results whose GPU work finished.
     void PollMemExports();
+
+    // ------------------------------------------------------------------
+    // Occlusion queries (queries.cpp)
+    // ------------------------------------------------------------------
+
+    // A sample count report (EVENT_WRITE_ZPD) at a guest address.
+    void OnOcclusionReport(uint32_t address);
+    // For a draw: the occlusion query id to draw it into the query texture
+    // with (depth-only draws inside a query), or 0 for a normal draw.
+    uint32_t OcclusionQueryDraw(uint32_t mode);
+    // The R32_UINT query id texture, and the pixel shader writing ids.
+    SDL_GPUTexture* OcclusionQueryTexture();
+    SDL_GPUShader* OcclusionQueryFragmentShader();
+    // PipelineDesc::ps of query draws (not a shader cache id).
+    constexpr uint64_t kOcclusionQueryPixelShader = 0x5155455259494400ull;  // "QUERYID"
+    // PipelineDesc::ps of H3_HIGHLIGHT_VS draws: solid magenta (debug.cpp).
+    constexpr uint64_t kHighlightPixelShader = 0x484947484C494748ull;  // "HIGHLIGH"
+    SDL_GPUShader* HighlightFragmentShader();
+    // H3_HIGHLIGHT_VS=<hex prefix of a captured vs_<hash>.bin>: that
+    // shader's draws go out magenta, depth test off (where does it draw?).
+    bool HighlightDraw(const Shader& vs);
+    // H3_LOG_VS_DATA=<hex prefix>[:<record dwords>]: logs each draw of that
+    // vertex shader: its vertex fetch ranges, which of this frame's memory
+    // exports write them, VS constants it indexes, and the records (first 4
+    // dwords as floats).
+    void LogVertexData(const Shader& vs, uint32_t initiator);
+    // H3_VERIFY_VS_DATA=1 with H3_LOG_VS_DATA: the logged draws' records
+    // are also read back from the draw buffer after the flush's export
+    // scatter (what the GPU really sees), and all-zero ones reported.
+    struct VsDataCheck
+    {
+        uint32_t frame, draw, address, dwords, stride;
+        std::vector<uint32_t> records;
+    };
+    extern std::vector<VsDataCheck> g_vsDataChecks;
+    // Runs the pending checks on this flush's draw buffer (submits and
+    // waits; replaces g_commands).
+    void VerifyVsData(SDL_GPUBuffer* buffer, const std::unordered_map<uint64_t, uint32_t>& staged);
+    // Debugging: this frame's export streams overlapping physical
+    // [begin, end), as text.
+    std::string FrameExportsOverlapping(uint32_t begin, uint32_t end);
+    // Per frame: count this frame's query samples (before the frame's
+    // submit), and take in counts that came back.
+    void EndFrameQueries();
+    void PollOcclusionQueries();
+    // A nearest, clamped sampler (copy.cpp).
+    SDL_GPUSampler* PointSampler();
+    // Writes this frame's memory exports so far into a buffer holding
+    // copies of guest ranges ((physical address << 32 | dwords), dword
+    // offset): draws read particle state their update dispatches just
+    // wrote (guest memory gets it a frame later).
+    void ScatterFrameExports(SDL_GPUBuffer* target, const std::vector<std::pair<uint64_t, uint32_t>>& ranges);
+    // Whether exports from earlier frames, still in flight, write physical
+    // memory [begin, end).
+    bool MemExportPending(uint32_t begin, uint32_t end);
+    // Before a draw or dispatch with this vertex shader: if it fetches
+    // vertex data that earlier frames' exports still in flight write, waits
+    // for them and applies them to guest memory. The console's exports land
+    // immediately; without this GPU particles updated from state two frames
+    // old. (This frame's own exports still land a frame late.)
+    void SyncMemExportsFor(const Shader& shader);
+    // How many times that waited (for logs).
+    inline uint64_t g_memExportSyncs = 0;
     // Records everything pending into the command buffer. Call before
     // anything that can't happen inside a render pass.
     void Flush();

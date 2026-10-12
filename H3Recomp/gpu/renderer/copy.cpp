@@ -302,6 +302,12 @@ void main()
         }
     }
 
+    SDL_GPUSampler* PointSampler()
+    {
+        EnsurePointSampler();
+        return g_pointSampler;
+    }
+
     void ConvertCopy(SDL_GPUTexture* source, SDL_GPUTexture* destination, SDL_GPUTextureFormat destinationFormat,
         uint32_t destinationWidth, uint32_t destinationHeight, int32_t sx, int32_t sy, int32_t dx, int32_t dy, uint32_t w,
         uint32_t h, CopyMode mode, bool depthFloat, float scale, int32_t samplesX, int32_t samplesY)

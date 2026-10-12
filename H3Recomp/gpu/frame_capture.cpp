@@ -9,6 +9,7 @@
 #include "memory.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -19,7 +20,16 @@ namespace h3::gpu::capture
 {
     namespace
     {
-        // The swap number H3_GPU_CAPTURE names (0: capture off).
+        // Hotkey captures (RequestCapture): the request flag (set from the
+        // window thread), and the frame and folder of the latest one.
+        std::atomic<bool> g_requested{ false };
+        std::atomic<bool> g_requestedDeep{ false };
+        bool g_deep = false;  // the current hotkey capture is deep
+        uint32_t g_hotkeyFrame = 0;
+        std::string g_hotkeyDirectory;
+
+        // The swap number H3_GPU_CAPTURE names, or the hotkey's (0: capture
+        // off).
         uint32_t TargetFrame()
         {
             static uint32_t frame = []
@@ -27,7 +37,7 @@ namespace h3::gpu::capture
                 const char* value = EnvString("H3_GPU_CAPTURE");
                 return value ? uint32_t(strtoul(value, nullptr, 0)) : 0u;
             }();
-            return frame;
+            return frame ? frame : g_hotkeyFrame;
         }
 
         uint32_t g_frame = 0;  // swaps seen so far
@@ -42,7 +52,7 @@ namespace h3::gpu::capture
                 return nullptr;
             if (!g_out)
             {
-                g_out = fopen("gpu_capture.txt", "w");
+                g_out = fopen(CapturePath("gpu_capture.txt").c_str(), "w");
                 if (g_out)
                     fprintf(g_out, "frame %u\n", TargetFrame());
             }
@@ -87,12 +97,13 @@ namespace h3::gpu::capture
         uint64_t hash = 0xCBF29CE484222325ull;  // FNV-1a
         for (uint32_t i = 0; i < dwords * 4; i++)
             hash = (hash ^ code[i]) * 0x100000001B3ull;
-        std::filesystem::create_directories("gpu_shaders");
-        char path[64];
-        snprintf(path, sizeof(path), "gpu_shaders/%s_%016llx.bin", type == 0 ? "vs" : "ps", (unsigned long long)hash);
-        fprintf(out, "  %s shader at %08X, %u dwords (%s)\n", type == 0 ? "vertex" : "pixel", guestAddress, dwords, path);
+        std::filesystem::create_directories(CapturePath("gpu_shaders"));
+        char name[64];
+        snprintf(name, sizeof(name), "gpu_shaders/%s_%016llx.bin", type == 0 ? "vs" : "ps", (unsigned long long)hash);
+        std::string path = CapturePath(name);
+        fprintf(out, "  %s shader at %08X, %u dwords (%s)\n", type == 0 ? "vertex" : "pixel", guestAddress, dwords, name);
         if (!std::filesystem::exists(path))
-            if (FILE* file = fopen(path, "wb"))
+            if (FILE* file = fopen(path.c_str(), "wb"))
             {
                 fwrite(code, 4, dwords, file);
                 fclose(file);
@@ -206,6 +217,12 @@ namespace h3::gpu::capture
             fprintf(out, "  skipped predicated opcode %02X\n", opcode);
     }
 
+    void OnZpd(uint32_t initiator, uint32_t address)
+    {
+        if (FILE* out = Out())
+            fprintf(out, "  zpd (occlusion query report) initiator %08X -> %08X, after %u draws\n", initiator, address, g_draws);
+    }
+
     void OnSwap(uint32_t frame)
     {
         g_frame = frame;
@@ -214,7 +231,61 @@ namespace h3::gpu::capture
             fprintf(g_out, "swap (%u draws)\n", g_draws);
             fclose(g_out);
             g_out = nullptr;
-            fprintf(stderr, "[gpu] wrote gpu_capture.txt (frame %u)\n", TargetFrame());
+            fprintf(stderr, "[gpu] wrote %s (frame %u)\n", CapturePath("gpu_capture.txt").c_str(), TargetFrame());
         }
+        // H3_CAPTURE_AT=<frame>: the same capture from a script.
+        static const uint32_t captureAt = EnvNumber("H3_CAPTURE_AT");
+        if (captureAt && frame + 1 == captureAt)
+        {
+            static const bool deep = EnvFlag("H3_CAPTURE_DEEP");  // as F10
+            g_requestedDeep = deep;
+            g_requested = true;
+        }
+        // A hotkey request: capture the frame starting now, in a new folder.
+        if (g_requested.exchange(false) && !g_out)
+        {
+            g_deep = g_requestedDeep.exchange(false);
+            constexpr int kMaxCaptures = 1000;
+            for (int n = 1; n < kMaxCaptures; n++)
+            {
+                char directory[64];
+                snprintf(directory, sizeof(directory), "captures/capture_%03d", n);
+                if (!std::filesystem::exists(directory))
+                {
+                    std::filesystem::create_directories(directory);
+                    g_hotkeyDirectory = directory;
+                    break;
+                }
+            }
+            g_hotkeyFrame = frame + 1;
+            fprintf(stderr, "[gpu] capturing frame %u into %s\n", g_hotkeyFrame, g_hotkeyDirectory.c_str());
+        }
+    }
+
+    void RequestCapture(bool deep)
+    {
+        if (deep)
+            g_requestedDeep = true;
+        g_requested = true;
+    }
+
+    bool HotkeyDeep()
+    {
+        return g_deep;
+    }
+
+    uint32_t HotkeyFrame()
+    {
+        return g_hotkeyFrame;
+    }
+
+    const std::string& HotkeyDirectory()
+    {
+        return g_hotkeyDirectory;
+    }
+
+    std::string CapturePath(const std::string& name)
+    {
+        return g_hotkeyDirectory.empty() ? name : g_hotkeyDirectory + "/" + name;
     }
 }

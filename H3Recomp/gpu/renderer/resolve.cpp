@@ -13,6 +13,7 @@
 // is that times g_renderScale. Write-backs are scaled down first.
 
 #include "gpu/renderer/internal.h"
+#include "gpu/frame_capture.h"
 
 #include "config/env.h"
 
@@ -50,8 +51,35 @@ namespace h3::gpu::renderer::internal
             uint32_t delta = GuestToPhysical(address) - texture.base;
             uint32_t macroTileBytes = kMacroTileSize * kMacroTileSize * texture.bpp;
             uint32_t macroRowBytes = texture.pitch * kMacroTileSize * texture.bpp;
+            // A zero pitch (or bpp) would divide by zero: treat the address
+            // as the texture's origin (this crashed the game, SIGFPE).
+            if (!macroRowBytes || !macroTileBytes)
+            {
+                x = y = 0;
+                return;
+            }
             y = (delta / macroRowBytes) * kMacroTileSize;
             x = ((delta % macroRowBytes) / macroTileBytes) * kMacroTileSize;
+        }
+
+        // Components of a host texture format (resolve destinations).
+        uint32_t HostChannels(SDL_GPUTextureFormat format)
+        {
+            switch (format)
+            {
+            case SDL_GPU_TEXTUREFORMAT_R32_FLOAT:
+            case SDL_GPU_TEXTUREFORMAT_R16_FLOAT:
+            case SDL_GPU_TEXTUREFORMAT_R8_UNORM:
+                return 1;
+            case SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT:
+            case SDL_GPU_TEXTUREFORMAT_R32G32_FLOAT:
+            case SDL_GPU_TEXTUREFORMAT_R8G8_UNORM:
+                return 2;
+            case SDL_GPU_TEXTUREFORMAT_R11G11B10_UFLOAT:
+                return 3;
+            default:
+                return 4;
+            }
         }
 
         // Bytes per texel and host format of a resolve destination texture
@@ -319,12 +347,23 @@ namespace h3::gpu::renderer::internal
         {
             ResolvedTexture* texture = FindResolved(destBase);
             // Color formats of one size share a texture (the copy converts);
-            // depth's float texture is kept apart from color.
+            // depth's float texture is kept apart from color, and so are
+            // formats with fewer channels: Halo's water ripples resolve a
+            // 16_16_FLOAT height map to 0x04443000, turn it into 8_8_8_8
+            // normals and resolve those to the same address; written into
+            // the two-channel R16G16 texture they lost blue and alpha and
+            // the water drew as foam.
             bool depthMismatch = texture && (hostFormat == SDL_GPU_TEXTUREFORMAT_R32_FLOAT) !=
                 (texture->hostFormat == SDL_GPU_TEXTUREFORMAT_R32_FLOAT);
-            if (texture && texture->bpp == bpp && !depthMismatch)
+            // PERF: the ripple ping-pong recreates the 800x800 texture twice
+            // a frame; a texture per channel layout would avoid that.
+            bool channelMismatch = texture && HostChannels(hostFormat) != HostChannels(texture->hostFormat);
+            if (texture && texture->bpp == bpp && !depthMismatch && !channelMismatch)
                 return texture;
 
+            // No pitch: nothing to lay out (and no size to give the texture).
+            if (!(destPitchReg & 0x3FFF))
+                return nullptr;
             ResolvedTexture created;
             created.base = destBase;
             created.pitch = AlignUp(destPitchReg & 0x3FFF, kMacroTileSize);
@@ -351,6 +390,9 @@ namespace h3::gpu::renderer::internal
             if (texture)
             {
                 // Same memory reinterpreted at another size: replace it.
+                // Pending draws may still sample the old texture: record them
+                // first (releasing it under them crashed in Flush).
+                Flush();
                 SDL_ReleaseGPUTexture(g_device, texture->texture);
                 *texture = created;
                 return texture;
@@ -368,16 +410,20 @@ namespace h3::gpu::renderer::internal
             static const uint32_t dumpFrame = EnvNumber("H3_DUMP_FRAME");
             static const uint32_t dumpResolve = EnvNumber("H3_DUMP_RESOLVE");
             static const bool dumpAll = EnvString("H3_DUMP_RESOLVE") && strcmp(EnvString("H3_DUMP_RESOLVE"), "all") == 0;
-            if (!(dumpResolve || dumpAll) || g_swaps + 1 != dumpFrame || !(dumpAll || g_frameResolves == dumpResolve))
+            // F9 captures (frame_capture.h) save every resolve of their frame.
+            bool hotkey = capture::HotkeyFrame() != 0 && g_swaps + 1 == capture::HotkeyFrame();
+            if (!hotkey && (!(dumpResolve || dumpAll) || g_swaps + 1 != dumpFrame || !(dumpAll || g_frameResolves == dumpResolve)))
                 return;
             if (texture.bpp != 4 && texture.hostFormat != SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT)
                 return;
+            uint32_t frame = hotkey ? capture::HotkeyFrame() : dumpFrame;
             char path[96];
-            if (dumpAll)
-                snprintf(path, sizeof(path), "resolve_%u_%02u_%08X_%ux%u.png", dumpFrame, g_frameResolves, destBase, w, h);
+            if (dumpAll || hotkey)
+                snprintf(path, sizeof(path), "resolve_%u_%02u_%08X_%ux%u.png", frame, g_frameResolves, destBase, w, h);
             else
-                snprintf(path, sizeof(path), "resolve_%u_%u.png", dumpFrame, dumpResolve);
-            DumpTexture(texture.texture, texture.pitch * g_renderScale, texture.height * g_renderScale, path, texture.hostFormat);
+                snprintf(path, sizeof(path), "resolve_%u_%u.png", frame, dumpResolve);
+            std::string fullPath = hotkey ? capture::CapturePath(path) : std::string(path);
+            DumpTexture(texture.texture, texture.pitch * g_renderScale, texture.height * g_renderScale, fullPath.c_str(), texture.hostFormat);
             static const bool dumpSource = EnvFlag("H3_DUMP_SOURCE");
             if (dumpSource && !depthSource &&
                 (target.format == SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM || target.format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT))
@@ -400,6 +446,37 @@ namespace h3::gpu::renderer::internal
             if (address >= texture.base && address < texture.base + texture.size)
                 return &texture;
         return nullptr;
+    }
+
+    void InvalidateResolved(uint32_t begin, uint32_t end)
+    {
+        for (auto it = g_resolved.begin(); it != g_resolved.end();)
+        {
+            if (begin < it->base + it->size && end > it->base)
+            {
+                Flush();  // pending draws may still sample it
+                // Views copied out of it go too (their source is gone).
+                for (auto sub = g_subTextures.begin(); sub != g_subTextures.end();)
+                {
+                    if (sub->second.source == it->texture)
+                    {
+                        if (sub->second.texture)
+                            SDL_ReleaseGPUTexture(g_device, sub->second.texture);
+                        sub = g_subTextures.erase(sub);
+                    }
+                    else
+                        ++sub;
+                }
+                static const bool log = EnvFlag("H3_LOG_MEMEXPORT");
+                if (log)
+                    fprintf(stderr, "[render] memexport wrote %08X-%08X: dropped the resolved texture at %08X (%ux%u)\n", begin, end,
+                        it->base, it->pitch, it->height);
+                SDL_ReleaseGPUTexture(g_device, it->texture);
+                it = g_resolved.erase(it);
+            }
+            else
+                ++it;
+        }
     }
 
     void TrimResolvedViews()
