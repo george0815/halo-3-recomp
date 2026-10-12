@@ -16,14 +16,38 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <thread>
 #include <vector>
+
+#include <execinfo.h>
+#include <pthread.h>
+#include <signal.h>
+
+extern "C" char __executable_start;
 
 namespace h3::kernel
 {
     namespace
     {
         thread_local GuestThread* t_currentThread = nullptr;
+
+        // Host thread of each guest thread (by KTHREAD), for
+        // DumpHostBacktrace.
+        std::mutex g_hostThreadMutex;
+        std::map<uint32_t, pthread_t> g_hostThreads;
+
+        // DumpHostBacktrace's hand-off: the target thread's SIGUSR2 handler
+        // fills these.
+        constexpr int kMaxBacktraceFrames = 48;
+        void* g_backtrace[kMaxBacktraceFrames];
+        std::atomic<int> g_backtraceFrames{ -1 };
+
+        void OnBacktraceSignal(int)
+        {
+            g_backtraceFrames.store(backtrace(g_backtrace, kMaxBacktraceFrames));
+        }
 
         std::mutex g_tlsMutex;
         std::vector<bool> g_tlsUsed;
@@ -100,6 +124,43 @@ namespace h3::kernel
         // the next inexact result), so start from the host's real value.
         ctx.fpscr.csr = ctx.fpscr.getcsr();
         t_currentThread = thread;
+        std::lock_guard lock(g_hostThreadMutex);
+        g_hostThreads[thread->kthread] = pthread_self();
+    }
+
+    void DumpHostBacktrace(uint32_t kthread)
+    {
+        pthread_t target;
+        {
+            std::lock_guard lock(g_hostThreadMutex);
+            auto found = g_hostThreads.find(kthread);
+            if (found == g_hostThreads.end())
+                return;
+            target = found->second;
+        }
+        static std::mutex dumpMutex;  // one dump at a time (shared buffer)
+        std::lock_guard lock(dumpMutex);
+        static const bool installed = [] {
+            struct sigaction action{};
+            action.sa_handler = OnBacktraceSignal;
+            sigemptyset(&action.sa_mask);
+            action.sa_flags = SA_RESTART;
+            return sigaction(SIGUSR2, &action, nullptr) == 0;
+        }();
+        if (!installed)
+            return;
+        g_backtraceFrames.store(-1);
+        if (pthread_kill(target, SIGUSR2) != 0)
+            return;
+        constexpr int kWaitMs = 200;
+        for (int i = 0; i < kWaitMs && g_backtraceFrames.load() < 0; i++)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        int frames = g_backtraceFrames.load();
+        uintptr_t executable = reinterpret_cast<uintptr_t>(&__executable_start);
+        fprintf(stderr, "[kernel]   thread %08X host stack (executable offsets; nm -C -n to name):", kthread);
+        for (int i = 0; i < frames; i++)
+            fprintf(stderr, " %lx", static_cast<unsigned long>(reinterpret_cast<uintptr_t>(g_backtrace[i]) - executable));
+        fprintf(stderr, "\n");
     }
 
     GuestThread* CurrentThread()

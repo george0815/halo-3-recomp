@@ -4,6 +4,7 @@
 #include "apu/xma_decoder.h"
 
 #include "memory.h"
+#include "config/env.h"
 
 extern "C"
 {
@@ -45,6 +46,15 @@ namespace h3::apu
         constexpr uint32_t kMaxFrameLength = 0x7FFF;
 
         uint8_t* Physical(uint32_t address) { return GuestPtr<uint8_t>(PhysicalToGuest(address)); }
+
+        // H3_LOG_XMA=1: per-context diagnostics (loops, buffer swaps, bad
+        // frames, frames repeated exactly, and context fields the game
+        // changed while a decode was running).
+        bool LogXma()
+        {
+            static const bool log = EnvFlag("H3_LOG_XMA");
+            return log;
+        }
 
         // XMA_CONTEXT_DATA: 16 big-endian dwords; the bit fields below are
         // laid out for the dwords after byte swapping (LSB first).
@@ -236,7 +246,20 @@ namespace h3::apu
                 uint8_t* pointer = g_base + guest;
                 ContextData data;
                 data.Load(pointer);
+                ContextData before = data;
                 Decode(data);
+                if (LogXma())
+                {
+                    // Anything the game wrote while we decoded would be
+                    // overwritten by the store below.
+                    ContextData now;
+                    now.Load(pointer);
+                    const uint32_t* a = reinterpret_cast<const uint32_t*>(&before);
+                    const uint32_t* b = reinterpret_cast<const uint32_t*>(&now);
+                    for (uint32_t i = 0; i < 16; i++)
+                        if (a[i] != b[i])
+                            fprintf(stderr, "[xma] ctx %u: game changed dword %u during decode (%08X -> %08X)\n", id, i, a[i], b[i]);
+                }
                 data.Store(pointer);
                 return true;
             }
@@ -278,6 +301,40 @@ namespace h3::apu
             std::array<uint8_t, 1 + 4096> m_frameData{};
             std::array<uint8_t, kBytesPerFrameChannel * 2> m_rawFrame{};
 
+            // H3_LOG_XMA: hashes of the last few frames output, to spot a
+            // frame output twice (which real audio practically never does).
+            static constexpr uint32_t kRecentFrames = 16;
+            std::array<uint64_t, kRecentFrames> m_recentFrames{};
+            uint32_t m_recentIndex = 0;
+            uint64_t m_framesOut = 0;
+
+            // Notes an output frame; logs it if it repeats a recent one.
+            void NoteFrame(uint32_t byteCount, const ContextData& data)
+            {
+                // Near-silent frames repeat naturally.
+                const int16_t* samples = reinterpret_cast<const int16_t*>(m_rawFrame.data());
+                int peak = 0;
+                for (uint32_t i = 0; i < byteCount / 2; i++)
+                    peak = std::max(peak, std::abs(int(int16_t(__builtin_bswap16(uint16_t(samples[i]))))));
+                m_framesOut++;
+                if (peak < 64)
+                    return;
+                uint64_t hash = 0xCBF29CE484222325ull;
+                for (uint32_t i = 0; i < byteCount; i++)
+                    hash = (hash ^ m_rawFrame[i]) * 0x100000001B3ull;
+                for (uint32_t i = 0; i < kRecentFrames; i++)
+                    if (m_recentFrames[i] == hash)
+                    {
+                        uint32_t age = (m_recentIndex + kRecentFrames - i) % kRecentFrames;
+                        fprintf(stderr, "[xma] ctx %u: frame %llu repeats the one %u frames ago (read bit %u, buffer %u, valid %u%u, peak %d)\n",
+                            id, (unsigned long long)m_framesOut, age, data.input_buffer_read_offset, data.current_buffer,
+                            data.input_buffer_0_valid, data.input_buffer_1_valid, peak);
+                        break;
+                    }
+                m_recentFrames[m_recentIndex] = hash;
+                m_recentIndex = (m_recentIndex + 1) % kRecentFrames;
+            }
+
             // Forgets any partly read frame.
             void ResetDecoder()
             {
@@ -315,8 +372,11 @@ namespace h3::apu
 
             // The current input buffer is used up: invalidate it and move to
             // the other one.
-            static void SwapInputBuffer(ContextData& data)
+            void SwapInputBuffer(ContextData& data)
             {
+                if (LogXma())
+                    fprintf(stderr, "[xma] ctx %u: input buffer %u done (read bit %u)\n", id, data.current_buffer,
+                        data.input_buffer_read_offset);
                 if (data.current_buffer == 0)
                     data.input_buffer_0_valid = 0;
                 else
@@ -327,11 +387,15 @@ namespace h3::apu
 
             // Jumps back to the loop start if looping and past the loop end
             // (or at the buffer's end). Returns whether it looped.
-            static bool TrySetupNextLoop(ContextData& data, bool ignoreInputBufferOffset)
+            bool TrySetupNextLoop(ContextData& data, bool ignoreInputBufferOffset)
             {
                 if (data.loop_count > 0 && data.loop_start < data.loop_end &&
                     (ignoreInputBufferOffset || data.input_buffer_read_offset >= data.loop_end))
                 {
+                    if (LogXma())
+                        fprintf(stderr, "[xma] ctx %u: loop %u -> %u (count %u, subframes start %u end %u skip %u)\n", id,
+                            data.input_buffer_read_offset, data.loop_start, data.loop_count, data.loop_subframe_start,
+                            data.loop_subframe_end, data.loop_subframe_skip);
                     data.input_buffer_read_offset = data.loop_start;
                     if (data.loop_count < 255)
                         data.loop_count--;
@@ -466,7 +530,7 @@ namespace h3::apu
 
             // Ends the current input buffer: loop back if looping, else move
             // to the other buffer.
-            static void EndOfBuffer(ContextData& data, bool& reuseInputBuffer)
+            void EndOfBuffer(ContextData& data, bool& reuseInputBuffer)
             {
                 if (!reuseInputBuffer)
                     reuseInputBuffer = TrySetupNextLoop(data, true);
@@ -630,12 +694,17 @@ namespace h3::apu
 
                     if (!m_codec || avcodec_send_packet(m_codec, m_packet) < 0 || avcodec_receive_frame(m_codec, m_frame) < 0)
                     {
+                        if (LogXma())
+                            fprintf(stderr, "[xma] ctx %u: bad frame at bit %u (packet %d frame %d)\n", id, data.input_buffer_read_offset,
+                                packetIndex, frameIndex);
                         // A bad frame: drop the rest of this buffer.
                         SwapInputBuffer(data);
                         break;
                     }
                     ConvertFrame(data.is_stereo);
                     uint32_t byteCount = kBytesPerFrameChannel << data.is_stereo;
+                    if (LogXma())
+                        NoteFrame(byteCount, data);
                     output.Write(m_rawFrame.data(), byteCount);
                     outputRemaining -= byteCount;
                     data.output_buffer_write_offset = output.write / 256;

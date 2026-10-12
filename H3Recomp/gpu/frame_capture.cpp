@@ -156,9 +156,9 @@ namespace h3::gpu::capture
             ReadRegister(kRegRbDepthInfo), ReadRegister(kRegRbModeControl));
         fprintf(out, "  color1 %08X color2 %08X color3 %08X surface %08X\n", ReadRegister(kRegRbColor1Info), ReadRegister(kRegRbColor2Info),
             ReadRegister(kRegRbColor3Info), ReadRegister(kRegRbSurfaceInfo));
-        fprintf(out, "  window offset %08X mode cntl %08X vte cntl %08X depthcontrol %08X colormask %08X blend %08X\n",
+        fprintf(out, "  window offset %08X mode cntl %08X vte cntl %08X depthcontrol %08X colormask %08X blend %08X stencil %08X\n",
             ReadRegister(kRegPaScWindowOffset), ReadRegister(0x2205), ReadRegister(0x2206), ReadRegister(0x2200),
-            ReadRegister(0x2104), ReadRegister(0x2201));
+            ReadRegister(0x2104), ReadRegister(0x2201), ReadRegister(0x210D));  // 0x210D: RB_STENCILREFMASK
         fprintf(out, "  viewport scale %g,%g,%g offset %g,%g,%g\n", RegFloat(kRegPaClVportXScale),
             RegFloat(kRegPaClVportYScale), RegFloat(kRegPaClVportZScale), RegFloat(kRegPaClVportXOffset),
             RegFloat(kRegPaClVportYOffset), RegFloat(kRegPaClVportZOffset));

@@ -176,6 +176,10 @@ namespace h3::kernel
     void SetThreadWait(uint32_t thread, const char* what, uint32_t object, uint32_t detail, uint32_t lr, uint32_t caller = 0);
     void ClearThreadWait(uint32_t thread);
     void DumpThreadWaits();
+    // Guest thread names, as the game sets them (RtlRaiseException with
+    // MSVC's set-thread-name code); empty if unnamed.
+    void SetThreadName(uint32_t kthread, const std::string& name);
+    std::string ThreadName(uint32_t kthread);
     // H3_LOG_WAITS: prints and resets the time threads spent blocked, by
     // caller and object.
     void DumpWaitTotals();

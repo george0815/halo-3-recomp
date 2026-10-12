@@ -41,7 +41,7 @@ shader caches) stays local.
 | `H3Recomp/` | The executable: runtime, kernel, GPU, audio, input, window |
 | `H3Recomp/kernel/` | The 360 kernel (`xboxkrnl`) and system library (`xam`) exports the game imports, plus threads, kernel objects, file system and module loading |
 | `H3Recomp/gpu/` | Xenos GPU: the command processor (reads the game's GPU commands) and the renderer (draws them with SDL_GPU / Vulkan) |
-| `H3Recomp/gpu/renderer/` | The renderer's internals, split by job (shaders, copies, render targets, resolves, textures, draws, debug dumps); `renderer/internal.h` explains the split |
+| `H3Recomp/gpu/renderer/` | The renderer's internals, split by job (shaders, pipelines and their background creation, copies, render targets, resolves, textures, draws, memory export, debug dumps); `renderer/internal.h` explains the split |
 | `H3Recomp/gpu/shader/` | Xenos shader microcode → GLSL translator |
 | `H3Recomp/apu/` | Audio: the XAudio render driver (output) and the XMA hardware decoder |
 | `H3Recomp/input/` | XInput emulation from keyboard, mouse and gamepads |
@@ -109,6 +109,18 @@ shader caches) stays local.
 - **EDRAM**: Xenos renders into 10 MB of embedded memory, then *resolves*
   (copies) results to main memory. The renderer keeps render targets as host
   textures and resolves into host textures standing in for guest memory.
+- **EDRAM aliasing**: the same EDRAM is drawn to in different formats.
+  Halo rewrites its depth buffer by drawing depth bytes as color (and the
+  stencil byte as red) at the depth buffer's base; the renderer turns those
+  draws back into depth/stencil (`gpu/renderer/copy.cpp`), undoing the
+  swapped 40-sample halves of EDRAM depth tiles.
+- **Memory export**: vertex shaders can write guest memory (Halo's GPU
+  particles, occlusion tests, water). They also run as compute shaders whose
+  writes come back to guest memory a frame or two later
+  (`gpu/renderer/memexport.cpp`).
+- **Tessellation**: Halo's water is drawn as tessellated triangle patches;
+  with no tessellator in SDL_GPU each patch becomes a uniform grid in the
+  vertex shader (`kVertexMain` in `gpu/shader/translator.cpp`).
 - **Render scale**: render targets and resolved textures are
   `g_renderScale` times the guest's size (`gpu/renderer/internal.h`);
   everything that addresses them in guest pixels multiplies by it, shaders

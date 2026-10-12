@@ -45,6 +45,10 @@ namespace h3::kernel
     // The guest thread bound to the calling host thread.
     GuestThread* CurrentThread();
 
+    // Debugging: prints the host call stack of the guest thread with this
+    // KTHREAD (interrupts it with SIGUSR2), as offsets into the executable.
+    void DumpHostBacktrace(uint32_t kthread);
+
     // Sets up the calling host thread as a guest thread with its own Thread
     // object: the process's main thread, or runtime threads that call guest
     // code (GPU interrupts).

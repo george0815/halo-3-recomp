@@ -96,6 +96,7 @@ def main():
     # Time in shared libraries, by the executable's function that called in.
     if any(stacks):
         callers = collections.Counter()
+        pairs = collections.Counter()  # (calling function, library function)
         library_samples = 0
         for (thread, address), stack in zip(samples, stacks):
             if in_executable(address) or not stack:
@@ -106,9 +107,13 @@ def main():
             frames = stack[stack.index(address) + 1:] if address in stack else stack
             caller = next((f for f in frames if in_executable(f) and "h3::debug" not in cached(f - 1)), None)
             callers[cached(caller - 1) if caller else "?"] += 1
+            pairs[(cached(caller - 1) if caller else "?", cached(address))] += 1
         print(f"\nLibrary time ({library_samples} samples) by calling function in the executable:")
         for function, count in callers.most_common(top):
             print(f"  {100 * count / total:5.1f}%  {function[:110]}")
+        print("\nLibrary time by caller and library function:")
+        for (caller, function), count in pairs.most_common(top):
+            print(f"  {100 * count / total:5.1f}%  {caller[:60]} -> {function[:60]}")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@
 #include "memory.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 
 namespace h3::gpu::texture
@@ -257,6 +258,32 @@ namespace h3::gpu::texture
             logBpp;
     }
 
+    namespace
+    {
+        // 3D textures tile in 32x16x4-block macro tiles of 32x32x4-aligned
+        // storage.
+        constexpr uint32_t kTileDepth = 4;
+        constexpr uint32_t kMacroTileHeight3D = 16;
+
+        // Byte offset of block (x, y, z) in a tiled 3D texture whose
+        // storage is pitch x height blocks per slice (multiples of 32), with
+        // 2^log2Bytes bytes per block (Xenia's texture_address::Tiled3D).
+        uint64_t TiledOffset3D(uint32_t x, uint32_t y, uint32_t z, uint32_t pitch, uint32_t height, uint32_t log2Bytes)
+        {
+            uint64_t outer = ((uint64_t(z / kTileDepth) * (height / kMacroTileHeight3D) + y / kMacroTileHeight3D) * (pitch / kTileSize) +
+                                 x / kTileSize)
+                << 7;
+            uint64_t inner = ((z & 3) << 5) | (((y >> 1) & 3) << 3) | (x & 7);
+            uint64_t bytes = (outer | inner) << log2Bytes;
+            uint64_t bank = ((y >> 3) ^ (z >> 2)) & 1;
+            uint64_t pipe = ((x >> 3) & 3) ^ (bank << 1);
+            // TiledCombine: interleave the bank, pipe and y's low bit into
+            // the address.
+            return ((y & 1) << 4) | (pipe << 6) | (bank << 11) | (bytes & 15) | (((bytes >> 4) & 1) << 5) | (((bytes >> 5) & 7) << 8) |
+                ((bytes >> 8) << 12);
+        }
+    }
+
     // Fetch constant layout (Xenia's xe_gpu_texture_fetch_t):
     //   word 0: type : 2, signs : 8 @2, clamp x/y/z : 3 each @10, pitch/32 : 9 @22, tiled @31
     //   word 1: format : 6, endian : 2 @6, stacked @10, base address (4 KB units) @12
@@ -315,6 +342,17 @@ namespace h3::gpu::texture
         Format f = FormatFor(fetch.format);
         if (!f.blockBytes)
             return 0;
+        if (fetch.dimension == kDimension3DValue)
+        {
+            // Slices of 32-block-aligned rows, depth aligned to 4 (tiled or
+            // not; Xenia's GetGuestTextureLayout for the base level).
+            uint32_t pitchBlocks = AlignUp(AlignUp(fetch.pitch, f.blockSize) / f.blockSize, kTileSize);
+            uint32_t rowBytes = pitchBlocks * f.blockBytes;
+            if (!fetch.tiled)
+                rowBytes = AlignUp(rowBytes, kLinearRowAlignment);
+            uint32_t rows = AlignUp((fetch.height + f.blockSize - 1) / f.blockSize, kTileSize);
+            return AlignUp(rowBytes * rows * AlignUp(fetch.depth, kTileDepth), kLevelAlignment);
+        }
         uint32_t pitchBlocks, offsetX, offsetY;
         Layout(fetch, f, pitchBlocks, offsetX, offsetY);
         uint32_t rows = (fetch.height + f.blockSize - 1) / f.blockSize + offsetY;
@@ -326,13 +364,20 @@ namespace h3::gpu::texture
         return rows * rowBytes;
     }
 
-    bool Decode(const FetchConstant& fetch, const uint8_t* guest, Decoded& out)
+    bool Decode(const FetchConstant& fetch, const uint8_t* guest, Decoded& out, uint32_t slice)
     {
         Format f = FormatFor(fetch.format);
         if (!f.blockBytes || fetch.width == 0 || fetch.height == 0)
             return false;
         uint32_t pitchBlocks, offsetX, offsetY;
         Layout(fetch, f, pitchBlocks, offsetX, offsetY);
+        // 3D textures: one slice, from the 3D layout.
+        bool volume = fetch.dimension == kDimension3DValue;
+        uint32_t volumePitchBlocks = AlignUp(AlignUp(fetch.pitch, f.blockSize) / f.blockSize, kTileSize);
+        uint32_t volumeRows = AlignUp((fetch.height + f.blockSize - 1) / f.blockSize, kTileSize);
+        uint32_t log2BlockBytes = uint32_t(std::countr_zero(f.blockBytes));
+        if (volume)
+            offsetX = offsetY = 0;
         uint32_t blocksX = (fetch.width + f.blockSize - 1) / f.blockSize;
         uint32_t blocksY = (fetch.height + f.blockSize - 1) / f.blockSize;
         uint32_t linearRowBytes = AlignUp(pitchBlocks * f.blockBytes, kLinearRowAlignment);
@@ -342,10 +387,11 @@ namespace h3::gpu::texture
         bool expand = IsBlockConversion(f.convert);
         uint32_t hostBlockBytes = HostBlockBytes(f);
         out.format = f.host;
-        out.width = blocksX * f.blockSize;
-        out.height = blocksY * f.blockSize;
-        out.rowTexels = out.width;
-        uint32_t hostRowBytes = expand ? out.width * (hostBlockBytes / 16) : blocksX * hostBlockBytes;
+        out.width = fetch.width;
+        out.height = fetch.height;
+        out.rowTexels = blocksX * f.blockSize;
+        out.rows = blocksY * f.blockSize;
+        uint32_t hostRowBytes = expand ? out.rowTexels * (hostBlockBytes / 16) : blocksX * hostBlockBytes;
         uint32_t hostBlockRows = expand ? 4 : 1;
         out.data.assign(size_t(hostRowBytes) * blocksY * hostBlockRows, 0);
 
@@ -355,8 +401,16 @@ namespace h3::gpu::texture
             for (uint32_t x = 0; x < blocksX; x++)
             {
                 uint32_t gx = x + offsetX, gy = y + offsetY;
-                size_t source = fetch.tiled ? size_t(TiledOffset(gx, gy, pitchBlocks, f.blockBytes)) * f.blockBytes
-                                            : size_t(gy) * linearRowBytes + size_t(gx) * f.blockBytes;
+                size_t source;
+                if (volume)
+                {
+                    uint32_t volumeRowBytes = AlignUp(volumePitchBlocks * f.blockBytes, kLinearRowAlignment);
+                    source = fetch.tiled ? size_t(TiledOffset3D(gx, gy, slice, volumePitchBlocks, volumeRows, log2BlockBytes))
+                                         : size_t(slice) * volumeRowBytes * volumeRows + size_t(gy) * volumeRowBytes + size_t(gx) * f.blockBytes;
+                }
+                else
+                    source = fetch.tiled ? size_t(TiledOffset(gx, gy, pitchBlocks, f.blockBytes)) * f.blockBytes
+                                         : size_t(gy) * linearRowBytes + size_t(gx) * f.blockBytes;
                 memcpy(block, guest + source, f.blockBytes);
                 Swap(block, f.blockBytes, fetch.endian);
                 uint8_t* dst = out.data.data() + size_t(y) * hostRowBytes * hostBlockRows;
@@ -375,8 +429,17 @@ namespace h3::gpu::texture
     {
         std::vector<FetchConstant> levels;
         Format f = FormatFor(fetch.format);
-        if (!f.blockBytes || fetch.dimension != 1 || fetch.stacked || fetch.mipAddress == 0 || fetch.mipMax == 0)
+        // 2D textures and cube maps (stacked textures are hosted as 3D
+        // textures, whose mips would shrink the layer count).
+        constexpr uint32_t kDimension2D = 1, kDimensionCube = 3;
+        constexpr uint32_t kCubeFaces = 6;
+        bool cube = fetch.dimension == kDimensionCube;
+        if (!f.blockBytes || !(fetch.dimension == kDimension2D || cube) || fetch.stacked || fetch.mipAddress == 0 ||
+            fetch.mipMax == 0)
             return levels;
+        // Each level holds all of its faces, one level stride apart, before
+        // the next level starts (Xenia's GetGuestTextureLayout).
+        uint32_t slices = cube ? kCubeFaces : 1;
         uint32_t log2w = Log2Ceil(fetch.width), log2h = Log2Ceil(fetch.height);
         uint32_t maxLevel = std::min(fetch.mipMax, std::max(log2w, log2h));
         // Levels from packedLevel on share one tile (Xenia's
@@ -409,8 +472,10 @@ namespace h3::gpu::texture
                 // that level's pitch; each level at its own block offset.
                 uint32_t tailAddress = fetch.mipAddress;
                 for (uint32_t l = 1; l < std::max(packedLevel, 1u); l++)
-                    tailAddress += strideBytes(l);
+                    tailAddress += strideBytes(l) * slices;
                 mip.address = tailAddress;
+                if (cube)
+                    mip.sliceStride = strideBytes(std::max(packedLevel, 1u));
                 mip.pitch = stridePitch(std::max(packedLevel, 1u));
                 uint32_t baseLevel = log2Min > kPackedMipMaxSizeLog2 ? log2Min - kPackedMipMaxSizeLog2 : 0;
                 uint32_t packedMip = level - baseLevel;
@@ -436,7 +501,9 @@ namespace h3::gpu::texture
             {
                 mip.address = address;
                 mip.pitch = stridePitch(level);
-                address += strideBytes(level);
+                if (cube)
+                    mip.sliceStride = strideBytes(level);
+                address += strideBytes(level) * slices;
             }
             levels.push_back(mip);
         }

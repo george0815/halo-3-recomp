@@ -119,6 +119,25 @@ namespace h3::gpu::renderer::internal
         };
         std::vector<PendingWriteBack> g_pendingWriteBacks;  // oldest first
 
+        // Download buffers for write-backs, reused (creating one per
+        // write-back cost a driver call each time). All the same size: the
+        // largest write-back, kMaxWriteBackPixels at 8 bytes per pixel.
+        constexpr uint32_t kMaxWriteBackBpp = 8;
+        constexpr uint32_t kDownloadBufferSize = kMaxWriteBackPixels * kMaxWriteBackBpp;
+        std::vector<SDL_GPUTransferBuffer*> g_freeDownloads;
+
+        SDL_GPUTransferBuffer* AcquireDownload()
+        {
+            if (!g_freeDownloads.empty())
+            {
+                SDL_GPUTransferBuffer* buffer = g_freeDownloads.back();
+                g_freeDownloads.pop_back();
+                return buffer;
+            }
+            SDL_GPUTransferBufferCreateInfo info{ SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, kDownloadBufferSize, 0 };
+            return SDL_CreateGPUTransferBuffer(g_device, &info);
+        }
+
         // Byte-swaps one element in place for an RB_COPY_DEST_INFO endian
         // mode: 1 8in16, 2 8in32, 3 16in32, 4 8in64.
         void SwapElement(uint8_t* element, uint32_t bpp, uint32_t endian)
@@ -173,7 +192,7 @@ namespace h3::gpu::renderer::internal
                 }
             }
             SDL_UnmapGPUTransferBuffer(g_device, pending.download);
-            SDL_ReleaseGPUTransferBuffer(g_device, pending.download);
+            g_freeDownloads.push_back(pending.download);
             SDL_ReleaseGPUFence(g_device, pending.fence);
         }
 
@@ -202,13 +221,11 @@ namespace h3::gpu::renderer::internal
 
         // Starts copying a rectangle (guest texels) of a resolved texture
         // back to guest memory. Submits the command buffer to get a fence.
-        // PERF: creates a download transfer buffer each time (a few per
-        // frame); pooling them like draw.cpp's upload buffers would save the
-        // allocations.
         void WriteBackResolve(const ResolvedTexture& texture, uint32_t x0, uint32_t y0, uint32_t w, uint32_t h, uint32_t endian)
         {
             if (texture.hostFormat == SDL_GPU_TEXTUREFORMAT_R11G11B10_UFLOAT)  // not the guest's 10_11_11 layout
                 return;
+            FenceMemExports();  // this submits g_commands
             // At a render scale, average each guest texel's block of host
             // texels into a guest-sized texture first, and download that.
             SDL_GPUTexture* source = texture.texture;
@@ -223,9 +240,12 @@ namespace h3::gpu::renderer::internal
                     CopyMode::Value, false, 1.0f, scale, scale);
                 sourceX = sourceY = 0;
             }
-            uint32_t bpp = texture.bpp, bytes = w * h * bpp;
-            SDL_GPUTransferBufferCreateInfo info{ SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, bytes, 0 };
-            SDL_GPUTransferBuffer* download = SDL_CreateGPUTransferBuffer(g_device, &info);
+            uint32_t bpp = texture.bpp;
+            if (w * h * bpp > kDownloadBufferSize)
+                return;
+            SDL_GPUTransferBuffer* download = AcquireDownload();
+            if (!download)
+                return;
             SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(Commands());
             SDL_GPUTextureRegion region{};
             region.texture = source;
@@ -241,7 +261,7 @@ namespace h3::gpu::renderer::internal
             g_commands = nullptr;
             if (!fence)
             {
-                SDL_ReleaseGPUTransferBuffer(g_device, download);
+                g_freeDownloads.push_back(download);
                 return;
             }
             g_pendingWriteBacks.push_back({ fence, download, texture.base, texture.pitch, texture.size, bpp, x0, y0, w, h, endian });
@@ -260,8 +280,15 @@ namespace h3::gpu::renderer::internal
             SDL_GPUTexture* texture = nullptr;
             SDL_GPUTexture* source = nullptr;  // resolved texture it was copied from
             uint32_t generation = ~0u;         // source's generation at the copy
+            uint32_t usedFrame = 0;            // last frame it was sampled
         };
         std::unordered_map<uint64_t, SubTexture> g_subTextures;  // (address, size, format) -> copy
+        // Views unused this many frames are freed (about ten seconds at
+        // 30 fps), so views of memory the game stopped reusing don't pile up
+        // in video memory; ones used within kMinViewIdleFrames never are (a
+        // command buffer may still reference them).
+        constexpr uint32_t kMaxViewIdleFrames = 300;
+        constexpr uint32_t kMinViewIdleFrames = 4;
 
         // Reads the resolve rectangle from vertex fetch constant 0 into
         // pixel bounds [x0, x1) x [y0, y1) (before the window offset).
@@ -374,6 +401,27 @@ namespace h3::gpu::renderer::internal
         return nullptr;
     }
 
+    void TrimResolvedViews()
+    {
+        static_assert(kMaxViewIdleFrames > kMinViewIdleFrames);
+        for (auto it = g_subTextures.begin(); it != g_subTextures.end();)
+        {
+            if (g_swaps - it->second.usedFrame > kMaxViewIdleFrames)
+            {
+                if (it->second.texture)
+                    SDL_ReleaseGPUTexture(g_device, it->second.texture);
+                it = g_subTextures.erase(it);
+            }
+            else
+                ++it;
+        }
+    }
+
+    size_t ResolvedViewCount()
+    {
+        return g_subTextures.size();
+    }
+
     void PollWriteBacks(bool wait)
     {
         size_t done = 0;
@@ -409,6 +457,7 @@ namespace h3::gpu::renderer::internal
             return resolved.texture;
         uint32_t key[] = { GuestToPhysical(address), width, height, uint32_t(format) };
         SubTexture& sub = g_subTextures[Hash(key, sizeof(key))];
+        sub.usedFrame = g_swaps;
         if (sub.texture && sub.source == resolved.texture && sub.generation == resolved.generation)
             return sub.texture;
         if (!sub.texture)

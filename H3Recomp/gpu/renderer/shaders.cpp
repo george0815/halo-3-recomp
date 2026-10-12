@@ -15,6 +15,9 @@
 #include <fstream>
 #include <mutex>
 
+#define XXH_INLINE_ALL
+#include <xxhash.h>
+
 namespace h3::gpu::renderer::internal
 {
     namespace
@@ -24,9 +27,6 @@ namespace h3::gpu::renderer::internal
         // Work that takes at least this long on the GPU thread is logged by
         // SlowTimer (H3_LOG_SLOW): long enough to drop a 60 Hz frame.
         constexpr double kSlowThresholdMs = 20.0;
-        // Each translated shader has two uniform buffers: its float
-        // constants and the system constants (translator.h).
-        constexpr uint32_t kShaderUniformBuffers = 2;
         // Hash seeds, so a vertex and a pixel shader with the same microcode
         // (or GLSL) never share a cache entry.
         constexpr uint64_t kVertexSeed = 1, kPixelSeed = 2;
@@ -44,61 +44,6 @@ namespace h3::gpu::renderer::internal
             return options;
         }
 
-        // SPIR-V for translated GLSL: from the disk cache if it's there,
-        // otherwise compiled (with the optimizer) and stored. cacheName
-        // receives the cache file name, which identifies the shader in logs.
-        std::vector<uint8_t> CompileCached(bool vertex, const std::string& glsl, std::string& cacheName)
-        {
-            char name[32];
-            snprintf(name, sizeof(name), "%016llx.spv",
-                (unsigned long long)Hash(glsl.data(), glsl.size(), vertex ? kVertexSeed : kPixelSeed));
-            cacheName = name;
-
-            // H3_DUMP_GLSL=1: write each shader's GLSL as <cache name>.glsl
-            // in the working directory.
-            static const bool dumpGlsl = EnvFlag("H3_DUMP_GLSL");
-            if (dumpGlsl)
-                std::ofstream(std::string(name) + ".glsl") << glsl;
-
-            std::filesystem::path path;
-            if (!g_shaderCacheDirectory.empty())
-            {
-                path = g_shaderCacheDirectory / name;
-                std::ifstream file(path, std::ios::binary);
-                if (file)
-                {
-                    std::vector<uint8_t> spirv((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-                    if (!spirv.empty() && spirv.size() % 4 == 0)  // SPIR-V is a stream of 32-bit words
-                        return spirv;
-                }
-            }
-
-            shaderc_compile_options_t options = CompileOptions(true);
-            shaderc_compilation_result_t result = shaderc_compile_into_spv(g_compiler, glsl.data(), glsl.size(),
-                vertex ? shaderc_vertex_shader : shaderc_fragment_shader, "xenos", "main", options);
-            shaderc_compile_options_release(options);
-            std::vector<uint8_t> spirv;
-            if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success)
-            {
-                LogOnce(std::string("shader compilation failed: ") + shaderc_result_get_error_message(result));
-            }
-            else
-            {
-                const uint8_t* bytes = reinterpret_cast<const uint8_t*>(shaderc_result_get_bytes(result));
-                spirv.assign(bytes, bytes + shaderc_result_get_length(result));
-                if (!path.empty())
-                {
-                    // Write then rename, so a killed run never leaves half a file.
-                    std::filesystem::path temporary = path;
-                    temporary += ".tmp";
-                    std::ofstream(temporary, std::ios::binary).write(reinterpret_cast<const char*>(spirv.data()), spirv.size());
-                    std::error_code error;
-                    std::filesystem::rename(temporary, path, error);
-                }
-            }
-            shaderc_result_release(result);
-            return spirv;
-        }
     }
 
     uint64_t Hash(const void* data, size_t size, uint64_t hash)
@@ -114,6 +59,69 @@ namespace h3::gpu::renderer::internal
         for (size_t i = words * 8; i < size; i++)
             hash = (hash ^ bytes[i]) * kFnvPrime;
         return hash;
+    }
+
+    std::string ShaderCacheName(bool vertex, const std::string& glsl)
+    {
+        char name[32];
+        snprintf(name, sizeof(name), "%016llx.spv", (unsigned long long)Hash(glsl.data(), glsl.size(), vertex ? kVertexSeed : kPixelSeed));
+        return name;
+    }
+
+    std::vector<uint8_t> CompileSpirv(ShaderStage stage, const std::string& glsl, const std::string& cacheName)
+    {
+        // H3_DUMP_GLSL=1: write each shader's GLSL as <cache name>.glsl in
+        // the working directory.
+        static const bool dumpGlsl = EnvFlag("H3_DUMP_GLSL");
+        if (dumpGlsl)
+            std::ofstream(cacheName + ".glsl") << glsl;
+
+        std::filesystem::path path;
+        if (!g_shaderCacheDirectory.empty())
+        {
+            path = g_shaderCacheDirectory / cacheName;
+            std::ifstream file(path, std::ios::binary);
+            if (file)
+            {
+                std::vector<uint8_t> spirv((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+                if (!spirv.empty() && spirv.size() % 4 == 0)  // SPIR-V is a stream of 32-bit words
+                    return spirv;
+            }
+        }
+
+        // Not cached: compile with the optimizer (shaderc's compiler object
+        // may be used from several threads at once).
+        shaderc_compile_options_t options = CompileOptions(true);
+        shaderc_compilation_result_t result = shaderc_compile_into_spv(g_compiler, glsl.data(), glsl.size(),
+            stage == ShaderStage::Vertex ? shaderc_vertex_shader
+                : stage == ShaderStage::Fragment ? shaderc_fragment_shader
+                                                 : shaderc_compute_shader,
+            "xenos", "main", options);
+        shaderc_compile_options_release(options);
+        std::vector<uint8_t> spirv;
+        if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success)
+            LogOnce(std::string("shader compilation failed: ") + shaderc_result_get_error_message(result));
+        else
+        {
+            const uint8_t* bytes = reinterpret_cast<const uint8_t*>(shaderc_result_get_bytes(result));
+            spirv.assign(bytes, bytes + shaderc_result_get_length(result));
+            if (!path.empty())
+            {
+                // Write then rename, so a killed run never leaves half a file.
+                std::filesystem::path temporary = path;
+                temporary += ".tmp";
+                std::ofstream(temporary, std::ios::binary).write(reinterpret_cast<const char*>(spirv.data()), spirv.size());
+                std::error_code error;
+                std::filesystem::rename(temporary, path, error);
+            }
+        }
+        shaderc_result_release(result);
+        return spirv;
+    }
+
+    uint64_t ContentHash(const void* data, size_t size)
+    {
+        return XXH3_64bits(data, size);
     }
 
     void LogOnce(const std::string& message)
@@ -175,33 +183,20 @@ namespace h3::gpu::renderer::internal
         if (it != g_shaders.end())
             return it->second.get();
 
-        SlowTimer timer{ "shader" };
         auto entry = std::make_unique<Shader>();
         shader::TranslationResult translated = shader::Translate(vertex, dwords, count);
         if (!translated.ok)
-        {
             LogOnce("shader translation failed: " + translated.error);
-        }
         else
         {
-            std::vector<uint8_t> spirv = CompileCached(vertex, translated.glsl, entry->cacheName);
-            if (!spirv.empty())
-            {
-                SDL_GPUShaderCreateInfo info{};
-                info.code_size = spirv.size();
-                info.code = spirv.data();
-                info.entrypoint = "main";
-                info.format = SDL_GPU_SHADERFORMAT_SPIRV;
-                info.stage = vertex ? SDL_GPU_SHADERSTAGE_VERTEX : SDL_GPU_SHADERSTAGE_FRAGMENT;
-                info.num_samplers = uint32_t(translated.info.textures.size());
-                info.num_storage_buffers = vertex ? 1 : 0;  // vertex shaders fetch from the vertex memory buffer
-                info.num_uniform_buffers = kShaderUniformBuffers;
-                entry->shader = SDL_CreateGPUShader(g_device, &info);
-                if (!entry->shader)
-                    LogOnce(std::string("SDL_CreateGPUShader failed: ") + SDL_GetError());
-                entry->info = translated.info;
-                entry->ok = entry->shader != nullptr;
-            }
+            // The program itself is shared by cache name (and may already be
+            // there from warm-up, or still compiling on a worker).
+            entry->cacheName = ShaderCacheName(vertex, translated.glsl);
+            entry->host = RequestHostShader(vertex, translated.glsl, uint32_t(translated.info.textures.size()), entry->cacheName);
+            entry->info = translated.info;
+            if (translated.info.usesMemExport)
+                entry->microcode.assign(dwords, dwords + count);
+            entry->ok = true;
         }
         Shader* shader = entry.get();
         g_shaders.emplace(key, std::move(entry));

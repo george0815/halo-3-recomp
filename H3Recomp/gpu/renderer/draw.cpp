@@ -33,6 +33,10 @@ namespace h3::gpu::renderer::internal
         // Free upload buffers kept at most (a few frames' worth; the menu
         // flushes ~90 times a frame); past that the largest are released.
         constexpr size_t kMaxFreeTransfers = 512;
+        // ...and at most this many bytes in them: each flush stages its
+        // draws' vertex buffers again, so many flushes over big buffers
+        // filled the pool with large buffers until the OOM killer stepped in.
+        constexpr uint64_t kMaxFreeTransferBytes = 512ull * 1024 * 1024;
         // Smallest vertex memory / index buffer (bytes).
         constexpr uint32_t kMinDrawBufferSize = 1024 * 1024;
         // D3D clear rectangles: 7 floats per vertex (x, y, z, r, g, b, a).
@@ -45,6 +49,15 @@ namespace h3::gpu::renderer::internal
         constexpr uint32_t kResetIndex32 = 0xFFFFFFFFu, kResetIndex16 = 0xFFFFu;
         // Xenos indices are 24 bits.
         constexpr uint32_t kIndexMask = 0xFFFFFF;
+        // Tessellation (VGT_OUTPUT_PATH_CNTL path select, VGT_HOS_CNTL modes).
+        constexpr uint32_t kOutputPathTessellation = 1;
+        constexpr uint32_t kTessellationAdaptive = 2;
+        // Adaptive patches come with one tessellation factor per edge in
+        // place of indices (3 per triangle patch).
+        constexpr uint32_t kTriangleEdges = 3;
+        // Host grid segments per patch edge are capped here (the console's
+        // tessellator tops out at a factor of 15, plus 1).
+        constexpr uint32_t kMaxTessSegments = 16;
 
         // A draw waiting to be recorded.
         struct PendingDraw
@@ -52,6 +65,8 @@ namespace h3::gpu::renderer::internal
             SDL_GPUGraphicsPipeline* pipeline = nullptr;
             float vertexConstants[kStageConstants];
             float pixelConstants[kStageConstants];
+            uint32_t vertexConstantCount = 0;  // floats of each actually filled (what the shader reads)
+            uint32_t pixelConstantCount = 0;
             SystemConstants system;
             std::vector<SDL_GPUTextureSamplerBinding> vertexTextures, pixelTextures;
             SDL_GPUViewport viewport;
@@ -65,6 +80,49 @@ namespace h3::gpu::renderer::internal
 
         TargetSet g_targets;  // what the pending draws render into
         std::vector<std::unique_ptr<PendingDraw>> g_pending;
+        // Recorded draws, kept for reuse (each is ~11 KB; allocating one per
+        // draw showed up in profiles).
+        std::vector<std::unique_ptr<PendingDraw>> g_freeDraws;
+
+        // A PendingDraw to fill (reused when possible). Every field is set by
+        // Draw, so a reused one needn't be cleared.
+        std::unique_ptr<PendingDraw> NewDraw()
+        {
+            if (g_freeDraws.empty())
+                return std::make_unique<PendingDraw>();
+            std::unique_ptr<PendingDraw> draw = std::move(g_freeDraws.back());
+            g_freeDraws.pop_back();
+            return draw;
+        }
+
+        // Uniform data pushed to SDL, per stage and slot (vertex 0/1,
+        // fragment 0/1), during one Flush. SDL keeps pushed data bound for
+        // later draws, so a push identical to the last one is skipped.
+        struct PushedUniforms
+        {
+            std::vector<uint8_t> data;
+            bool valid = false;
+        };
+        PushedUniforms g_pushed[4];
+
+        // Pushes uniform data for slot (0-3: vertex constants, vertex
+        // system, fragment constants, fragment system) unless the same bytes
+        // are already bound. A shorter push matching the start of the bound
+        // data is skipped too (the shader reads only that much).
+        void PushUniforms(SDL_GPUCommandBuffer* commands, uint32_t slot, const void* data, uint32_t size)
+        {
+            PushedUniforms& pushed = g_pushed[slot];
+            if (pushed.valid && size <= pushed.data.size() && memcmp(pushed.data.data(), data, size) == 0)
+                return;
+            bool fragment = slot >= 2;
+            uint32_t binding = slot & 1;
+            if (fragment)
+                SDL_PushGPUFragmentUniformData(commands, binding, data, size);
+            else
+                SDL_PushGPUVertexUniformData(commands, binding, data, size);
+            pushed.data.assign(static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size);
+            pushed.valid = true;
+        }
         // Vertex data the pending draws read, copied from guest memory (the
         // vertex shaders fetch from it as a storage buffer), and their
         // indices.
@@ -99,8 +157,6 @@ namespace h3::gpu::renderer::internal
         std::vector<TransferBuffer> g_freeTransfers;
         std::vector<TransferBuffer> g_frameTransfers[kTransferAge + 1];  // in use, by frame
 
-        std::unordered_map<uint64_t, SDL_GPUGraphicsPipeline*> g_pipelines;  // render state hash -> pipeline
-
         // An upload buffer of at least size bytes for this frame.
         SDL_GPUTransferBuffer* AcquireTransfer(uint32_t size)
         {
@@ -128,7 +184,13 @@ namespace h3::gpu::renderer::internal
             std::vector<TransferBuffer>& oldest = g_frameTransfers[(g_swaps + 1) % (kTransferAge + 1)];
             g_freeTransfers.insert(g_freeTransfers.end(), oldest.begin(), oldest.end());
             oldest.clear();
-            while (g_freeTransfers.size() > kMaxFreeTransfers)
+            auto freeBytes = [] {
+                uint64_t bytes = 0;
+                for (const TransferBuffer& transfer : g_freeTransfers)
+                    bytes += transfer.size;
+                return bytes;
+            };
+            while (g_freeTransfers.size() > kMaxFreeTransfers || (!g_freeTransfers.empty() && freeBytes() > kMaxFreeTransferBytes))
             {
                 auto largest = std::max_element(g_freeTransfers.begin(), g_freeTransfers.end(),
                     [](const TransferBuffer& a, const TransferBuffer& b) { return a.size < b.size; });
@@ -155,176 +217,6 @@ namespace h3::gpu::renderer::internal
             return true;
         }
 
-        // --- Pipelines ---------------------------------------------------
-
-        // Host blend factor for a Xenos BlendFactor (RB_BLENDCONTROL fields).
-        SDL_GPUBlendFactor BlendFactor(uint32_t xenos)
-        {
-            switch (xenos)
-            {
-            case 0: return SDL_GPU_BLENDFACTOR_ZERO;
-            case 1: return SDL_GPU_BLENDFACTOR_ONE;
-            case 4: return SDL_GPU_BLENDFACTOR_SRC_COLOR;
-            case 5: return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR;
-            case 6: return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-            case 7: return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-            case 8: return SDL_GPU_BLENDFACTOR_DST_COLOR;
-            case 9: return SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_COLOR;
-            case 10: return SDL_GPU_BLENDFACTOR_DST_ALPHA;
-            case 11: return SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA;
-            case 12:  // constant color
-            case 14:  // constant alpha (approximated as constant color)
-                return SDL_GPU_BLENDFACTOR_CONSTANT_COLOR;
-            case 13:
-            case 15:
-                return SDL_GPU_BLENDFACTOR_ONE_MINUS_CONSTANT_COLOR;
-            case 16: return SDL_GPU_BLENDFACTOR_SRC_ALPHA_SATURATE;
-            default: return SDL_GPU_BLENDFACTOR_ONE;
-            }
-        }
-
-        // Host blend operation for a Xenos BlendOp.
-        SDL_GPUBlendOp BlendOp(uint32_t xenos)
-        {
-            switch (xenos)
-            {
-            case 1: return SDL_GPU_BLENDOP_SUBTRACT;
-            case 2: return SDL_GPU_BLENDOP_MIN;
-            case 3: return SDL_GPU_BLENDOP_MAX;
-            case 4: return SDL_GPU_BLENDOP_REVERSE_SUBTRACT;
-            default: return SDL_GPU_BLENDOP_ADD;
-            }
-        }
-
-        // Blend state for one render target from its RB_BLENDCONTROL value:
-        // color src : 5, op : 3 @5, dst : 5 @8; alpha the same @16.
-        SDL_GPUColorTargetBlendState BlendState(uint32_t blend)
-        {
-            SDL_GPUColorTargetBlendState state{};
-            state.src_color_blendfactor = BlendFactor(blend & 0x1F);
-            state.color_blend_op = BlendOp((blend >> 5) & 7);
-            state.dst_color_blendfactor = BlendFactor((blend >> 8) & 0x1F);
-            state.src_alpha_blendfactor = BlendFactor((blend >> 16) & 0x1F);
-            state.alpha_blend_op = BlendOp((blend >> 21) & 7);
-            state.dst_alpha_blendfactor = BlendFactor((blend >> 24) & 0x1F);
-            // 0x0001 is src one, add, dst zero: no blending.
-            constexpr uint32_t kNoBlend = 0x0001;
-            state.enable_blend = !((blend & 0x1FFF) == kNoBlend && ((blend >> 16) & 0x1FFF) == kNoBlend);
-            return state;
-        }
-
-        // Depth/stencil state from RB_DEPTHCONTROL and RB_STENCILREFMASK.
-        // Xenos compare functions and stencil ops are SDL's minus one.
-        SDL_GPUDepthStencilState DepthStencilState(uint32_t depthControl, uint32_t stencilRefMask)
-        {
-            SDL_GPUDepthStencilState ds{};
-            ds.enable_depth_test = (depthControl >> 1) & 1;
-            ds.enable_depth_write = ds.enable_depth_test && ((depthControl >> 2) & 1);
-            ds.compare_op = SDL_GPUCompareOp(((depthControl >> 4) & 7) + 1);
-            ds.enable_stencil_test = depthControl & 1;
-            auto stencil = [](uint32_t func, uint32_t fail, uint32_t pass, uint32_t depthFail) {
-                SDL_GPUStencilOpState state;
-                state.compare_op = SDL_GPUCompareOp(func + 1);
-                state.fail_op = SDL_GPUStencilOp(fail + 1);
-                state.pass_op = SDL_GPUStencilOp(pass + 1);
-                state.depth_fail_op = SDL_GPUStencilOp(depthFail + 1);
-                return state;
-            };
-            ds.front_stencil_state =
-                stencil((depthControl >> 8) & 7, (depthControl >> 11) & 7, (depthControl >> 14) & 7, (depthControl >> 17) & 7);
-            ds.back_stencil_state = ((depthControl >> 7) & 1)  // separate back-face stencil
-                ? stencil((depthControl >> 20) & 7, (depthControl >> 23) & 7, (depthControl >> 26) & 7, (depthControl >> 29) & 7)
-                : ds.front_stencil_state;
-            ds.compare_mask = uint8_t(stencilRefMask >> 8);
-            ds.write_mask = uint8_t(stencilRefMask >> 16);
-
-            // Debugging switches.
-            static const bool noDepth = EnvFlag("H3_NO_DEPTH"), noStencil = EnvFlag("H3_NO_STENCIL"),
-                              depthFlip = EnvFlag("H3_DEPTH_FLIP");
-            if (noDepth)  // no depth or stencil tests
-                ds.enable_depth_test = ds.enable_stencil_test = false;
-            if (noStencil)  // no stencil test
-                ds.enable_stencil_test = false;
-            if (depthFlip)  // swap less/greater
-            {
-                static const SDL_GPUCompareOp kFlip[] = { SDL_GPU_COMPAREOP_INVALID, SDL_GPU_COMPAREOP_NEVER,
-                    SDL_GPU_COMPAREOP_GREATER, SDL_GPU_COMPAREOP_EQUAL, SDL_GPU_COMPAREOP_GREATER_OR_EQUAL, SDL_GPU_COMPAREOP_LESS,
-                    SDL_GPU_COMPAREOP_NOT_EQUAL, SDL_GPU_COMPAREOP_LESS_OR_EQUAL, SDL_GPU_COMPAREOP_ALWAYS };
-                ds.compare_op = kFlip[ds.compare_op];
-            }
-            return ds;
-        }
-
-        // The host pipeline for shaders + render state (created on first use;
-        // creating one can take the driver hundreds of milliseconds).
-        SDL_GPUGraphicsPipeline* GetPipeline(Shader* vs, Shader* ps, SDL_GPUPrimitiveType topology, const TargetSet& targets,
-            const uint32_t blend[4], uint32_t colorMask, uint32_t depthControl, uint32_t stencilRefMask)
-        {
-            // Everything that goes into the pipeline, hashed as the cache key.
-            struct Key
-            {
-                SDL_GPUShader* vs;
-                SDL_GPUShader* ps;
-                uint32_t topology, colorCount, depthFormat;
-                uint32_t colorFormats[4];
-                uint32_t blend[4];
-                uint32_t colorMask, depthControl, stencilMasks;
-            } key{};
-            key.vs = vs->shader;
-            key.ps = ps->shader;
-            key.topology = topology;
-            key.colorCount = targets.colorCount;
-            key.depthFormat = targets.depth ? g_depthFormat : 0;
-            for (uint32_t i = 0; i < 4; i++)
-            {
-                key.colorFormats[i] = targets.colorFormat[i];
-                key.blend[i] = blend[i];
-            }
-            key.colorMask = colorMask;
-            key.depthControl = depthControl;
-            key.stencilMasks = stencilRefMask & 0xFFFF00;  // not the reference (dynamic state)
-            uint64_t hash = Hash(&key, sizeof(key));
-            auto it = g_pipelines.find(hash);
-            if (it != g_pipelines.end())
-                return it->second;
-
-            SlowTimer timer{ "pipeline", vs->cacheName + " " + ps->cacheName };
-            SDL_GPUColorTargetDescription descriptions[4]{};
-            for (uint32_t i = 0; i < targets.colorCount; i++)
-            {
-                descriptions[i].format = targets.colorFormat[i];
-                descriptions[i].blend_state = BlendState(blend[i]);
-                // Targets the pixel shader doesn't write keep their contents.
-                uint32_t mask = (colorMask >> (4 * i)) & 0xF;
-                if (!(ps->info.colorTargetMask & (1u << i)))
-                    mask = 0;
-                descriptions[i].blend_state.color_write_mask = SDL_GPUColorComponentFlags(mask);
-                descriptions[i].blend_state.enable_color_write_mask = true;
-            }
-
-            SDL_GPUGraphicsPipelineCreateInfo info{};
-            info.vertex_shader = vs->shader;
-            info.fragment_shader = ps->shader;
-            info.primitive_type = topology;
-            info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-            info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;  // TODO: PA_SU_SC_MODE_CNTL culling
-            info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_CLOCKWISE;
-            info.rasterizer_state.enable_depth_clip = true;
-            info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
-            if (targets.depth)
-                info.depth_stencil_state = DepthStencilState(depthControl, stencilRefMask);
-            info.target_info.color_target_descriptions = descriptions;
-            info.target_info.num_color_targets = targets.colorCount;
-            info.target_info.has_depth_stencil_target = targets.depth != nullptr;
-            info.target_info.depth_stencil_format = g_depthFormat;
-
-            SDL_GPUGraphicsPipeline* pipeline = SDL_CreateGPUGraphicsPipeline(g_device, &info);
-            if (!pipeline)
-                LogOnce(std::string("pipeline creation failed: ") + SDL_GetError());
-            g_pipelines.emplace(hash, pipeline);
-            return pipeline;
-        }
-
         // Host primitive type for a Xenos one (strips, fans, quads and
         // rectangles all become triangle lists). False if unsupported.
         bool HostTopology(uint32_t primitive, SDL_GPUPrimitiveType& topology)
@@ -339,6 +231,7 @@ namespace h3::gpu::renderer::internal
             case kPrimTriangleStrip:
             case kPrimQuadList:
             case kPrimRectangleList:
+            case kPrimTrianglePatch:
                 topology = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
                 return true;
             default:
@@ -601,10 +494,7 @@ namespace h3::gpu::renderer::internal
         // rounding.
         void SetRegisterConstants(SystemConstants& system, uint32_t vte, const TargetSet& targets)
         {
-            for (uint32_t i = 0; i < kBoolConstantWords; i++)
-                system.bools[i] = ReadRegister(kRegShaderConstantBool + i);
-            for (uint32_t i = 0; i < kLoopConstants; i++)
-                system.loops[i] = ReadRegister(kRegShaderConstantLoop + i);
+            SetControlConstants(system);
             // Pixel parameters (position, face) go to the register
             // SQ_CONTEXT_MISC names when SQ_PROGRAM_CNTL enables them.
             constexpr uint32_t kNoParamGen = 0xFF;
@@ -633,6 +523,19 @@ namespace h3::gpu::renderer::internal
             if (targets.depth && DepthIsFloat(ReadRegister(kRegRbDepthInfo)))
                 system.flags |= kSystemFlagRoundDepth24;
         }
+    }
+
+    void SetControlConstants(SystemConstants& system)
+    {
+        for (uint32_t i = 0; i < kBoolConstantWords; i++)
+            system.bools[i] = ReadRegister(kRegShaderConstantBool + i);
+        for (uint32_t i = 0; i < kLoopConstants; i++)
+            system.loops[i] = ReadRegister(kRegShaderConstantLoop + i);
+    }
+
+    std::vector<uint32_t> GuestDrawIndices(uint32_t initiator, uint32_t indexBase, uint32_t dmaSize)
+    {
+        return GuestIndices(initiator, indexBase, dmaSize);
     }
 
     void Flush()
@@ -691,24 +594,35 @@ namespace h3::gpu::renderer::internal
         SDL_GPUBufferBinding indexBinding{ g_indexBuffer, 0 };
         SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
         SDL_BindGPUVertexStorageBuffers(pass, 0, &g_memoryBuffer, 1);
-        // PERF: every draw pushes ~10 KB of uniforms (both stages' float
-        // constants and the system constants twice); only pushing what
-        // changed, or what the shader reads, would cut that a lot.
+        // State is set only when it differs from the previous draw's, and
+        // uniforms only when their bytes changed (PushUniforms): draws in a
+        // row mostly share pipelines, viewports and constants.
+        for (PushedUniforms& pushed : g_pushed)
+            pushed.valid = false;  // a new command buffer may not have them
+        const PendingDraw* previous = nullptr;
         for (const auto& draw : g_pending)
         {
-            SDL_BindGPUGraphicsPipeline(pass, draw->pipeline);
-            SDL_SetGPUViewport(pass, &draw->viewport);
-            SDL_SetGPUScissor(pass, &draw->scissor);
-            SDL_SetGPUStencilReference(pass, draw->stencilReference);
-            SDL_SetGPUBlendConstants(pass, draw->blendConstants);
+            if (!previous || draw->pipeline != previous->pipeline)
+                SDL_BindGPUGraphicsPipeline(pass, draw->pipeline);
+            if (!previous || memcmp(&draw->viewport, &previous->viewport, sizeof(draw->viewport)) != 0)
+                SDL_SetGPUViewport(pass, &draw->viewport);
+            if (!previous || memcmp(&draw->scissor, &previous->scissor, sizeof(draw->scissor)) != 0)
+                SDL_SetGPUScissor(pass, &draw->scissor);
+            if (!previous || draw->stencilReference != previous->stencilReference)
+                SDL_SetGPUStencilReference(pass, draw->stencilReference);
+            if (!previous || memcmp(&draw->blendConstants, &previous->blendConstants, sizeof(draw->blendConstants)) != 0)
+                SDL_SetGPUBlendConstants(pass, draw->blendConstants);
             if (!draw->vertexTextures.empty())
                 SDL_BindGPUVertexSamplers(pass, 0, draw->vertexTextures.data(), uint32_t(draw->vertexTextures.size()));
             if (!draw->pixelTextures.empty())
                 SDL_BindGPUFragmentSamplers(pass, 0, draw->pixelTextures.data(), uint32_t(draw->pixelTextures.size()));
-            SDL_PushGPUVertexUniformData(commands, 0, draw->vertexConstants, sizeof(draw->vertexConstants));
-            SDL_PushGPUVertexUniformData(commands, 1, &draw->system, sizeof(draw->system));
-            SDL_PushGPUFragmentUniformData(commands, 0, draw->pixelConstants, sizeof(draw->pixelConstants));
-            SDL_PushGPUFragmentUniformData(commands, 1, &draw->system, sizeof(draw->system));
+            // At least one vec4 per push (a shader may read no constants).
+            constexpr uint32_t kMinPushFloats = 4;
+            PushUniforms(commands, 0, draw->vertexConstants, std::max(draw->vertexConstantCount, kMinPushFloats) * 4);
+            PushUniforms(commands, 1, &draw->system, sizeof(draw->system));
+            PushUniforms(commands, 2, draw->pixelConstants, std::max(draw->pixelConstantCount, kMinPushFloats) * 4);
+            PushUniforms(commands, 3, &draw->system, sizeof(draw->system));
+            previous = draw.get();
             if (draw->indexed)
                 SDL_DrawGPUIndexedPrimitives(pass, draw->count, 1, draw->firstIndex, 0, 0);
             else
@@ -716,6 +630,8 @@ namespace h3::gpu::renderer::internal
         }
         SDL_EndGPURenderPass(pass);
 
+        for (std::unique_ptr<PendingDraw>& draw : g_pending)
+            g_freeDraws.push_back(std::move(draw));
         g_pending.clear();
         g_memoryStaging.clear();
         g_indexStaging.clear();
@@ -733,16 +649,12 @@ namespace h3::gpu::renderer::internal
         return g_targets;
     }
 
-    size_t PipelineCount()
-    {
-        return g_pipelines.size();
-    }
-
     void Draw(uint32_t initiator, uint32_t indexBase, uint32_t dmaSize)
     {
         uint32_t primitive = initiator & 0x3F;
-        // 0x10-0x12 are tessellation patches here (Halo's water): not
-        // supported, so they're skipped below as unknown primitive types.
+        // 0x10-0x12 are tessellation patches here. Triangle patches (Halo's
+        // water) are drawn as a uniform grid per patch (DrawTessellated
+        // below); line and quad patches are skipped as unknown types.
         uint32_t mode = ReadRegister(kRegRbModeControl) & 7;
         if (mode != kEdramModeColorDepth && mode != kEdramModeDepthOnly)
             return;
@@ -750,6 +662,24 @@ namespace h3::gpu::renderer::internal
         bool screenSpaceRectangles = primitive == kPrimRectangleList && (vte & kVteScreenSpaceXyz) == kVteScreenSpaceXyz;
         if (mode == kEdramModeDepthOnly && screenSpaceRectangles)
             ClearColorUnderDepth(initiator);
+
+        // Both shaders must exist: with async compilation, a shader still
+        // compiling skips the draw; otherwise this waits for it (warm-up may
+        // be making it).
+        if (!g_vertexShader || !g_pixelShader || !ShaderReady(*g_vertexShader, !g_asyncShaders) ||
+            !ShaderReady(*g_pixelShader, !g_asyncShaders))
+            return;
+
+        // Memory export (occlusion tests, Halo's water): run the shader's
+        // compute variant for the writes (memexport.cpp). Shaders that only
+        // write memory have nothing to rasterize; drawing them would put
+        // points at the default position.
+        if (g_vertexShader->info.usesMemExport)
+        {
+            RunMemExport(*g_vertexShader, initiator, indexBase, dmaSize);
+            if (!g_vertexShader->info.writesPosition)
+                return;
+        }
 
         uint32_t colorMask = ReadRegister(kRegRbColorMask);
         uint32_t depthControl = ReadRegister(kRegRbDepthControl);
@@ -769,30 +699,44 @@ namespace h3::gpu::renderer::internal
             Flush();
             g_targets = targets;
         }
-        uint32_t blend[4];
-        for (uint32_t i = 0; i < 4; i++)
-            blend[i] = ReadRegister(kRegRbBlendControl[i]);
+        // The pipeline: shaders plus the render state baked into it.
         uint32_t stencilRefMask = ReadRegister(kRegRbStencilRefMask);
-        SDL_GPUGraphicsPipeline* pipeline =
-            GetPipeline(g_vertexShader, g_pixelShader, topology, targets, blend, colorMask, depthControl, stencilRefMask);
+        PipelineDesc desc{};
+        desc.vs = ShaderCacheId(g_vertexShader->cacheName);
+        desc.ps = ShaderCacheId(g_pixelShader->cacheName);
+        desc.topology = topology;
+        desc.colorCount = targets.colorCount;
+        desc.depthFormat = targets.depth ? uint32_t(g_depthFormat) : 0;
+        for (uint32_t i = 0; i < 4; i++)
+        {
+            desc.colorFormats[i] = i < targets.colorCount ? uint32_t(targets.colorFormat[i]) : 0;
+            desc.blend[i] = i < targets.colorCount ? ReadRegister(kRegRbBlendControl[i]) : 0;
+        }
+        desc.colorMask = colorMask;
+        desc.depthControl = targets.depth ? depthControl : 0;
+        desc.stencilMasks = targets.depth ? stencilRefMask & 0xFFFF00 : 0;  // not the reference (dynamic state)
+        desc.psColorTargetMask = g_pixelShader->info.colorTargetMask;
+        SDL_GPUGraphicsPipeline* pipeline = GetPipeline(desc);
         if (!pipeline)
             return;
 
-        auto draw = std::make_unique<PendingDraw>();
+        std::unique_ptr<PendingDraw> draw = NewDraw();
         draw->pipeline = pipeline;
         draw->stencilReference = uint8_t(stencilRefMask);
         draw->blendConstants = { RegisterFloat(kRegRbBlendRed), RegisterFloat(kRegRbBlendRed + 1), RegisterFloat(kRegRbBlendRed + 2),
             RegisterFloat(kRegRbBlendRed + 3) };
 
-        // Float constants, byte-swapped from the register file.
+        // Float constants the shaders read, byte-swapped from the register
+        // file.
         const uint32_t* alu = GuestPtr<uint32_t>(kGpuRegisterBase + kRegShaderConstantAlu * 4);
         uint32_t* vertexConstants = reinterpret_cast<uint32_t*>(draw->vertexConstants);
         uint32_t* pixelConstants = reinterpret_cast<uint32_t*>(draw->pixelConstants);
-        for (uint32_t i = 0; i < kStageConstants; i++)
-        {
+        draw->vertexConstantCount = std::min(g_vertexShader->info.floatConstantCount * 4, kStageConstants);
+        draw->pixelConstantCount = std::min(g_pixelShader->info.floatConstantCount * 4, kStageConstants);
+        for (uint32_t i = 0; i < draw->vertexConstantCount; i++)
             vertexConstants[i] = __builtin_bswap32(alu[i]);
+        for (uint32_t i = 0; i < draw->pixelConstantCount; i++)
             pixelConstants[i] = __builtin_bswap32(alu[kStageConstants + i]);
-        }
 
         SystemConstants& system = draw->system;
         memset(&system, 0, sizeof(system));
@@ -826,6 +770,41 @@ namespace h3::gpu::renderer::internal
         if (g_renderScale > 1 && (primitive == kPrimRectangleList || !(vte & 1)))
             system.flags |= kSystemFlagSnapToPixels;
 
+        if (primitive == kPrimTrianglePatch)
+        {
+            if ((ReadRegister(kRegVgtOutputPathCntl) & 3) != kOutputPathTessellation)
+            {
+                LogOnce("triangle patches without tessellation enabled");
+                g_freeDraws.push_back(std::move(draw));
+                return;
+            }
+            // No hardware tessellator through SDL_GPU: each patch becomes a
+            // uniform grid (the vertex shader's tessellated path), at the
+            // maximum tessellation level. Adaptive per-edge factors (the
+            // "indices") only pick a coarser level per edge, so they're
+            // ignored: the surface is the same, just finer everywhere,
+            // and a uniform level can't crack between patches.
+            uint32_t count = initiator >> 16;
+            bool adaptive = (ReadRegister(kRegVgtHosCntl) & 3) == kTessellationAdaptive;
+            uint32_t patches = adaptive ? count / kTriangleEdges : count;
+            float level = RegisterFloat(kRegVgtHosMaxTessLevel) + 1.0f;
+            uint32_t segments = std::isfinite(level) ? uint32_t(std::clamp(std::ceil(level), 1.0f, float(kMaxTessSegments))) : 1;
+            LogOnce("tessellated triangle patches: " + std::to_string(segments) + " segments per edge" +
+                (adaptive ? " (adaptive factors ignored)" : ""));
+            system.flags |= kSystemFlagTessellated;
+            system.tessSegments = segments;
+            system.tessPatchBase = ReadRegister(kRegVgtIndxOffset);
+            draw->indexed = false;
+            draw->count = patches * kTriangleEdges * segments * segments;
+            if (draw->count == 0)
+            {
+                g_freeDraws.push_back(std::move(draw));
+                return;
+            }
+            g_pending.push_back(std::move(draw));
+            return;
+        }
+
         std::vector<uint32_t> indices = GuestIndices(initiator, indexBase, dmaSize);
         if (primitive == kPrimRectangleList)
         {
@@ -844,11 +823,61 @@ namespace h3::gpu::renderer::internal
             bool resetEnabled = (modeControl >> 21) & 1;
             uint32_t first = uint32_t(g_indexStaging.size());
             AppendTriangles(g_indexStaging, indices, primitive, resetIndex, resetEnabled);
+            draw->indexed = true;
             draw->firstIndex = g_indexBase + first;
             draw->count = uint32_t(g_indexStaging.size()) - first;
         }
         if (draw->count == 0)
+        {
+            g_freeDraws.push_back(std::move(draw));
             return;
+        }
+        SDL_Rect scissor = draw->scissor;
         g_pending.push_back(std::move(draw));
+
+        // EDRAM aliasing of color onto depth. After predicated tiling Halo
+        // restores the whole frame's depth buffer by drawing the resolved
+        // depth's bytes as 8_8_8_8 color into a target at the depth buffer's
+        // own EDRAM base; later draws (particles, the sky, transparents)
+        // depth-test against it. Host color and depth targets are separate
+        // textures, so turn what was drawn back into depth (or stencil).
+        // H3_NO_DEPTH_RESTORE=1 turns this off (to compare);
+        // H3_NO_STENCIL_RESTORE=1 only the stencil part.
+        static const bool noDepthRestore = EnvFlag("H3_NO_DEPTH_RESTORE");
+        if (mode == kEdramModeColorDepth && !noDepthRestore)
+        {
+            uint32_t depthInfo = ReadRegister(kRegRbDepthInfo);
+            uint32_t depthBase = EdramBase(depthInfo);
+            for (uint32_t i = 0; i < targets.colorCount; i++)
+            {
+                uint32_t colorInfo = ReadRegister(kRegColorInfo[i]);
+                // Writing all four bytes restores depth. Writing red alone
+                // writes the stencil byte (the low byte of the D24S8 word):
+                // each predicated tile starts by drawing an 8x8 dither
+                // pattern there, which also clears the upper bits; objects
+                // fading with distance then stencil-test their fade level
+                // against it (RB_STENCILREFMASK ref vs. mask 0x1F).
+                constexpr uint32_t kAllChannels = 0xF, kRedOnly = 0x1;
+                uint32_t channels = (colorMask >> (4 * i)) & 0xF;
+                bool written = (channels == kAllChannels || channels == kRedOnly) && (g_pixelShader->info.colorTargetMask & (1u << i));
+                if (!written || EdramBase(colorInfo) != depthBase || ColorFormat(colorInfo) != kColorFormat8888)
+                    continue;
+                RenderTarget* depth = GetRenderTarget(depthBase, DepthIsFloat(depthInfo), true);
+                if (!depth)
+                    break;
+                Flush();
+                if (channels == kRedOnly)
+                {
+                    static const bool noStencilRestore = EnvFlag("H3_NO_STENCIL_RESTORE");
+                    if (!noStencilRestore)
+                        RestoreStencilFromBytes(targets.color[i], depth->texture, TargetWidth(), TargetHeight(), scissor);
+                    DumpDepthAfterRestore(targets.color[i], targets.colorFormat[i], depth->texture);
+                    break;
+                }
+                RestoreDepthFromBytes(targets.color[i], depth->texture, TargetWidth(), TargetHeight(), scissor, DepthIsFloat(depthInfo));
+                DumpDepthAfterRestore(targets.color[i], targets.colorFormat[i], depth->texture);
+                break;
+            }
+        }
     }
 }

@@ -7,6 +7,7 @@
 
 #include "command_processor.h"
 #include "config/env.h"
+#include "kernel/objects.h"
 
 #include <ppc_recomp_shared.h>
 
@@ -47,6 +48,11 @@ namespace h3::gpu
         constexpr uint32_t kRegRbEdramTiming = 0x0F00;
         constexpr uint32_t kRegRbBcSpares = 0x0F0C;
         constexpr uint32_t kRegVblankStatus = 0x1951;  // bit 0: vblank pending
+        // Display controller gamma ramp registers (Xenia's register table).
+        constexpr uint32_t kRegDcLutRwMode = 0x1921;     // 0: 256-entry table, 1: piecewise linear
+        constexpr uint32_t kRegDcLutRwIndex = 0x1922;    // entry the next writes go to
+        constexpr uint32_t kRegDcLutSeqColor = 0x1923;   // table mode data
+        constexpr uint32_t kRegDcLutPwlData = 0x1924;    // PWL data: base : 16, delta : 16, one write per channel
         constexpr uint32_t kRegD1ModeViewportSize = 0x1961;
         constexpr uint32_t kRegisterCount = 0x8000;  // size of the register file (dwords)
         // Register indices in REG_RMW / COND_WRITE are 13 bits.
@@ -299,8 +305,72 @@ namespace h3::gpu
         // Register writes from the command stream. Scratch registers whose
         // bit is set in SCRATCH_UMSK are also written back to memory at
         // SCRATCH_ADDR, which is how the CPU sees GPU progress markers.
+        // The gamma ramp being written (DC_LUT_* registers) and the last
+        // complete one.
+        std::mutex g_gammaMutex;
+        GammaRamp g_gammaRamp;
+        uint32_t g_lutIndex = 0, g_lutComponent = 0;
+
+        // Tracks writes to the gamma ramp registers.
+        void WriteGammaRegister(uint32_t index, uint32_t value)
+        {
+            switch (index)
+            {
+            case kRegDcLutRwIndex:
+                g_lutIndex = value;
+                g_lutComponent = 0;
+                break;
+            case kRegDcLutPwlData:
+                if (ReadRegister(kRegDcLutRwMode) == 1 && g_lutIndex < GammaRamp::kSegments)
+                {
+                    std::lock_guard lock(g_gammaMutex);
+                    g_gammaRamp.base[g_lutIndex][g_lutComponent] = uint16_t(value);
+                    g_gammaRamp.delta[g_lutIndex][g_lutComponent] = uint16_t(value >> 16);
+                    g_gammaRamp.valid = true;
+                    // Red, green, blue, then the next entry.
+                    if (++g_lutComponent == 3)
+                    {
+                        g_lutComponent = 0;
+                        g_lutIndex++;
+                    }
+                }
+                break;
+            case kRegDcLutSeqColor:
+                static bool logged = false;
+                if (!logged)
+                {
+                    logged = true;
+                    fprintf(stderr, "[gpu] 256-entry gamma table written; not applied (only the piecewise-linear ramp is)\n");
+                }
+                break;
+            default:
+                break;
+            }
+        }
+
         void CpWriteRegister(uint32_t index, uint32_t value)
         {
+            if (index >= kRegDcLutRwIndex && index <= kRegDcLutPwlData)
+                WriteGammaRegister(index, value);
+            // H3_LOG_REG_WRITES=<first>-<last> (register indices, hex): log
+            // command-stream writes to that range (the first 4096).
+            static const auto logRange = [] {
+                std::pair<uint32_t, uint32_t> range{ 1, 0 };
+                if (const char* spec = EnvString("H3_LOG_REG_WRITES"))
+                {
+                    char* end;
+                    range.first = uint32_t(strtoul(spec, &end, 16));
+                    range.second = *end == '-' ? uint32_t(strtoul(end + 1, nullptr, 16)) : range.first;
+                }
+                return range;
+            }();
+            constexpr uint32_t kMaxLoggedWrites = 4096;
+            static uint32_t logged = 0;
+            if (index >= logRange.first && index <= logRange.second && logged < kMaxLoggedWrites)
+            {
+                logged++;
+                fprintf(stderr, "[gpu] reg %04X = %08X\n", index, value);
+            }
             WriteRegister(index, value);
             if (index >= kRegScratch0 && index <= kRegScratch7)
             {
@@ -467,6 +537,10 @@ namespace h3::gpu
                         fprintf(stderr, "[gpu] stuck waiting on %s 0x%08X: (0x%08X & 0x%08X) func %u ref 0x%08X\n",
                             (waitInfo & kWaitMemory) ? "memory" : "register", address, PollValue(waitInfo, address), mask,
                             waitInfo & 7, ref);
+                        // What every guest thread waits on: the value comes
+                        // from the CPU (often D3D's interrupt callback
+                        // worker), so a stuck GPU is usually a stuck thread.
+                        kernel::DumpThreadWaits();
                         reported = true;
                     }
                     // PERF: spins (yielding) until the CPU writes the value;
@@ -545,6 +619,13 @@ namespace h3::gpu
                 uint32_t initiator = reader.Read();
                 WriteRegister(kRegVgtEventInitiator, initiator & kEventTypeMask);
                 uint32_t address = ReadRegister(kRegRbSampleCountAddr);
+                static const bool logZpd = EnvFlag("H3_LOG_ZPD");
+                if (logZpd)
+                {
+                    static uint32_t logged = 0;
+                    if (logged++ < 400)
+                        fprintf(stderr, "[gpu] zpd swap %u initiator %08X address %08X\n", g_swapCounter.load(), initiator, address);
+                }
                 if (address == 0)
                     break;
                 // Samples "passing" per event; any positive amount works.
@@ -727,6 +808,12 @@ namespace h3::gpu
     uint32_t MakePacketType3(uint32_t opcode, uint32_t payloadDwords)
     {
         return (3u << 30) | (((payloadDwords - 1) & 0x3FFF) << 16) | ((opcode & 0x7F) << 8);
+    }
+
+    GammaRamp CurrentGammaRamp()
+    {
+        std::lock_guard lock(g_gammaMutex);
+        return g_gammaRamp;
     }
 
     uint32_t ReadRegister(uint32_t index)

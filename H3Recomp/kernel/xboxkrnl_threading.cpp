@@ -185,6 +185,7 @@ PPC_FUNC(__imp__RtlEnterCriticalSection)
                 thread, cs, uint32_t(GuestRef<uint32_t>(cs + kCsOwningThread)),
                 int32_t(GuestRef<int32_t>(cs + kCsRecursionCount)), uint32_t(ctx.lr));
             DumpThreadWaits();
+            DumpHostBacktrace(uint32_t(GuestRef<uint32_t>(cs + kCsOwningThread)));
             static const bool trapOnStuck = EnvFlag("H3_TRAP_ON_STUCK");
             if (trapOnStuck)  // debugging: stop in an attached debugger
                 raise(SIGTRAP);

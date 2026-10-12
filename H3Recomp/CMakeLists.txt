@@ -10,6 +10,8 @@ add_executable(H3Recomp
     gpu/renderer/copy.cpp
     gpu/renderer/debug.cpp
     gpu/renderer/draw.cpp
+    gpu/renderer/memexport.cpp
+    gpu/renderer/pipelines.cpp
     gpu/renderer/resolve.cpp
     gpu/renderer/shaders.cpp
     gpu/renderer/targets.cpp
@@ -44,6 +46,7 @@ add_executable(H3Recomp
     kernel/xboxkrnl_modules.cpp
     kernel/xboxkrnl_objects.cpp
     kernel/xboxkrnl_rtl.cpp
+    kernel/xboxkrnl_strings.cpp
     kernel/xboxkrnl_threading.cpp
     kernel/xboxkrnl_video.cpp
     video/bink_view.cpp
@@ -57,6 +60,8 @@ add_executable(H3Recomp
 )
 
 target_include_directories(H3Recomp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# xxHash (header only, vendored by XenonRecomp): fast hashing of texture memory.
+target_include_directories(H3Recomp PRIVATE ${PROJECT_SOURCE_DIR}/thirdparty/XenonRecomp/thirdparty/xxHash)
 find_package(SDL3 REQUIRED CONFIG)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SHADERC REQUIRED IMPORTED_TARGET shaderc)

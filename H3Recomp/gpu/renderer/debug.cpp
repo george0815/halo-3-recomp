@@ -71,6 +71,7 @@ namespace h3::gpu::renderer::internal
 
     void DumpTexture(SDL_GPUTexture* texture, uint32_t width, uint32_t height, const char* path, SDL_GPUTextureFormat format)
     {
+        FenceMemExports();  // this submits g_commands
         bool half = format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
         uint32_t bytes = width * height * (half ? 8 : 4);
         SDL_GPUTransferBufferCreateInfo info{ SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, bytes, 0 };
@@ -90,6 +91,17 @@ namespace h3::gpu::renderer::internal
         SDL_ReleaseGPUFence(g_device, fence);
 
         void* pixels = SDL_MapGPUTransferBuffer(g_device, download, false);
+        // R32F (depth) values are mostly tiny with reversed depth and show
+        // as black: also save the raw floats as <path>.f32 for inspection.
+        if (format == SDL_GPU_TEXTUREFORMAT_R32_FLOAT)
+        {
+            std::string rawPath = std::string(path) + ".f32";
+            if (FILE* raw = fopen(rawPath.c_str(), "wb"))
+            {
+                fwrite(pixels, 4, size_t(width) * height, raw);
+                fclose(raw);
+            }
+        }
         if (half)
             HalfToRgba8(pixels, width, height, path);
         else if (format != SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)
@@ -125,6 +137,57 @@ namespace h3::gpu::renderer::internal
         DumpTexture(targets.color[index], kDumpTargetWidth * g_renderScale, kDumpTargetHeight * g_renderScale, path, targets.colorFormat[index]);
     }
 
+    void DumpAroundPrimitive(uint32_t primitive, bool after)
+    {
+        // H3_DUMP_PRIM=<primitive type> (with H3_DUMP_FRAME): save color
+        // target 0 right before and after every draw of that primitive type
+        // (draw_<frame>_<n>_before/after.png), e.g. 17 for the tessellated
+        // water, which may be hidden on screen.
+        static const char* setting = EnvString("H3_DUMP_PRIM");
+        static const uint32_t wanted = setting ? uint32_t(atoi(setting)) : 0;
+        static const uint32_t dumpFrame = EnvNumber("H3_DUMP_FRAME");
+        if (!setting || primitive != wanted || g_swaps + 1 != dumpFrame)
+            return;
+        Flush();
+        const TargetSet& targets = CurrentTargetSet();
+        if (!targets.color[0])
+            return;
+        char path[64];
+        snprintf(path, sizeof(path), "draw_%u_%04u_%s.png", dumpFrame, g_frameDraws, after ? "after" : "before");
+        DumpTexture(targets.color[0], kDumpTargetWidth * g_renderScale, kDumpTargetHeight * g_renderScale, path, targets.colorFormat[0]);
+    }
+
+    void DumpDepthAfterRestore(SDL_GPUTexture* bytes, SDL_GPUTextureFormat bytesFormat, SDL_GPUTexture* depth)
+    {
+        // H3_DUMP_RESTORE=<frame>: after each depth restore in that frame,
+        // save the color target holding the depth bytes
+        // (restore_<frame>_<n>_bytes.png) and the depth target as floats
+        // (restore_<frame>_<n>_depth.png + .f32), both in sample space.
+        static const uint32_t dumpFrame = EnvNumber("H3_DUMP_RESTORE");
+        if (!dumpFrame || g_swaps + 1 != dumpFrame)
+            return;
+        static SDL_GPUTexture* floats = nullptr;
+        if (!floats)
+        {
+            SDL_GPUTextureCreateInfo info{};
+            info.type = SDL_GPU_TEXTURETYPE_2D;
+            info.format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
+            info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+            info.width = TargetWidth();
+            info.height = TargetHeight();
+            info.layer_count_or_depth = 1;
+            info.num_levels = 1;
+            floats = SDL_CreateGPUTexture(g_device, &info);
+        }
+        char path[64];
+        snprintf(path, sizeof(path), "restore_%u_%04u_bytes.png", dumpFrame, g_frameDraws);
+        DumpTexture(bytes, kDumpTargetWidth * g_renderScale, kDumpTargetHeight * g_renderScale, path, bytesFormat);
+        ConvertCopy(depth, floats, SDL_GPU_TEXTUREFORMAT_R32_FLOAT, TargetWidth(), TargetHeight(), 0, 0, 0, 0,
+            kDumpTargetWidth * g_renderScale, kDumpTargetHeight * g_renderScale, CopyMode::Value);
+        snprintf(path, sizeof(path), "restore_%u_%04u_depth.png", dumpFrame, g_frameDraws);
+        DumpTexture(floats, kDumpTargetWidth * g_renderScale, kDumpTargetHeight * g_renderScale, path, SDL_GPU_TEXTUREFORMAT_R32_FLOAT);
+    }
+
     void DumpMemoryAtSwap()
     {
         // H3_DUMP_MEMORY=<frame>:<address>:<bytes>[,...]: save guest memory
@@ -158,7 +221,7 @@ namespace h3::gpu::renderer::internal
         }
     }
 
-    void DumpFrameAtSwap(uint32_t frontbuffer, SDL_GPUTexture* texture, uint32_t width, uint32_t height)
+    void DumpFrameAtSwap(uint32_t frontbuffer, SDL_GPUTexture* texture, uint32_t width, uint32_t height, SDL_GPUTextureFormat format)
     {
         // H3_DUMP_FRAME=<n>: save the n-th presented frame as frame_<n>.png
         // (or, with H3_DUMP_ADDRESS, the resolved texture at that address).
@@ -171,7 +234,6 @@ namespace h3::gpu::renderer::internal
         bool snapshot = snapshotEvery != 0 && g_swaps % snapshotEvery == 0 && g_swaps >= snapshotFrom;
         if (!((dumpFrame != 0 && g_swaps == dumpFrame) || snapshot) || dumpResolves || !texture)
             return;
-        SDL_GPUTextureFormat format = FindResolved(frontbuffer)->hostFormat;
         if (const char* address = EnvString("H3_DUMP_ADDRESS"))
             if (ResolvedTexture* resolved = FindResolved(uint32_t(strtoul(address, nullptr, 16))))
                 texture = resolved->texture, width = resolved->pitch * g_renderScale, height = resolved->height * g_renderScale,

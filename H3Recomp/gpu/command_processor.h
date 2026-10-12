@@ -39,6 +39,22 @@ namespace h3::gpu
     // A type-3 packet header (VdSwap builds its packet with this).
     uint32_t MakePacketType3(uint32_t opcode, uint32_t payloadDwords);
 
+    // The display controller's gamma ramp, which the console applies to the
+    // front buffer at scanout (D3D programs it through the DC_LUT_*
+    // registers in the command stream). Piecewise linear: 128 segments over
+    // 10-bit input, each with a base and a slope per channel, as 16-bit
+    // values where 0xFFC0 is 1.0 (10 bits, shifted left 6). Xenia applies it
+    // the same way when presenting.
+    struct GammaRamp
+    {
+        static constexpr uint32_t kSegments = 128;
+        bool valid = false;  // a ramp has been written
+        uint16_t base[kSegments][3] = {};
+        uint16_t delta[kSegments][3] = {};
+    };
+    // The latest ramp (thread-safe copy).
+    GammaRamp CurrentGammaRamp();
+
     // GPU register access (big-endian words at kGpuRegisterBase).
     uint32_t ReadRegister(uint32_t index);
     void WriteRegister(uint32_t index, uint32_t value);

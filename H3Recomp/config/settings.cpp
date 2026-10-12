@@ -96,6 +96,10 @@ namespace h3::config
                     video.vsync = ParseBool(value);
                 else if (key == "render_scale")
                     video.renderScale = std::clamp(atoi(value.c_str()), 1, kMaxRenderScale);
+                else if (key == "precompile_shaders")
+                    video.precompileShaders = ParseBool(value);
+                else if (key == "async_shaders")
+                    video.asyncShaders = ParseBool(value);
             }
             else if (section == "profile")
             {
@@ -219,7 +223,9 @@ namespace h3::config
             << "height = " << video.height << "\n"
             << "fullscreen = " << BoolText(video.fullscreen) << "\n"
             << "vsync = " << BoolText(video.vsync) << "\n"
-            << "render_scale = " << video.renderScale << "\n\n";
+            << "render_scale = " << video.renderScale << "\n"
+            << "precompile_shaders = " << BoolText(video.precompileShaders) << "\n"
+            << "async_shaders = " << BoolText(video.asyncShaders) << "\n\n";
 
         const ProfileSettings& profile = settings.profile;
         out << "[profile]\n"

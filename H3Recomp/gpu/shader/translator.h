@@ -35,11 +35,15 @@ namespace h3::gpu::shader
     //                            W not reciprocal,
     //                            bit 9: snap screen-space corners to guest
     //                            pixels (render scale above 1),
+    //                            bit 10: tessellated triangle patches,
     //                            bits 12-15: clamp color output i to 0..1
     //                            (fixed-point targets kept as host floats)
     //   uint  rect_indices;      rectangle lists: dword offset of the guest
     //                            vertex indices (3 per rectangle, host-endian)
     //                            in the vertex memory buffer
+    //   uint  tess_segments;     tessellated triangle patches (flags bit 10):
+    //                            segments per patch edge of the host grid
+    //   uint  tess_patch_base;   added to the patch index (VGT_INDX_OFFSET)
     //   uvec4 tfetch[32];        per texture fetch constant: x = swizzle,
     //                            y = sign modes, z = exp adjust, w bits
     //                            0-7 = apply them (textures decoded from
@@ -74,8 +78,17 @@ namespace h3::gpu::shader
         uint32_t storageBufferBinding = 0;  // vertex shaders: after the textures
         uint32_t colorTargetMask = 0;       // pixel shaders: color exports written
         bool writesDepth = false;
+        bool writesPosition = false;  // vertex shaders: exports a position
+        bool usesMemExport = false;   // vertex shaders: memory exports (eA/eM#; run as compute, see Translate)
+        // Float constants feeding eA: candidates for the memexport stream
+        // constant (which says where the shader writes).
+        std::vector<uint32_t> memExportStreamConstants;
         bool usesKill = false;
         uint32_t interpolatorMask = 0;  // vertex shaders: interpolators written
+        // Float constants read: one past the highest c[] index used directly,
+        // or all of them when indexed by an address register. The renderer
+        // copies and uploads only these.
+        uint32_t floatConstantCount = 0;
     };
 
     struct TranslationResult
@@ -86,8 +99,11 @@ namespace h3::gpu::shader
         ShaderInfo info;
     };
 
-    // dwords are host-endian (swap guest memory first).
-    TranslationResult Translate(bool isVertex, const uint32_t* dwords, uint32_t dwordCount);
+    // dwords are host-endian (swap guest memory first). compute (vertex
+    // shaders): emit a compute shader running the vertex shader once per
+    // invocation with its memory exports stored to a buffer (the memexport
+    // variant; layout and uniforms in translator.cpp, kMemExportFunctions).
+    TranslationResult Translate(bool isVertex, const uint32_t* dwords, uint32_t dwordCount, bool compute = false);
 
     // Microcode disassembly, for debugging the translator.
     std::string Disassemble(bool isVertex, const uint32_t* dwords, uint32_t dwordCount);

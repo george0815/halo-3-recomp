@@ -108,6 +108,14 @@ namespace h3::gpu::renderer
         g_noWriteBack = EnvFlag("H3_NO_WRITEBACK");
         CreatePlaceholders(device);
 
+        // Shader compilation (pipelines.cpp): asynchronous if asked
+        // (H3_ASYNC_SHADERS=1/0 overrides), and warm-up from the manifest
+        // unless turned off (H3_NO_WARMUP).
+        const config::VideoSettings& video = config::Active().video;
+        g_asyncShaders = EnvNumber("H3_ASYNC_SHADERS", video.asyncShaders ? 1 : 0) != 0;
+        if (video.precompileShaders && !EnvFlag("H3_NO_WARMUP"))
+            StartShaderWarmup();
+
         g_enabled = true;
         return true;
     }
@@ -124,6 +132,55 @@ namespace h3::gpu::renderer
         return g_enabled;
     }
 
+    namespace
+    {
+        // The console's display controller applies the gamma ramp D3D
+        // programmed (gpu::GammaRamp) to the front buffer at scanout. Do the
+        // same: run the frame through it into a presentation texture (two,
+        // alternating, so the window can still be showing the last one) and
+        // show that instead. H3_NO_GAMMA=1 shows the front buffer as is.
+        void ApplyDisplayGamma(Frame& frame, SDL_GPUTextureFormat& format)
+        {
+            static const bool disabled = EnvFlag("H3_NO_GAMMA");
+            if (disabled || !frame.texture)
+                return;
+            GammaRamp ramp = CurrentGammaRamp();
+            if (!ramp.valid)
+                return;
+            struct Presentation
+            {
+                SDL_GPUTexture* textures[2] = {};
+                uint32_t next = 0;
+            };
+            // By size; textures are never released, since the window keeps
+            // wrappers of them (render scale or mode changes add a set).
+            static std::unordered_map<uint64_t, Presentation> presentations;
+            Presentation& presentation = presentations[(uint64_t(frame.width) << 32) | frame.height];
+            SDL_GPUTexture*& target = presentation.textures[presentation.next];
+            presentation.next ^= 1;
+            if (!target)
+            {
+                SDL_GPUTextureCreateInfo info{};
+                info.type = SDL_GPU_TEXTURETYPE_2D;
+                info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+                info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+                info.width = frame.width;
+                info.height = frame.height;
+                info.layer_count_or_depth = 1;
+                info.num_levels = 1;
+                target = SDL_CreateGPUTexture(g_device, &info);
+                if (!target)
+                    return;
+            }
+            ApplyGammaRamp(frame.texture, int32_t(frame.x), int32_t(frame.y), target, frame.width, frame.height, ramp);
+            frame.texture = target;
+            frame.textureWidth = frame.width;
+            frame.textureHeight = frame.height;
+            frame.x = frame.y = 0;
+            format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        }
+    }
+
     void OnShaderLoad(uint32_t type, const uint32_t* dwords, uint32_t dwordCount)
     {
         if (!g_enabled)
@@ -134,7 +191,33 @@ namespace h3::gpu::renderer
 
     void OnDraw(uint32_t initiator, uint32_t indexBase, uint32_t dmaSize)
     {
+        // H3_SKIP_DRAWS=<first>-<last>[,<first>-<last>...]: drop those draws
+        // (numbered like H3_GPU_CAPTURE's "draw #n") in every frame, to
+        // bisect which draw produces an artifact.
+        static const std::vector<std::pair<uint32_t, uint32_t>> skipRanges = [] {
+            std::vector<std::pair<uint32_t, uint32_t>> ranges;
+            for (const char* p = EnvString("H3_SKIP_DRAWS"); p && *p;)
+            {
+                uint32_t first = 0, last = 0;
+                int consumed = 0;
+                if (sscanf(p, "%u-%u%n", &first, &last, &consumed) != 2)
+                    break;
+                ranges.emplace_back(first, last);
+                p += consumed;
+                if (*p == ',')
+                    p++;
+            }
+            return ranges;
+        }();
+        for (const auto& [first, last] : skipRanges)
+            if (g_frameDraws >= first && g_frameDraws <= last)
+            {
+                g_frameDraws++;
+                return;
+            }
+        DumpAroundPrimitive(initiator & 0x3F, false);
         Draw(initiator, indexBase, dmaSize);
+        DumpAroundPrimitive(initiator & 0x3F, true);
         DumpAfterDraw();
         g_frameDraws++;
     }
@@ -154,6 +237,7 @@ namespace h3::gpu::renderer
 
         // The frame to show: whatever was resolved to the front buffer.
         Frame frame;
+        SDL_GPUTextureFormat frameFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
         if (ResolvedTexture* texture = FindResolved(frontbuffer))
         {
             // The host texture is at the render scale.
@@ -162,6 +246,8 @@ namespace h3::gpu::renderer
             frame.textureHeight = texture->HostHeight();
             frame.width = std::min(width ? width : texture->pitch, texture->pitch) * g_renderScale;
             frame.height = std::min(height ? height : texture->height, texture->height) * g_renderScale;
+            frameFormat = texture->hostFormat;
+            ApplyDisplayGamma(frame, frameFormat);
         }
 
         g_swaps++;
@@ -169,14 +255,20 @@ namespace h3::gpu::renderer
         DumpMemoryAtSwap();
         EndFrameBuffers();
         PollWriteBacks();
+        PollMemExports();
+        TrimTextureCache();
+        TrimResolvedViews();
         // H3_LOG_FPS: how many pipelines and shaders exist (creating them
         // stalls this thread).
         static const bool logCounts = EnvFlag("H3_LOG_FPS");
         if (logCounts && g_swaps % kCountLogInterval == 0)
-            fprintf(stderr, "[render] frame %u: %zu pipelines, %zu shaders, %zu textures\n", g_swaps, PipelineCount(), ShaderCount(),
-                TextureCount());
-        DumpFrameAtSwap(frontbuffer, frame.texture, frame.width, frame.height);
+            fprintf(stderr,
+                "[render] frame %u: %zu pipelines, %zu shaders, %zu textures (%llu MB), %zu resolve views, %llu texture uploads (%llu MB) so far\n",
+                g_swaps, PipelineCount(), ShaderCount(), TextureCount(), (unsigned long long)(TextureBytes() >> 20), ResolvedViewCount(),
+                (unsigned long long)g_textureUploads, (unsigned long long)(g_textureUploadBytes >> 20));
+        DumpFrameAtSwap(frontbuffer, frame.texture, frame.width, frame.height, frameFormat);
 
+        FenceMemExports();
         if (g_commands)
         {
             SDL_SubmitGPUCommandBuffer(g_commands);

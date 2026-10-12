@@ -164,10 +164,40 @@ void main()
     int count = (rectList && corner >= 3) ? 3 : 1;
     vec4 p[3];
     vec4 o[3][16];
+    // Tessellated triangle patches (flags bit 10): no hardware tessellator,
+    // so every patch is drawn as a uniform grid of tess_segments segments
+    // per edge (3 * segments^2 host vertices). Grid point (a, b), a = row
+    // 0..n from the first corner, b = 0..a, has barycentrics
+    // ((n - a) / n, (a - b) / n, b / n) for the patch's corners 0, 1, 2;
+    // row r holds 2r + 1 triangles, upward ones (r, j) (r+1, j) (r+1, j+1)
+    // and downward ones (r, j) (r+1, j+1) (r, j+1), both wound like the
+    // patch itself.
+    bool tessellated = (xe_sys.flags & 1024u) != 0u;
+    vec3 domain = vec3(0.0);
+    int patchIndex = 0;
+    if (tessellated)
+    {
+        int n = int(max(xe_sys.tess_segments, 1u));
+        int perPatch = 3 * n * n;
+        patchIndex = gl_VertexIndex / perPatch + int(xe_sys.tess_patch_base);
+        int local = gl_VertexIndex % perPatch;
+        int triangle = local / 3, point = local % 3;
+        int row = int(sqrt(float(triangle)));
+        // sqrt rounding: make row * row <= triangle < (row + 1)^2 exact.
+        if (row * row > triangle) row--;
+        if ((row + 1) * (row + 1) <= triangle) row++;
+        int k = triangle - row * row, j = k >> 1;
+        ivec2 grid;  // (a, b)
+        if ((k & 1) == 0)
+            grid = point == 0 ? ivec2(row, j) : (point == 1 ? ivec2(row + 1, j) : ivec2(row + 1, j + 1));
+        else
+            grid = point == 0 ? ivec2(row, j) : (point == 1 ? ivec2(row + 1, j + 1) : ivec2(row, j + 1));
+        domain = vec3(float(n - grid.x), float(grid.x - grid.y), float(grid.y)) / float(n);
+    }
     for (int i = 0; i < count; i++)
     {
-        int index = !rectList ? gl_VertexIndex : int(xe_memory[base + uint(count == 1 ? corner : i)]);
-        xe_vertex_shader(index, p[i], o[i]);
+        int index = tessellated ? patchIndex : (!rectList ? gl_VertexIndex : int(xe_memory[base + uint(count == 1 ? corner : i)]));
+        xe_vertex_shader(index, domain, p[i], o[i]);
     }
 
     vec4 position = p[0];
@@ -201,6 +231,154 @@ void main()
 }
 )";
 
+        // Memory export (memexport) for the compute variant of a vertex
+        // shader (Translate's compute flag). The guest writes eA (export 32:
+        // the stream constant plus the element index in y's mantissa) and
+        // eM0-4 (exports 33-37: consecutive elements); each alloc and the
+        // end of the shader store what was written (Xenia's
+        // ExportToMemory). Each stored dword is appended to xe_export as an
+        // (address, value) record: xe_export[0] counts them (atomically),
+        // records start at dword 2, at most xe_export_capacity of them. Only
+        // addresses inside xe_export_streams (x = guest byte address, y =
+        // bytes) are recorded. The renderer applies the records to guest
+        // memory once the GPU is done. Formats of 32 bits and more per
+        // element only (8/16-bit elements would need read-modify-write; none
+        // seen).
+        const char* kMemExportFunctions = R"(
+vec4 xe_eA = vec4(0.0);
+vec4 xe_eM[5];
+uint xe_eM_written = 0u;
+
+// Records one dword of guest memory (byte address) if it's in a stream.
+void xe_export_store(uint address, uint value)
+{
+    for (int i = 0; i < 4; i++)
+    {
+        uvec4 stream = xe_export_streams[i];
+        if (address >= stream.x && address - stream.x < stream.y)
+        {
+            uint record = atomicAdd(xe_export[0], 1u);
+            if (record < xe_export_capacity)
+            {
+                xe_export[2u + record * 2u] = address;
+                xe_export[3u + record * 2u] = value;
+            }
+            return;
+        }
+    }
+}
+
+// A float to a normalized/integer field of `bits` bits (low bits of the
+// result), as the format's number type says (SurfaceNumberFormat: bit 0
+// signed, bit 1 integer, 7 float).
+uint xe_export_fixed(float v, uint bits, uint number)
+{
+    float maxValue = float((1u << (((number & 1u) != 0u) ? bits - 1u : bits)) - 1u);
+    if (isnan(v))
+        v = 0.0;
+    if ((number & 2u) == 0u)  // normalized
+        v *= maxValue;
+    v = (number & 1u) != 0u ? clamp(v, -maxValue, maxValue) : clamp(v, 0.0, maxValue);
+    int i = int(v < 0.0 ? v - 0.5 : v + 0.5);
+    return uint(i) & ((1u << bits) - 1u);
+}
+
+// Endian swap of a 128-bit group (Endian128: 0 none, 1 8in16, 2 8in32,
+// 3 16in32, 4 8in64, 5 8in128).
+uvec4 xe_export_swap(uvec4 v, uint mode)
+{
+    if (mode <= 3u)
+        return uvec4(xe_swap(v.x, mode), xe_swap(v.y, mode), xe_swap(v.z, mode), xe_swap(v.w, mode));
+    v = uvec4(xe_swap(v.x, 2u), xe_swap(v.y, 2u), xe_swap(v.z, 2u), xe_swap(v.w, 2u));
+    return mode == 4u ? v.yxwz : v.wzyx;
+}
+
+// Stores the eM# written since the last flush.
+void xe_memexport_flush()
+{
+    if (xe_eM_written == 0u)
+        return;
+    uint written = xe_eM_written;
+    xe_eM_written = 0u;
+    uvec4 a = floatBitsToUint(xe_eA);
+    if ((a.x >> 30) != 1u || (a.y >> 23) != 0x96u || (a.z >> 23) != 0x96u || (a.w >> 23) != 0x96u)
+        return;
+    uint base = a.x << 2;
+    uint index0 = a.y & 0x7FFFFFu, count = a.w & 0x7FFFFFu;
+    uint endian = a.z & 7u, format = (a.z >> 8) & 63u, number = (a.z >> 16) & 7u;
+    bool swapRedBlue = (a.z & (1u << 19)) != 0u;
+    for (uint i = 0u; i < 5u; i++)
+    {
+        if ((written & (1u << i)) == 0u || index0 + i >= count)
+            continue;
+        vec4 v = swapRedBlue ? xe_eM[i].zyxw : xe_eM[i];
+        uvec4 packed = uvec4(0u);
+        uint dwords = 1u;
+        switch (format)
+        {
+        case 6u:   // k_8_8_8_8
+            packed.x = xe_export_fixed(v.x, 8u, number) | (xe_export_fixed(v.y, 8u, number) << 8) |
+                (xe_export_fixed(v.z, 8u, number) << 16) | (xe_export_fixed(v.w, 8u, number) << 24);
+            break;
+        case 7u:   // k_2_10_10_10
+            packed.x = xe_export_fixed(v.x, 10u, number) | (xe_export_fixed(v.y, 10u, number) << 10) |
+                (xe_export_fixed(v.z, 10u, number) << 20) | (xe_export_fixed(v.w, 2u, number) << 30);
+            break;
+        case 25u:  // k_16_16
+            packed.x = xe_export_fixed(v.x, 16u, number) | (xe_export_fixed(v.y, 16u, number) << 16);
+            break;
+        case 26u:  // k_16_16_16_16
+            packed.xy = uvec2(xe_export_fixed(v.x, 16u, number) | (xe_export_fixed(v.y, 16u, number) << 16),
+                xe_export_fixed(v.z, 16u, number) | (xe_export_fixed(v.w, 16u, number) << 16));
+            dwords = 2u;
+            break;
+        case 31u:  // k_16_16_FLOAT
+            packed.x = packHalf2x16(v.xy);
+            break;
+        case 32u:  // k_16_16_16_16_FLOAT
+            packed.xy = uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw));
+            dwords = 2u;
+            break;
+        case 36u:  // k_32_FLOAT
+            packed.x = floatBitsToUint(v.x);
+            break;
+        case 37u:  // k_32_32_FLOAT
+            packed.xy = floatBitsToUint(v.xy);
+            dwords = 2u;
+            break;
+        case 38u:  // k_32_32_32_32_FLOAT
+            packed = floatBitsToUint(v);
+            dwords = 4u;
+            break;
+        default:
+            return;  // unsupported element format
+        }
+        packed = xe_export_swap(packed, endian);
+        uint address = base + (index0 + i) * dwords * 4u;
+        for (uint d = 0u; d < dwords; d++)
+            xe_export_store(address + d * 4u, packed[d]);
+    }
+}
+)";
+
+        // Compute entry point for the memexport variant: one invocation per
+        // guest vertex (xe_export_vertex_count of them), indices from
+        // xe_memory at xe_export_index_offset when xe_export_indexed, else
+        // i + xe_export_index_base.
+        const char* kComputeMain = R"(
+layout(local_size_x = 64) in;
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= xe_export_vertex_count)
+        return;
+    int index = xe_export_indexed != 0u ? int(xe_memory[xe_export_index_offset + i]) : int(i + xe_export_index_base);
+    vec4 position;
+    vec4 outputs[16];
+    xe_vertex_shader(index, vec3(0.0), position, outputs);
+}
+)";
+
         struct SourceOperand
         {
             std::string base;  // the vec4 expression before swizzling
@@ -213,8 +391,8 @@ void main()
         {
         public:
             // Translates one shader: microcode dwords (host-endian), vertex or pixel.
-            Translator(bool isVertex, const uint32_t* dwords, uint32_t count)
-                : m_vertex(isVertex), m_dwords(dwords), m_count(count)
+            Translator(bool isVertex, const uint32_t* dwords, uint32_t count, bool compute = false)
+                : m_vertex(isVertex), m_compute(isVertex && compute), m_dwords(dwords), m_count(count)
             {
                 m_info.isVertex = isVertex;
             }
@@ -288,6 +466,7 @@ void main()
 
         private:
             bool m_vertex;
+            bool m_compute;  // the memexport compute variant of a vertex shader
             const uint32_t* m_dwords;
             uint32_t m_count;
             ShaderInfo m_info;
@@ -419,8 +598,13 @@ void main()
                 uint32_t next = index + 1;
                 switch (cf.Opcode())
                 {
-                case CfOpcode::Nop:
                 case CfOpcode::Alloc:
+                    // A new export allocation stores the previous memexport.
+                    if (m_compute)
+                        Line("xe_memexport_flush();");
+                    Line(Format("pc = %u; break;", next));
+                    return;
+                case CfOpcode::Nop:
                 case CfOpcode::MarkVsFetchDone:
                     Line(Format("pc = %u; break;", next));
                     return;
@@ -535,6 +719,20 @@ void main()
                 return Format("r[%u]", index & (kMaxRegisters - 1));
             }
 
+            // GLSL for float constant `index`, optionally indexed by an
+            // address register (a0 when registerRelative, else the loop
+            // index aL). Notes the constants used in m_info.
+            std::string ConstantRegister(uint32_t index, bool addressed, bool registerRelative)
+            {
+                if (addressed)
+                {
+                    m_info.floatConstantCount = kFloatConstantCount;  // any of them
+                    return Format("c[clamp(%u + %s, 0, %u)]", index, registerRelative ? "a0" : "aL", kFloatConstantCount - 1);
+                }
+                m_info.floatConstantCount = std::max(m_info.floatConstantCount, std::min(index + 1, kFloatConstantCount));
+                return Format("c[%u]", index);
+            }
+
             // Decodes ALU source operand i (1-3): register or constant, relative addressing,
             // swizzle, negation, absolute value.
             SourceOperand AluSource(const AluInstruction& alu, uint32_t i)
@@ -550,11 +748,7 @@ void main()
                 }
                 else
                 {
-                    if (alu.SrcConstAddressed(i))
-                        op.base = Format("c[clamp(%u + %s, 0, %u)]", reg, alu.ConstAddressRegisterRelative() ? "a0" : "aL",
-                            kFloatConstantCount - 1);
-                    else
-                        op.base = Format("c[%u]", reg);
+                    op.base = ConstantRegister(reg, alu.SrcConstAddressed(i), alu.ConstAddressRegisterRelative());
                     op.absolute = alu.AbsConstants();
                 }
                 return op;
@@ -745,9 +939,20 @@ void main()
                     if (index == kExportVsPosition)
                     {
                         m_usesPosition = true;
+                        m_info.writesPosition = true;
                         return "xe_position";
                     }
-                    return "";  // point size / edge flag / kill vertex, memory export
+                    if (index == kExportAddress)
+                    {
+                        m_info.usesMemExport = true;
+                        return m_compute ? "xe_eA" : "";  // dropped outside the compute variant
+                    }
+                    if (index >= kExportData0 && index < kExportData0 + kMemExportElements)
+                    {
+                        m_info.usesMemExport = true;
+                        return m_compute ? Format("xe_eM[%u]", index - kExportData0) : "";
+                    }
+                    return "";  // point size / edge flag / kill vertex
                 }
                 if (index < 4)
                 {
@@ -802,10 +1007,7 @@ void main()
                     // Constant (W) and temporary register (X), both taking the
                     // third source's negation and abs_constants.
                     SourceOperand constant = AluSource(alu, 3);
-                    constant.base = alu.SrcConstAddressed(3)
-                        ? Format("c[clamp(%u + %s, 0, %u)]", alu.SrcReg(3), alu.ConstAddressRegisterRelative() ? "a0" : "aL",
-                              kFloatConstantCount - 1)
-                        : Format("c[%u]", alu.SrcReg(3));
+                    constant.base = ConstantRegister(alu.SrcReg(3), alu.SrcConstAddressed(3), alu.ConstAddressRegisterRelative());
                     constant.absolute = alu.AbsConstants();
                     SourceOperand temp = constant;
                     temp.base = TempRegister(alu.ScalarConstOpTempReg(), false);
@@ -852,7 +1054,19 @@ void main()
                             if (value)
                                 Line(Format("%s.%c = %s;", target.c_str(), kSwizzleChars[c], value));
                         }
+                        uint32_t dest = alu.VectorDest();
+                        if (m_compute && dest >= kExportData0 && dest < kExportData0 + kMemExportElements)
+                            Line(Format("xe_eM_written |= %uu;", 1u << (dest - kExportData0)));
                     }
+                    // The float constants feeding eA are memexport stream
+                    // constant candidates: the renderer checks them for the
+                    // stream signature to learn which memory gets written.
+                    if (m_vertex && alu.VectorDest() == kExportAddress)
+                        for (uint32_t i = 1; i <= 3; i++)
+                            if (!alu.SrcIsTemp(i) && !alu.SrcConstAddressed(i) &&
+                                std::find(m_info.memExportStreamConstants.begin(), m_info.memExportStreamConstants.end(),
+                                    alu.SrcReg(i)) == m_info.memExportStreamConstants.end())
+                                m_info.memExportStreamConstants.push_back(alu.SrcReg(i));
                 }
                 else
                 {
@@ -1160,6 +1374,22 @@ void main()
                         }
                         else if (offset)
                             coords = Format("(%s + %s / %s)", coords.c_str(), offsetVector.c_str(), size.c_str());
+
+                        // An instruction that forces point filtering (the
+                        // host sampler follows the fetch constant, which may
+                        // say linear): snap to the nearest host texel's
+                        // center. Matters for data that mustn't be blended,
+                        // such as depth read back as 8_8_8_8 bytes (Halo's
+                        // depth restore), where a linear blend of bytes
+                        // across a carry gives garbage depth.
+                        // Both after sub-texel quantization (xe_snap_texcoord).
+                        // Stacked textures: only x and y are texel positions.
+                        std::string hostSize = Format("vec2(textureSize(%s, 0).xy)", sampler.c_str());
+                        std::string xy = volume ? Format("%s.xy", coords.c_str()) : coords;
+                        std::string snapped = Format("xe_snap_texcoord(%s, %s)", xy.c_str(), hostSize.c_str());
+                        if (f.TextureMagFilter() == kTextureFilterPoint && f.TextureMinFilter() == kTextureFilterPoint)
+                            snapped = Format("((floor(%s * %s) + 0.5) / %s)", snapped.c_str(), hostSize.c_str(), hostSize.c_str());
+                        coords = volume ? Format("vec3(%s, %s.z)", snapped.c_str(), coords.c_str()) : snapped;
                     }
                     std::string sample;
                     float bias = f.TextureLodBias();
@@ -1239,15 +1469,18 @@ void main()
             // and main().
             std::string EmitShader()
             {
+                // SDL_GPU's descriptor sets: vertex 0 (resources) / 1
+                // (uniforms), fragment 2 / 3, compute 0 (read-only resources),
+                // 1 (read-write), 2 (uniforms).
                 uint32_t textureSet = m_vertex ? 0 : 2;
-                uint32_t uniformSet = m_vertex ? 1 : 3;
+                uint32_t uniformSet = m_compute ? 2 : (m_vertex ? 1 : 3);
 
                 std::string out = "#version 450\n";
                 out += Format("layout(std140, set = %u, binding = 0) uniform XeFloatConstants { vec4 c[%u]; };\n", uniformSet,
                     kFloatConstantCount);
                 out += Format("layout(std140, set = %u, binding = 1) uniform XeSystem\n{\n"
                               "    uvec4 bools[2];\n    uvec4 loops[8];\n    uvec4 vfetch[96];\n"
-                              "    vec4 ndc_scale;\n    vec4 ndc_offset;\n    uint ps_param_gen;\n    uint flags;\n    uint rect_indices;\n"
+                              "    vec4 ndc_scale;\n    vec4 ndc_offset;\n    uint ps_param_gen;\n    uint flags;\n    uint rect_indices;\n    uint tess_segments;\n    uint tess_patch_base;\n"
                               "    uvec4 tfetch[32];\n    vec4 color_exp_bias;\n    float alpha_ref;\n    float pixel_scale_x;\n    float pixel_scale_y;\n    float render_scale;\n    float target_width;\n    float target_height;\n} xe_sys;\n",
                     uniformSet);
                 for (const TextureBinding& texture : m_info.textures)
@@ -1257,7 +1490,16 @@ void main()
                 {
                     out += Format("layout(std430, set = 0, binding = %u) readonly buffer XeVertexMemory { uint xe_memory[]; };\n",
                         m_info.storageBufferBinding);
-                    out += "layout(location = 0) out vec4 xe_out[16];\n";
+                    if (m_compute)
+                    {
+                        out += "layout(std430, set = 1, binding = 0) buffer XeExport { uint xe_export[]; };\n";
+                        out += Format("layout(std140, set = %u, binding = 2) uniform XeExportInfo\n{\n"
+                                      "    uvec4 xe_export_streams[4];\n    uint xe_export_vertex_count;\n    uint xe_export_indexed;\n"
+                                      "    uint xe_export_index_offset;\n    uint xe_export_index_base;\n    uint xe_export_capacity;\n};\n",
+                            uniformSet);
+                    }
+                    else
+                        out += "layout(location = 0) out vec4 xe_out[16];\n";
                 }
                 else
                 {
@@ -1267,6 +1509,8 @@ void main()
                             out += Format("layout(location = %u) out vec4 xe_color%u_out;\n", i, i);
                 }
                 out += kPrelude;
+                if (m_compute)
+                    out += kMemExportFunctions;
 
                 if (m_vertex)
                 {
@@ -1304,6 +1548,19 @@ vec4 xe_max4(vec4 v)
     if (v.z > v.w) return vec4(v.z);
     return vec4(v.w);
 }
+// Texture coordinates quantized to 1/256 of a host texel, as texture units
+// address texels in fixed point (8 sub-texel bits). Interpolated
+// coordinates that the console delivers exactly on a texel edge (D3D's
+// integer pixel centers) come out a hair below it on the host, and nearest
+// filtering then picks the previous texel (Halo's depth restore read every
+// depth one texel up and left). A coordinate exactly on an edge picks the
+// texel after it, as on the console: the half-step bias (1/512 texel) makes
+// that unambiguous on the host and is invisible to linear filtering.
+vec2 xe_snap_texcoord(vec2 coords, vec2 size)
+{
+    return (round(coords * size * 256.0) + 0.5) / (256.0 * size);
+}
+
 // Host texels per guest texel of a fetch constant's texture (tfetch.w bits
 // 8-15; resolved textures are larger at a render scale).
 float xe_texture_scale(uint fetchConstant)
@@ -1382,7 +1639,7 @@ vec3 xe_cube_direction(vec3 stf)
 )";
 
                 if (m_vertex)
-                    out += "\nvoid xe_vertex_shader(int xe_vertex_index, out vec4 xe_position, out vec4 xe_outputs[16])\n{\n";
+                    out += "\nvoid xe_vertex_shader(int xe_vertex_index, vec3 xe_domain, out vec4 xe_position, out vec4 xe_outputs[16])\n{\n";
                 else
                     out += "\nvoid main()\n{\n";
                 out += "    vec4 r[64];\n    for (int i = 0; i < 64; i++) r[i] = vec4(0.0);\n";
@@ -1394,7 +1651,12 @@ vec3 xe_cube_direction(vec3 stf)
                 {
                     out += "    xe_position = vec4(0.0, 0.0, 0.0, 1.0);\n";
                     out += "    for (int i = 0; i < 16; i++) xe_outputs[i] = vec4(0.0);\n";
-                    out += "    r[0].x = float(xe_vertex_index);\n";
+                    // Tessellated patches (flags bit 10) get the patch's
+                    // domain location and index instead of a vertex index
+                    // (see kVertexMain).
+                    out += "    if ((xe_sys.flags & 1024u) != 0u)\n    {\n"
+                           "        r[0].xyz = xe_domain.zyx;\n        r[1].x = float(xe_vertex_index);\n    }\n"
+                           "    else\n        r[0].x = float(xe_vertex_index);\n";
                 }
                 else
                 {
@@ -1417,8 +1679,10 @@ vec3 xe_cube_direction(vec3 stf)
                 out += "        }\n    }\n";
                 if (m_vertex)
                 {
+                    if (m_compute)
+                        out += "    xe_memexport_flush();\n";
                     out += "}\n";
-                    out += kVertexMain;
+                    out += m_compute ? kComputeMain : kVertexMain;
                     return out;
                 }
                 // Alpha test (RB_COLORCONTROL): flags bits 5-7 compare
@@ -1442,9 +1706,9 @@ vec3 xe_cube_direction(vec3 stf)
         };
     }
 
-    TranslationResult Translate(bool isVertex, const uint32_t* dwords, uint32_t dwordCount)
+    TranslationResult Translate(bool isVertex, const uint32_t* dwords, uint32_t dwordCount, bool compute)
     {
-        return Translator(isVertex, dwords, dwordCount).Run();
+        return Translator(isVertex, dwords, dwordCount, compute).Run();
     }
 
     std::string Disassemble(bool isVertex, const uint32_t* dwords, uint32_t dwordCount)

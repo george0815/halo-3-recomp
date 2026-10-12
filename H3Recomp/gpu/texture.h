@@ -17,6 +17,7 @@ namespace h3::gpu::texture
     // Memory layout rules for Xenos textures (Xenia's texture_util.cc).
     constexpr uint32_t kTileSize = 32;               // tiled textures: pitch and height in 32-block tiles
     constexpr uint32_t kLinearRowAlignment = 256;    // linear textures: row pitch in bytes
+    constexpr uint32_t kDimension3DValue = 2;        // FetchConstant::dimension of a 3D texture
     constexpr uint32_t kLevelAlignment = 4096;       // each mip level / face / layer starts 4 KB aligned
     constexpr uint32_t kPackedMipMaxSize = 16;       // levels this small or smaller share a packed tile
     constexpr uint32_t kPackedMipMaxSizeLog2 = 4;
@@ -48,6 +49,9 @@ namespace h3::gpu::texture
         // tail's tile (set by MipLevels; otherwise Layout derives it).
         bool explicitOffset = false;
         uint32_t offsetX = 0, offsetY = 0;
+        // Bytes from one cube face to the next within this level (set by
+        // MipLevels for cube map mips; 0: FaceStride).
+        uint32_t sliceStride = 0;
     };
 
     // Decodes the 6 dwords of a texture fetch constant.
@@ -61,8 +65,12 @@ namespace h3::gpu::texture
     struct Decoded
     {
         SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_INVALID;
-        uint32_t width = 0, height = 0;  // host texture size (whole blocks for compressed formats)
+        // The texture's size. Compressed formats decode to whole 4x4 blocks,
+        // so the data can be larger (rowTexels x rows); the host texture must
+        // be the real size, or texture coordinates 0-1 would span the padding.
+        uint32_t width = 0, height = 0;
         uint32_t rowTexels = 0;          // upload row length in texels
+        uint32_t rows = 0;               // upload rows (texel rows in data)
         std::vector<uint8_t> data;
     };
 
@@ -72,12 +80,15 @@ namespace h3::gpu::texture
 
     // Distance between the faces of a cube map, or the layers of a stacked
     // texture (each a 2D level, 4 KB aligned).
-    inline uint32_t FaceStride(const FetchConstant& fetch) { return (GuestSize(fetch) + kLevelAlignment - 1) & ~(kLevelAlignment - 1); }
+    inline uint32_t FaceStride(const FetchConstant& fetch)
+    {
+        return fetch.sliceStride ? fetch.sliceStride : (GuestSize(fetch) + kLevelAlignment - 1) & ~(kLevelAlignment - 1);
+    }
 
     // Decodes the level the fetch constant describes from guest memory
-    // (pointing at its first byte) into out. False if the format isn't
-    // supported.
-    bool Decode(const FetchConstant& fetch, const uint8_t* guest, Decoded& out);
+    // (pointing at its first byte) into out; for 3D textures, depth slice
+    // `slice` of it. False if the format isn't supported.
+    bool Decode(const FetchConstant& fetch, const uint8_t* guest, Decoded& out, uint32_t slice = 0);
 
     // The fetch constant's swizzle for the host texture: formats with one
     // or two components come back as RRRR / RGGG (as on the console, per
@@ -89,9 +100,10 @@ namespace h3::gpu::texture
     // modes), 1 = 8-bit components, 2 = 16-bit components.
     uint32_t SignPrecision(const FetchConstant& fetch);
 
-    // Fetch constants for mip levels 1 on of a 2D texture (each decodes
-    // like a base level), as many as the fetch constant and the dimensions
-    // allow; empty if it has none.
+    // Fetch constants for mip levels 1 on of a 2D texture or cube map (each
+    // decodes like a base level; a cube level's six faces are sliceStride
+    // apart), as many as the fetch constant and the dimensions allow; empty
+    // if it has none.
     std::vector<FetchConstant> MipLevels(const FetchConstant& fetch);
 
     // The largest level the sampler may use, as a base level of its own:

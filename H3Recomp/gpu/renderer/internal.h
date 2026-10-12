@@ -3,16 +3,21 @@
 // The renderer is split by job across gpu/renderer/*.cpp:
 //
 //   shaders.cpp   translated shader cache (Xenos microcode -> SPIR-V)
+//   pipelines.cpp host shaders and pipelines: the manifest, warm-up and
+//                 asynchronous creation on worker threads
 //   copy.cpp      fullscreen copy/convert passes (EDRAM-style bit copies)
 //   targets.cpp   EDRAM render targets as host textures, format aliasing
 //   resolve.cpp   resolves (EDRAM -> memory), write-backs, resolved views
 //   textures.cpp  textures decoded from guest memory, samplers, binding
 //   draw.cpp      turning a draw packet into a recorded host draw; flushing
+//   memexport.cpp vertex shaders' memory exports, run as compute shaders
 //   debug.cpp     PNG/memory dumps for debugging
 //   ../renderer.cpp  initialization, the public entry points, presentation
 //
 // Everything runs on the command processor thread except Initialize and
-// AcquireFrame (gpu/renderer.h), so this state needs no locking.
+// AcquireFrame (gpu/renderer.h), so this state needs no locking; the one
+// exception is pipelines.cpp, whose shader and pipeline maps are shared with
+// its worker threads (and locked there).
 
 #pragma once
 
@@ -27,6 +32,7 @@
 #include <shaderc/shaderc.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -56,6 +62,9 @@ namespace h3::gpu::renderer::internal
     constexpr uint32_t kRegVgtMultiPrimIbResetIndx = 0x2103;  // strip/fan restart index
     constexpr uint32_t kRegSqContextMisc = 0x2181;   // bits 8-15: pixel parameter register
     constexpr uint32_t kRegPaSuVtxCntl = 0x2302;     // bit 0: pixel center (0 = D3D, integer centers)
+    constexpr uint32_t kRegVgtOutputPathCntl = 0x2284;  // bits 0-1: 1 = tessellation enabled
+    constexpr uint32_t kRegVgtHosCntl = 0x2285;      // bits 0-1: tessellation mode (discrete, continuous, adaptive)
+    constexpr uint32_t kRegVgtHosMaxTessLevel = 0x2286;  // float; the tessellator adds 1
 
     // RB_COLOR_INFO / RB_DEPTH_INFO fields.
     constexpr uint32_t kEdramBaseMask = 0xFFF;  // EDRAM base, in 80x16-sample tiles
@@ -81,6 +90,7 @@ namespace h3::gpu::renderer::internal
         kPrimTriangleStrip = 6,
         kPrimRectangleList = 8,
         kPrimQuadList = 13,
+        kPrimTrianglePatch = 17,  // with VGT_OUTPUT_PATH_CNTL tessellation enabled
     };
 
     // ------------------------------------------------------------------
@@ -160,11 +170,13 @@ namespace h3::gpu::renderer::internal
     // Small helpers
     // ------------------------------------------------------------------
 
-    // FNV-1a style hash, eight bytes at a time (shader microcode and texture
-    // memory get hashed often).
-    // PERF: textures are hashed whole when re-checked; a faster hash (xxHash,
-    // or hashing a sample of the memory) would cut texture check time.
+    // FNV-1a style hash, eight bytes at a time: keys, and the shader cache's
+    // file names (so it must never change, or every cached shader is lost).
     uint64_t Hash(const void* data, size_t size, uint64_t seed = 0xCBF29CE484222325ull);
+    // A fast hash for large data that's re-hashed often and never stored
+    // (texture memory, to see whether it changed): xxHash's XXH3, roughly
+    // ten times FNV's speed.
+    uint64_t ContentHash(const void* data, size_t size);
 
     // Prints a message the first time it's seen (for "unsupported X" notes
     // that would otherwise repeat every frame).
@@ -222,12 +234,22 @@ namespace h3::gpu::renderer::internal
     // ------------------------------------------------------------------
 
     // A translated guest shader.
+    // A host shader: one SPIR-V program, shared by every guest shader that
+    // translates to the same GLSL. Made on the GPU thread or a worker
+    // (pipelines.cpp); shader is set once it exists.
+    struct HostShader
+    {
+        std::atomic<SDL_GPUShader*> shader{ nullptr };
+        std::atomic<bool> failed{ false };
+    };
+
     struct Shader
     {
-        bool ok = false;               // translated and compiled
-        SDL_GPUShader* shader = nullptr;
+        bool ok = false;               // translated
+        HostShader* host = nullptr;    // the compiled program (maybe still compiling)
         shader::ShaderInfo info;       // what it reads (constants, fetches, textures)
-        std::string cacheName;         // SPIR-V file in the shader cache (for logs)
+        std::string cacheName;         // SPIR-V file in the shader cache (also its id)
+        std::vector<uint32_t> microcode;  // kept for memexport vertex shaders (compute variant, memexport.cpp)
     };
 
     // Shaders most recently loaded by the command stream (IM_LOAD).
@@ -243,6 +265,59 @@ namespace h3::gpu::renderer::internal
     size_t ShaderCount();
     // Compiles one of the renderer's own GLSL shaders (copies).
     SDL_GPUShader* CompileInternal(const char* glsl, bool vertex, uint32_t samplers, uint32_t uniformBuffers);
+    // The shader cache file name for translated GLSL ("<16 hex digits>.spv").
+    std::string ShaderCacheName(bool vertex, const std::string& glsl);
+    // SPIR-V for translated GLSL: from the shader cache, or compiled and
+    // stored there. Any thread.
+    enum class ShaderStage { Vertex, Fragment, Compute };
+    std::vector<uint8_t> CompileSpirv(ShaderStage stage, const std::string& glsl, const std::string& cacheName);
+    inline std::vector<uint8_t> CompileSpirv(bool vertex, const std::string& glsl, const std::string& cacheName)
+    {
+        return CompileSpirv(vertex ? ShaderStage::Vertex : ShaderStage::Fragment, glsl, cacheName);
+    }
+
+    // ------------------------------------------------------------------
+    // Shader and pipeline creation (pipelines.cpp)
+    // ------------------------------------------------------------------
+
+    // Async compilation (settings.ini async_shaders, H3_ASYNC_SHADERS):
+    // shaders and pipelines that aren't ready are made on worker threads and
+    // the draws needing them are skipped meanwhile.
+    inline bool g_asyncShaders = false;
+
+    // Everything a host pipeline is made from, as plain data (recorded in
+    // the shader cache's manifest and hashed as the pipeline's key, so no
+    // padding: keep it 16 uint32s after the ids, and value-initialize it).
+    struct PipelineDesc
+    {
+        uint64_t vs = 0, ps = 0;      // shader cache ids (ShaderCacheId)
+        uint32_t topology = 0;        // SDL_GPUPrimitiveType
+        uint32_t colorCount = 0;
+        uint32_t depthFormat = 0;     // SDL_GPUTextureFormat; 0 = no depth target
+        uint32_t colorFormats[4] = {};
+        uint32_t blend[4] = {};       // RB_BLENDCONTROL per target
+        uint32_t colorMask = 0;       // RB_COLOR_MASK
+        uint32_t depthControl = 0;    // RB_DEPTHCONTROL
+        uint32_t stencilMasks = 0;    // RB_STENCILREFMASK without the reference
+        uint32_t psColorTargetMask = 0;  // targets the pixel shader writes
+        uint32_t pad = 0;
+    };
+    static_assert(sizeof(PipelineDesc) == 16 + 16 * 4);
+
+    // The id in a shader cache name (its 16 hex digits).
+    uint64_t ShaderCacheId(const std::string& cacheName);
+    // The host shader for translated GLSL with a cache name: made now, or on
+    // a worker when async; shared with warm-up and other guest shaders.
+    HostShader* RequestHostShader(bool vertex, const std::string& glsl, uint32_t samplers, const std::string& cacheName);
+    // Whether a guest shader's program exists (wait: block until it does,
+    // unless it failed).
+    bool ShaderReady(const Shader& shader, bool wait);
+    // The pipeline for a description: null if it failed, or (async) while a
+    // worker creates it.
+    SDL_GPUGraphicsPipeline* GetPipeline(const PipelineDesc& desc);
+    // Starts recreating everything in the shader cache's manifest on worker
+    // threads (settings.ini precompile_shaders). Call once at start.
+    void StartShaderWarmup();
 
     // ------------------------------------------------------------------
     // Copies (copy.cpp)
@@ -274,6 +349,23 @@ namespace h3::gpu::renderer::internal
     void ConvertCopy(SDL_GPUTexture* source, SDL_GPUTexture* destination, SDL_GPUTextureFormat destinationFormat,
         uint32_t destinationWidth, uint32_t destinationHeight, int32_t sx, int32_t sy, int32_t dx, int32_t dy, uint32_t w,
         uint32_t h, CopyMode mode, bool depthFloat = false, float scale = 1.0f, int32_t samplesX = 1, int32_t samplesY = 1);
+
+    // Writes depth from 24_8 depth words drawn as 8_8_8_8 color (Halo's
+    // depth restore; see draw.cpp): the rectangle of source (in texels)
+    // into the same rectangle of the depth target.
+    void RestoreDepthFromBytes(SDL_GPUTexture* source, SDL_GPUTexture* depth, uint32_t width, uint32_t height, const SDL_Rect& rect,
+        bool depthFloat);
+
+    // Writes stencil from the red byte of 8_8_8_8 color drawn at the depth
+    // buffer's EDRAM base (Halo's per-tile stencil dither pattern; see
+    // draw.cpp): the rectangle of source (in texels) into the same
+    // rectangle of the depth target's stencil.
+    void RestoreStencilFromBytes(SDL_GPUTexture* source, SDL_GPUTexture* depth, uint32_t width, uint32_t height, const SDL_Rect& rect);
+
+    // Writes width x height of source (from sourceX, sourceY) through the
+    // display gamma ramp into an RGBA8 destination (presentation).
+    void ApplyGammaRamp(SDL_GPUTexture* source, int32_t sourceX, int32_t sourceY, SDL_GPUTexture* destination, uint32_t width,
+        uint32_t height, const GammaRamp& ramp);
 
     // Fills a rectangle of a render target with one color.
     void FillRect(SDL_GPUTexture* destination, SDL_GPUTextureFormat format, int32_t x, int32_t y, uint32_t w, uint32_t h,
@@ -361,6 +453,10 @@ namespace h3::gpu::renderer::internal
     void Resolve();
     // Completes write-backs whose GPU downloads finished (wait: all of them).
     void PollWriteBacks(bool wait = false);
+    // Frees views of resolved textures (ResolvedView) that went unused for
+    // a while. Once per frame. ResolvedViewCount is for logs.
+    void TrimResolvedViews();
+    size_t ResolvedViewCount();
 
     // ------------------------------------------------------------------
     // Textures (textures.cpp)
@@ -377,7 +473,9 @@ namespace h3::gpu::renderer::internal
         uint32_t psParamGen;
         uint32_t flags;            // kSystemFlag* below
         uint32_t rectIndices;
-        uint32_t pad;
+        uint32_t tessSegments;     // tessellated patches: segments per edge
+        uint32_t tessPatchBase;    // tessellated patches: first patch index
+        uint32_t pad[3];
         uint32_t textures[32][4];  // per texture fetch constant: swizzle, signs, exp adjust, enabled
         float colorExpBias[4];     // 2^RB_COLOR_INFO exp bias, per render target
         float alphaRef;
@@ -394,13 +492,21 @@ namespace h3::gpu::renderer::internal
     constexpr uint32_t kSystemFlagAlphaFuncShift = 5;    // 3 bits: alpha test function
     constexpr uint32_t kSystemFlagAlphaTest = 1u << 8;
     constexpr uint32_t kSystemFlagSnapToPixels = 1u << 9;  // snap vertices to guest pixels
+    constexpr uint32_t kSystemFlagTessellated = 1u << 10;  // tessellated triangle patches (grid per patch)
     constexpr uint32_t kSystemFlagClampColorShift = 12;  // 4 bits: clamp color output i
 
     // Texture/sampler bindings for a shader's textures, filling the texture
     // part of the system constants.
     std::vector<SDL_GPUTextureSamplerBinding> BindTextures(const Shader& shader, SystemConstants& system);
-    // Number of cached memory textures (for logs).
+    // Number of cached memory textures, and the video memory they hold
+    // (for logs).
     size_t TextureCount();
+    uint64_t TextureBytes();
+    // Frees cached memory textures that went unused for long, or the least
+    // recently used ones while over the cache's budget. Once per frame.
+    void TrimTextureCache();
+    // Texture uploads and their bytes so far (for logs).
+    inline uint64_t g_textureUploads = 0, g_textureUploadBytes = 0;
 
     // ------------------------------------------------------------------
     // Drawing (draw.cpp)
@@ -408,6 +514,24 @@ namespace h3::gpu::renderer::internal
 
     // Records the draw the current registers describe.
     void Draw(uint32_t initiator, uint32_t indexBase, uint32_t dmaSize);
+    // A draw's guest indices (host-endian, VGT_INDX_OFFSET added), or
+    // 0..n-1 plus the offset for auto-indexed draws.
+    std::vector<uint32_t> GuestDrawIndices(uint32_t initiator, uint32_t indexBase, uint32_t dmaSize);
+    // The bool and loop constants of the system constants.
+    void SetControlConstants(SystemConstants& system);
+
+    // ------------------------------------------------------------------
+    // Memory export (memexport.cpp)
+    // ------------------------------------------------------------------
+
+    // Runs a memexport vertex shader's exports for the current draw (its
+    // compute variant); the results reach guest memory a frame or two later.
+    void RunMemExport(const Shader& vs, uint32_t initiator, uint32_t indexBase, uint32_t dmaSize);
+    // Submits the command buffer with a fence if memexport results are
+    // waiting in it. Call before any other submit of g_commands.
+    void FenceMemExports();
+    // Writes back memexport results whose GPU work finished.
+    void PollMemExports();
     // Records everything pending into the command buffer. Call before
     // anything that can't happen inside a render pass.
     void Flush();
@@ -428,8 +552,13 @@ namespace h3::gpu::renderer::internal
         SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
     // H3_DUMP_DRAWS: dump a color target after the current draw.
     void DumpAfterDraw();
+    // H3_DUMP_PRIM: dump color target 0 before/after draws of a primitive type.
+    void DumpAroundPrimitive(uint32_t primitive, bool after);
+    // H3_DUMP_RESTORE: dump the depth bytes and the depth target after a
+    // depth restore (draw.cpp).
+    void DumpDepthAfterRestore(SDL_GPUTexture* bytes, SDL_GPUTextureFormat bytesFormat, SDL_GPUTexture* depth);
     // H3_DUMP_MEMORY: dump guest memory at this swap.
     void DumpMemoryAtSwap();
     // H3_DUMP_FRAME / H3_SNAPSHOT_EVERY: dump the presented frame.
-    void DumpFrameAtSwap(uint32_t frontbuffer, SDL_GPUTexture* texture, uint32_t width, uint32_t height);
+    void DumpFrameAtSwap(uint32_t frontbuffer, SDL_GPUTexture* texture, uint32_t width, uint32_t height, SDL_GPUTextureFormat format);
 }

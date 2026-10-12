@@ -105,15 +105,41 @@ namespace h3::input
             }
         }
 
-        // H3_INPUT_SCRIPT="20-20.2:down,f900-905:a": buttons held between two
-        // times, in seconds since start or (with f) presented frames, for
-        // testing without a keyboard.
+        // H3_INPUT_SCRIPT="20-20.2:down,f900-905:a": buttons (or stick
+        // directions and triggers) held between two times, in seconds since
+        // start or (with f) presented frames, for testing without a keyboard.
+        // Analog controls a script can hold (full deflection or pull), by
+        // name: left/right stick directions and the triggers.
+        enum class ScriptedAnalog : uint8_t
+        {
+            None, LeftUp, LeftDown, LeftLeft, LeftRight, RightUp, RightDown, RightLeft, RightRight, LeftTrigger, RightTrigger,
+        };
         struct ScriptedPress
         {
             double start, end;
-            uint16_t button;
+            uint16_t button;  // 0 for an analog control
             bool frames;
+            ScriptedAnalog analog = ScriptedAnalog::None;
         };
+
+        // The analog control for a name in H3_INPUT_SCRIPT ("rup", "lt"...).
+        ScriptedAnalog AnalogNamed(const std::string& name)
+        {
+            static const struct
+            {
+                const char* name;
+                ScriptedAnalog analog;
+            } kNames[] = {
+                { "lup", ScriptedAnalog::LeftUp }, { "ldown", ScriptedAnalog::LeftDown }, { "lleft", ScriptedAnalog::LeftLeft },
+                { "lright", ScriptedAnalog::LeftRight }, { "rup", ScriptedAnalog::RightUp }, { "rdown", ScriptedAnalog::RightDown },
+                { "rleft", ScriptedAnalog::RightLeft }, { "rright", ScriptedAnalog::RightRight }, { "lt", ScriptedAnalog::LeftTrigger },
+                { "rt", ScriptedAnalog::RightTrigger },
+            };
+            for (const auto& entry : kNames)
+                if (name == entry.name)
+                    return entry.analog;
+            return ScriptedAnalog::None;
+        }
         std::vector<ScriptedPress> g_script;
         uint64_t g_startTicks = 0;
 
@@ -154,8 +180,9 @@ namespace h3::input
                 std::string end = item.substr(dash + 1, colon - dash - 1);
                 if (!end.empty() && end[0] == 'f')
                     end = end.substr(1);
-                ScriptedPress press{ atof(start.c_str()), atof(end.c_str()), ButtonNamed(item.substr(colon + 1)), frames };
-                if (press.button)
+                std::string name = item.substr(colon + 1);
+                ScriptedPress press{ atof(start.c_str()), atof(end.c_str()), ButtonNamed(name), frames, AnalogNamed(name) };
+                if (press.button || press.analog != ScriptedAnalog::None)
                     g_script.push_back(press);
                 else
                     fprintf(stderr, "[input] unknown button in H3_INPUT_SCRIPT: %s\n", item.c_str());
@@ -323,15 +350,20 @@ namespace h3::input
             if (uint16_t button = ButtonFor(Action(action)); button && held(Action(action)))
                 state.buttons |= button;
         double seconds = double(SDL_GetTicks() - g_startTicks) / 1000.0;
+        bool scripted[size_t(ScriptedAnalog::RightTrigger) + 1] = {};
         for (const ScriptedPress& press : g_script)
             if ((press.frames ? double(frame) : seconds) >= press.start && (press.frames ? double(frame) : seconds) < press.end)
+            {
                 state.buttons |= press.button;
-        state.leftTrigger = held(Action::Grenade) ? kTriggerMax : 0;
-        state.rightTrigger = held(Action::Fire) ? kTriggerMax : 0;
-        state.thumbLX = Axis(held(Action::MoveLeft), held(Action::MoveRight));
-        state.thumbLY = Axis(held(Action::MoveBack), held(Action::MoveForward));
-        state.thumbRX = Axis(held(Action::LookLeft), held(Action::LookRight));
-        state.thumbRY = Axis(held(Action::LookDown), held(Action::LookUp));
+                scripted[size_t(press.analog)] = true;
+            }
+        auto analog = [&](ScriptedAnalog control) { return scripted[size_t(control)]; };
+        state.leftTrigger = held(Action::Grenade) || analog(ScriptedAnalog::LeftTrigger) ? kTriggerMax : 0;
+        state.rightTrigger = held(Action::Fire) || analog(ScriptedAnalog::RightTrigger) ? kTriggerMax : 0;
+        state.thumbLX = Axis(held(Action::MoveLeft) || analog(ScriptedAnalog::LeftLeft), held(Action::MoveRight) || analog(ScriptedAnalog::LeftRight));
+        state.thumbLY = Axis(held(Action::MoveBack) || analog(ScriptedAnalog::LeftDown), held(Action::MoveForward) || analog(ScriptedAnalog::LeftUp));
+        state.thumbRX = Axis(held(Action::LookLeft) || analog(ScriptedAnalog::RightLeft), held(Action::LookRight) || analog(ScriptedAnalog::RightRight));
+        state.thumbRY = Axis(held(Action::LookDown) || analog(ScriptedAnalog::RightDown), held(Action::LookUp) || analog(ScriptedAnalog::RightUp));
 
         // Mouse movement (captured) adds to the look stick.
         std::erase_if(g_mouseMotion, [&](const MouseMotion& m) { return now - m.ticksNs > kMouseWindowNs; });

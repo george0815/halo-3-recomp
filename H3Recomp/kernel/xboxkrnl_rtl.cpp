@@ -4,6 +4,8 @@
 #include <ppc_recomp_shared.h>
 
 #include "../memory.h"
+#include "objects.h"
+#include "thread.h"
 
 #include <cstring>
 
@@ -179,4 +181,40 @@ PPC_FUNC(__imp__RtlTimeFieldsToTime)
     int64_t ms = ((int64_t(hour) * 60 + minute) * 60 + second) * 1000 + millisecond;
     GuestRef<uint64_t>(ctx.r4.u32) = uint64_t(days * kTicksPerDay + ms * kTicksPerMillisecond);
     ctx.r3.u64 = 1;
+}
+
+// void RtlRaiseException(PEXCEPTION_RECORD record)
+// The game raises one exception on purpose: MSVC's set-thread-name code,
+// which a debugger would catch. Record its name (for stuck-thread reports);
+// anything else is logged and ignored, as no handler would run anyway.
+// EXCEPTION_RECORD: code +0, flags +4, record +8, address +12, parameter
+// count +16, parameters from +20. Thread name parameters: type (0x1000),
+// name, thread id (-1 = the calling thread), flags.
+PPC_FUNC(__imp__RtlRaiseException)
+{
+    constexpr uint32_t kSetThreadNameCode = 0x406D1388;
+    constexpr uint32_t kSetThreadNameType = 0x1000;
+    constexpr uint32_t kCurrentThreadId = 0xFFFFFFFF;
+    constexpr uint32_t kMaxNameLength = 64;
+    uint32_t record = ctx.r3.u32;
+    uint32_t code = GuestRef<uint32_t>(record + 0);
+    if (code == kSetThreadNameCode && GuestRef<uint32_t>(record + 20) == kSetThreadNameType)
+    {
+        uint32_t nameAddress = GuestRef<uint32_t>(record + 24);
+        uint32_t threadId = GuestRef<uint32_t>(record + 28);
+        std::string name = nameAddress ? std::string(GuestPtr<const char>(nameAddress), strnlen(GuestPtr<const char>(nameAddress), kMaxNameLength)) : "";
+        // Halo names its threads from the main thread with its own thread
+        // numbers, which don't match ours: only the calling thread's name
+        // can be attached (for stuck-thread reports); log the rest.
+        if (threadId == kCurrentThreadId)
+        {
+            uint32_t kthread = h3::kernel::CurrentThread()->kthread;
+            h3::kernel::SetThreadName(kthread, name);
+            fprintf(stderr, "[kernel] thread %08X is \"%s\"\n", kthread, name.c_str());
+        }
+        else
+            fprintf(stderr, "[kernel] game thread #%u is \"%s\"\n", threadId, name.c_str());
+        return;
+    }
+    fprintf(stderr, "[kernel] RtlRaiseException code %08X at %08X (ignored)\n", code, uint32_t(GuestRef<uint32_t>(record + 12)));
 }

@@ -62,7 +62,10 @@ build/release/H3Recomp/H3Recomp private/default.xex
 ```
 
 The game's hard drive (cache partitions, saves) is created in `private/hdd/`,
-and compiled host shaders are cached in `private/shadercache/` (safe to delete).
+and compiled host shaders are cached in `private/shadercache/` (safe to delete),
+along with `pipelines.txt`, the list of shaders and pipelines this PC has used,
+which the game rebuilds in the background at start (launcher: Video >
+Precompile shaders) so areas you've already played don't stutter.
 Delete `private/hdd/` to start from a clean console (this also clears the
 saved profile settings, `private/hdd/profile_settings.bin`).
 
@@ -76,7 +79,9 @@ path as its argument). Its menus use Halo 3's own font, read from the game's
 `maps/fonts/font_package.bin`.
 
 - **Video**: window size, fullscreen (F11 or Alt+Enter toggles it in game),
-  vsync, and the render resolution: 1x (native 1280x720), 2x or 3x.
+  vsync, the render resolution (1x native 1280x720, 2x or 3x), precompiling
+  shaders at start, and background shader compilation (no stutter the first
+  time something new appears, but it can be missing for a few frames).
 - **Controls**: up to three keys or mouse buttons per action, mouse
   sensitivity and inversion. Gamepads always use the standard layout.
 - **Debug**: the logging and tracing switches below (set in `settings.ini`
@@ -125,7 +130,8 @@ defaults:
 `H3_INPUT_SCRIPT="40-40.4:down,f900-905:a"` holds buttons between two
 times (seconds since start, or presented frames with `f`) for testing
 without a keyboard (names: a b x y start
-back up down left right lb rb ls rs). `H3_LOG_INPUT=1` logs state changes.
+back up down left right lb rb ls rs; sticks and triggers: lup ldown lleft
+lright rup rdown rleft rright lt rt). `H3_LOG_INPUT=1` logs state changes.
 
 ### Debugging
 
@@ -140,6 +146,8 @@ Environment variables:
 | `H3_LOG_GPU=1` | Log ring buffer setup, the first use of each PM4 opcode, and frame counts |
 | `H3_RENDER=0` | Turn host rendering off (the GPU command stream is still processed) |
 | `H3_RENDER_SCALE=<1-3>` | Override the launcher's render resolution |
+| `H3_ASYNC_SHADERS=1\|0` | Override background shader compilation |
+| `H3_NO_WARMUP=1` | Don't rebuild the shader cache's pipelines at start |
 | `H3_LAUNCHER_SCREENSHOT=out.png` | (H3Launcher) render the launcher window to a PNG and exit; `H3_LAUNCHER_KEYS="Down,Return"` sends keys first. Works with `QT_QPA_PLATFORM=offscreen` |
 | `H3_NO_TEXTURES=1` | Bind gray placeholders instead of textures decoded from memory |
 | `H3_NO_WRITEBACK=1` | Don't copy small resolves back to guest memory |
@@ -149,6 +157,13 @@ Environment variables:
 | `H3_LOG_USER=1`, `H3_LOG_CONTENT=1`, `H3_LOG_NOTIFY=1` | Log profile, content and notification calls |
 | `H3_GPU_CAPTURE=<frame>` | Write `gpu_capture.txt`: every draw, resolve and shader load in that frame (counted in swaps) with the render state |
 | `H3_DUMP_DRAWS=<first>-<last>` | With `H3_DUMP_FRAME`: save color target 0 after each of those draws (numbered like the capture's `draw #n`), 2304x1280 (render targets are in sample space: a 4x surface's pixel is 2x2 texels) |
+| `H3_SKIP_DRAWS=<first>-<last>[,...]` | Drop those draws (numbered like the capture's `draw #n`) in every frame, to find which draw causes an artifact |
+| `H3_NO_MEMEXPORT=1` | Don't run vertex shaders' memory exports (GPU particles, occlusion tests, water factors) |
+| `H3_LOG_MEMEXPORT=1` | Log memory export dispatches, their records (first few values) and buffer use |
+| `H3_NO_STENCIL_RESTORE=1` | Don't turn stencil drawn through a color view (Halo's dither pattern) into stencil |
+| `H3_LOG_ZPD=1` | Log occlusion query (EVENT_WRITE_ZPD) events |
+| `H3_DUMP_PRIM=<type>` | With `H3_DUMP_FRAME`: save color target 0 before and after every draw of that primitive type (17: tessellated triangle patches, Halo's water) |
+| `H3_DUMP_RESTORE=<frame>` | After each depth restore in that frame (Halo rewriting depth through a color view), save the color bytes and the resulting depth (`restore_<frame>_<n>_*.png`; depth also as raw floats in `.f32`, as are all 32-bit float dumps) |
 | `H3_DUMP_SOURCE=1` | With `H3_DUMP_RESOLVE`: also save each resolve's source render target as `source_<frame>_<n>.png` |
 | `H3_DUMP_VIEWS=1` | With `H3_DUMP_FRAME`: save each part of a resolved texture copied out for sampling at another size (`view_*.png`) |
 | `H3_DUMP_SCALE=<n>` | Divide 16-bit float colors by n in dumps (Halo's final 7e3 target holds 32x values) |
@@ -161,7 +176,7 @@ Environment variables:
 | `H3_DUMP_GLSL=1` | Write each translated shader's GLSL to the working directory as `<cache name>.glsl` |
 | `H3_DUMP_MEMORY=<frame>:<address>:<bytes>[,...]` | Save guest memory at that swap as `mem_<frame>_<address>.bin` (hex address; below 0x80000000 physical, otherwise a guest address such as the executable's data) |
 | `H3_WATCH_WRITES=<first>-<last>:<physical address>:<bytes>` | Linux: write-protect that range during those frames and log every host instruction that writes it to `write_watch.txt` (offsets into the executable; `addr2line`/`nm` them) |
-| `H3_PROFILE=<first>-<last>` | Sample host CPU time between those frames into `profile.txt`; `tools/h3profile.py` symbolizes it |
+| `H3_PROFILE=<first>-<last>` | Sample host CPU time between those frames into `profile.txt`; `tools/h3profile.py` symbolizes it. With `H3_PROFILE_STACKS=1` it also attributes time in libraries to the calling function |
 | `H3_WATCH_READS=<first>-<last>:<address>:<bytes>` | Like `H3_WATCH_WRITES`, but every access (reads too); writes `read_watch.txt` |
 | `H3_TRAP_ON_STUCK=1` | Raise SIGTRAP when a thread is stuck on a critical section (for an attached debugger) |
 

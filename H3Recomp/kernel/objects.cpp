@@ -175,11 +175,35 @@ namespace h3::kernel
         g_waitTotals.clear();
     }
 
+    namespace
+    {
+        // Guest thread names (MSVC's set-thread-name exception), by KTHREAD.
+        std::mutex g_threadNameMutex;
+        std::unordered_map<uint32_t, std::string> g_threadNames;
+    }
+
+    void SetThreadName(uint32_t kthread, const std::string& name)
+    {
+        std::lock_guard lock(g_threadNameMutex);
+        g_threadNames[kthread] = name;
+    }
+
+    std::string ThreadName(uint32_t kthread)
+    {
+        std::lock_guard lock(g_threadNameMutex);
+        auto it = g_threadNames.find(kthread);
+        return it != g_threadNames.end() ? it->second : std::string();
+    }
+
     void DumpThreadWaits()
     {
         std::lock_guard lock(g_threadWaitMutex);
         for (const auto& [thread, wait] : g_threadWaits)
-            fprintf(stderr, "[kernel]   thread %08X waits on %s %08X (%08X) lr=0x%08X\n", thread, wait.what, wait.object, wait.detail, wait.lr);
+        {
+            std::string name = ThreadName(thread);
+            fprintf(stderr, "[kernel]   thread %08X%s%s%s waits on %s %08X (%08X) lr=0x%08X\n", thread, name.empty() ? "" : " (",
+                name.c_str(), name.empty() ? "" : ")", wait.what, wait.object, wait.detail, wait.lr);
+        }
     }
 
     Deadline DeadlineFromGuest(uint32_t timeoutPtr)

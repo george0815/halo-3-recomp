@@ -370,6 +370,20 @@ namespace h3::launcher
         };
         scale.step = [&video](int delta) { video.renderScale = std::clamp(video.renderScale + delta, 1, config::kMaxRenderScale); };
         page.items.push_back(scale);
+
+        MenuItem precompile{ MenuItem::Kind::Choice, QStringLiteral("Precompile shaders"),
+            QStringLiteral("At start, rebuild every shader and pipeline this PC has used before, in the background, "
+                           "so areas you've played don't stutter. The list grows as you play.") };
+        precompile.value = [&video] { return OnOff(video.precompileShaders); };
+        precompile.step = [&video](int) { video.precompileShaders = !video.precompileShaders; };
+        page.items.push_back(precompile);
+
+        MenuItem async{ MenuItem::Kind::Choice, QStringLiteral("Background compilation"),
+            QStringLiteral("Compile new shaders without pausing the game. No stutter the first time you see something, "
+                           "but it can be missing for a few frames.") };
+        async.value = [&video] { return OnOff(video.asyncShaders); };
+        async.step = [&video](int) { video.asyncShaders = !video.asyncShaders; };
+        page.items.push_back(async);
         return page;
     }
 

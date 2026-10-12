@@ -101,6 +101,12 @@ namespace h3::config
         // rendered at renderScale x their native size, then scaled to the
         // window. 1 = native 720p.
         int renderScale = 1;
+        // Recreate the shaders and pipelines this machine has seen before at
+        // start, on background threads (gpu/renderer/pipelines.cpp).
+        bool precompileShaders = true;
+        // Compile new shaders and pipelines on background threads and skip
+        // what needs them meanwhile: no stutter, brief pop-in.
+        bool asyncShaders = false;
     };
 
     struct ProfileSettings

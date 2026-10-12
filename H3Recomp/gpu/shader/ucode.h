@@ -152,6 +152,14 @@ namespace h3::gpu::ucode
         F32_32_32_Float = 57,
     };
 
+    // Texture fetch filter fields (instruction overrides and fetch constant):
+    // point, linear, base map (mip filter only), or "use the fetch constant's"
+    // (instruction only).
+    constexpr uint32_t kTextureFilterPoint = 0;
+    constexpr uint32_t kTextureFilterLinear = 1;
+    constexpr uint32_t kTextureFilterBaseMap = 2;
+    constexpr uint32_t kTextureFilterUseFetchConstant = 3;
+
     struct FetchInstruction
     {
         uint32_t d[3] = {};
@@ -183,6 +191,11 @@ namespace h3::gpu::ucode
         uint32_t TextureConstIndex() const { return Bits(d[0], 20, 5); }
         bool TextureUnnormalized() const { return Bits(d[0], 25, 1) != 0; }
         uint32_t TextureSrcSwizzle() const { return Bits(d[0], 26, 6); }  // 2 bits per component, absolute
+        // Filter overrides (TextureFilter values below; kTextureFilterUseFetchConstant
+        // defers to the fetch constant's filter).
+        uint32_t TextureMagFilter() const { return Bits(d[1], 12, 2); }
+        uint32_t TextureMinFilter() const { return Bits(d[1], 14, 2); }
+        uint32_t TextureMipFilter() const { return Bits(d[1], 16, 2); }
         bool TextureUseRegisterLod() const { return Bits(d[1], 29, 1) != 0; }
         bool TextureUseComputedLod() const { return Bits(d[1], 28, 1) != 0; }
         bool TextureUseRegisterGradients() const { return Bits(d[2], 0, 1) != 0; }
@@ -282,6 +295,7 @@ namespace h3::gpu::ucode
     constexpr uint32_t kExportPsDepth = 61;
     constexpr uint32_t kExportAddress = 32;
     constexpr uint32_t kExportData0 = 33;  // .. 37
+    constexpr uint32_t kMemExportElements = 5;  // eM0-eM4
 
     struct AluInstruction
     {
