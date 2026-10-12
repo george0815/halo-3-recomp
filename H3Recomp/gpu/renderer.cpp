@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <deque>
 #include <mutex>
 
 namespace h3::gpu::renderer
@@ -25,10 +26,42 @@ namespace h3::gpu::renderer
         constexpr float kDefaultMaxLod = 16.0f;
         // How often H3_LOG_FPS prints pipeline/shader/texture counts.
         constexpr uint32_t kCountLogInterval = 150;
+        // H3_LOG_FPS also logs video memory use whenever it changes by this
+        // much between frames.
+        constexpr uint64_t kVramLogStepBytes = 64ull << 20;
 
         // The last presented frame, read by the window on the main thread.
         std::mutex g_frameMutex;
         Frame g_frame;
+
+        // Frames the GPU may lag behind this thread. Nothing else holds the
+        // command processor back: when the GPU fell behind (render scale 3
+        // in the menu), every frame's cycled buffers and upload buffers
+        // still in use made SDL create new instances, which it never frees -
+        // gigabytes of video and host memory in seconds, until the driver
+        // ran out. Fewer than draw.cpp's kTransferAge, so upload buffers it
+        // reuses are always idle.
+        constexpr size_t kMaxFramesInFlight = 2;
+        std::deque<SDL_GPUFence*> g_frameFences;  // oldest first
+
+        // Submits the frame's last commands and waits until at most
+        // kMaxFramesInFlight frames are still running on the GPU.
+        void SubmitFrame()
+        {
+            // Always submit (even an empty command buffer) for a fence that
+            // marks the end of this frame's work; submissions finish in order.
+            SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(Commands());
+            g_commands = nullptr;
+            if (fence)
+                g_frameFences.push_back(fence);
+            while (g_frameFences.size() > kMaxFramesInFlight)
+            {
+                SDL_GPUFence* oldest = g_frameFences.front();
+                SDL_WaitForGPUFences(g_device, true, &oldest, 1);
+                SDL_ReleaseGPUFence(g_device, oldest);
+                g_frameFences.pop_front();
+            }
+        }
 
         // Creates the 1x1 gray placeholder textures (2D, 3D, cube) and
         // uploads their texels.
@@ -253,6 +286,7 @@ namespace h3::gpu::renderer
         g_swaps++;
         g_frameResolves = 0;
         DumpMemoryAtSwap();
+        PokeMemoryAtSwap();
         EndFrameBuffers();
         PollWriteBacks();
         PollMemExports();
@@ -266,14 +300,45 @@ namespace h3::gpu::renderer
                 "[render] frame %u: %zu pipelines, %zu shaders, %zu textures (%llu MB), %zu resolve views, %llu texture uploads (%llu MB) so far\n",
                 g_swaps, PipelineCount(), ShaderCount(), TextureCount(), (unsigned long long)(TextureBytes() >> 20), ResolvedViewCount(),
                 (unsigned long long)g_textureUploads, (unsigned long long)(g_textureUploadBytes >> 20));
+        if (logCounts)
+        {
+            // Where video memory goes, to catch resources that pile up:
+            // every kCountLogInterval frames, and whenever the total moved
+            // by kVramLogStepBytes since the last line.
+            auto mb = [](const VideoMemoryUse& use) { return (unsigned long long)(use.bytes >> 20); };
+            VideoMemoryUse targets = RenderTargetMemory(), resolved = ResolvedMemory(), views = ResolvedViewMemory(),
+                           buffers = DrawBufferMemory(), uploads = UploadBufferMemory();
+            uint64_t total = targets.bytes + resolved.bytes + views.bytes + TextureBytes() + buffers.bytes + uploads.bytes;
+            static uint64_t loggedTotal = 0;
+            uint64_t moved = total > loggedTotal ? total - loggedTotal : loggedTotal - total;
+            if (g_swaps % kCountLogInterval == 0 || moved >= kVramLogStepBytes)
+            {
+                loggedTotal = total;
+                fprintf(stderr,
+                "[vram] frame %u: targets %zu (%llu MB), resolved %zu (%llu MB), views %zu (%llu MB), textures %zu (%llu MB), "
+                "draw buffers %llu MB, upload buffers %zu (%llu MB)\n",
+                g_swaps, targets.count, mb(targets), resolved.count, mb(resolved), views.count, mb(views), TextureCount(),
+                    (unsigned long long)(TextureBytes() >> 20), mb(buffers), uploads.count, mb(uploads));
+            }
+        }
+        if (logCounts && g_swaps % kCountLogInterval == 0)
+        {
+            // Per-frame averages since the last line, in host pixels.
+            static const char* kNames[] = { "draw", "copy", "depth restore", "stencil restore", "blit" };
+            static_assert(std::size(kNames) == size_t(PassKind::Count));
+            fprintf(stderr, "[passes] frame %u, per frame:", g_swaps);
+            for (size_t i = 0; i < size_t(PassKind::Count); i++)
+            {
+                fprintf(stderr, " %s %.1f (%.1f Mpx)", kNames[i], double(g_passCounters[i].passes) / kCountLogInterval,
+                    double(g_passCounters[i].pixels) / kCountLogInterval / 1e6);
+                g_passCounters[i] = {};
+            }
+            fprintf(stderr, "\n");
+        }
         DumpFrameAtSwap(frontbuffer, frame.texture, frame.width, frame.height, frameFormat);
 
         FenceMemExports();
-        if (g_commands)
-        {
-            SDL_SubmitGPUCommandBuffer(g_commands);
-            g_commands = nullptr;
-        }
+        SubmitFrame();
         if (frame.texture)
         {
             std::lock_guard lock(g_frameMutex);

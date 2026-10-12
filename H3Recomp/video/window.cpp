@@ -30,6 +30,7 @@ namespace h3::debug
 namespace h3::hooks
 {
     void UpdateCampaignUnlock();
+    void LogTickRate();
 }
 
 namespace h3::kernel
@@ -272,5 +273,6 @@ namespace h3::video
         debug::UpdateProfiler(frame);
         debug::UpdateWriteWatch(frame);
         hooks::UpdateCampaignUnlock();
+        hooks::LogTickRate();
     }
 }

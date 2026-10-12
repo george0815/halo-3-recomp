@@ -21,8 +21,10 @@ add_executable(H3Recomp
     debug/first_calls.cpp
     debug/profiler.cpp
     debug/write_watch.cpp
+    hooks/block_copy.cpp
     hooks/campaign.cpp
     hooks/fibers.cpp
+    hooks/tick_rate.cpp
     hooks/xma.cpp
     kernel/imports.cpp
     kernel/module.cpp

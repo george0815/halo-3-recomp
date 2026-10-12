@@ -40,6 +40,13 @@ namespace h3::gpu
     constexpr uint32_t kRegPaClVportYOffset = 0x2112;
     constexpr uint32_t kRegPaClVportZScale = 0x2113;
     constexpr uint32_t kRegPaClVportZOffset = 0x2114;
+    // Polygon offset (depth bias), floats. Scale multiplies the polygon's
+    // depth slope in 1/16 pixel units; offset is in depth range units.
+    // Enabled per facing by PA_SU_SC_MODE_CNTL bits 11 (front) and 12 (back).
+    constexpr uint32_t kRegPaSuPolyOffsetFrontScale = 0x2380;
+    constexpr uint32_t kRegPaSuPolyOffsetFrontOffset = 0x2381;
+    constexpr uint32_t kRegPaSuPolyOffsetBackScale = 0x2382;
+    constexpr uint32_t kRegPaSuPolyOffsetBackOffset = 0x2383;
 
     // Shaders and vertex fetch.
     constexpr uint32_t kRegSqProgramCntl = 0x2180;

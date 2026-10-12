@@ -38,10 +38,13 @@ savevmx_14_address = 0x826F47A0
 restvmx_64_address = 0x826F4ACC
 savevmx_64_address = 0x826F4834
 
-# Find these in Ghidra: longjmp usually calls RtlUnwind, and setjmp sits
-# right after it. Remove the lines if the game never uses them.
-# longjmp_address = 0x0
-# setjmp_address = 0x0
+# The CRT's longjmp (restores r1/r13-r31/f14-f31/v regs and lr from the
+# buffer, RtlUnwind for SEH frames) and setjmp (saves them). Only library
+# code around 0x825B4000-0x825CF000 calls them (error exits). Recompiled as
+# ordinary functions, longjmp would return to its caller instead of to
+# setjmp's; XenonRecomp turns these calls into host setjmp/longjmp.
+longjmp_address = 0x826F36B0
+setjmp_address = 0x826F3AF0
 
 # Manual function boundaries for anything XenonAnalyse gets wrong
 # (typically functions containing jump tables).

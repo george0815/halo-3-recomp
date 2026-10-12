@@ -100,6 +100,8 @@ namespace h3::config
                     video.precompileShaders = ParseBool(value);
                 else if (key == "async_shaders")
                     video.asyncShaders = ParseBool(value);
+                else if (key == "frame_rate")
+                    video.frameRate = atoi(value.c_str()) >= kUnlockedTickRate ? kUnlockedTickRate : kOriginalTickRate;
             }
             else if (section == "profile")
             {
@@ -225,7 +227,8 @@ namespace h3::config
             << "vsync = " << BoolText(video.vsync) << "\n"
             << "render_scale = " << video.renderScale << "\n"
             << "precompile_shaders = " << BoolText(video.precompileShaders) << "\n"
-            << "async_shaders = " << BoolText(video.asyncShaders) << "\n\n";
+            << "async_shaders = " << BoolText(video.asyncShaders) << "\n"
+            << "frame_rate = " << video.frameRate << "\n\n";
 
         const ProfileSettings& profile = settings.profile;
         out << "[profile]\n"

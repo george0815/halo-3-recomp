@@ -141,6 +141,8 @@ namespace h3::gpu::renderer::internal
             for (uint32_t blend : desc.blend)
                 line << ' ' << blend;
             line << ' ' << desc.colorMask << ' ' << desc.depthControl << ' ' << desc.stencilMasks << ' ' << desc.psColorTargetMask;
+            // Added later: records without it parse as no culling.
+            line << ' ' << desc.rasterizer;
             return line.str();
         }
 
@@ -320,8 +322,14 @@ namespace h3::gpu::renderer::internal
             info.fragment_shader = pixelShader;
             info.primitive_type = SDL_GPUPrimitiveType(desc.topology);
             info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-            info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;  // TODO: PA_SU_SC_MODE_CNTL culling
-            info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_CLOCKWISE;
+            // Culling (PA_SU_SC_MODE_CNTL). Faces are judged on screen in
+            // both APIs (the NDC transform keeps the guest's on-screen
+            // picture), so the guest's winding carries over as is.
+            info.rasterizer_state.cull_mode = (desc.rasterizer & kRasterizerCullBack)    ? SDL_GPU_CULLMODE_BACK
+                : (desc.rasterizer & kRasterizerCullFront) ? SDL_GPU_CULLMODE_FRONT
+                                                           : SDL_GPU_CULLMODE_NONE;
+            info.rasterizer_state.front_face =
+                (desc.rasterizer & kRasterizerFrontClockwise) ? SDL_GPU_FRONTFACE_CLOCKWISE : SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
             info.rasterizer_state.enable_depth_clip = true;
             info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             bool depth = desc.depthFormat != 0;
@@ -364,6 +372,9 @@ namespace h3::gpu::renderer::internal
             in >> desc.colorMask >> desc.depthControl >> desc.stencilMasks >> desc.psColorTargetMask;
             if (!in || desc.colorCount > 4)
                 return false;
+            // Optional (older manifests don't have it).
+            if (!(in >> desc.rasterizer))
+                desc.rasterizer = 0;
             desc.vs = std::stoull(vs, nullptr, 16);
             desc.ps = std::stoull(ps, nullptr, 16);
             return true;

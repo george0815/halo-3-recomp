@@ -9,7 +9,8 @@ Rough phases. Each one is a large amount of work; that's fine.
 
 ## 1. Recompile
 - [x] Fill save/restore helper addresses (`h3xexinfo` output)
-- [ ] Locate `setjmp`/`longjmp` in Ghidra (or confirm they're unused)
+- [x] Locate `setjmp`/`longjmp`: `sub_826F3AF0`/`sub_826F36B0` (only library
+      error paths call them); XenonRecomp emits host setjmp/longjmp
 - [x] XenonAnalyse jump tables: check the results and fix missed patterns.
       `tools/h3analysis.py tables` re-reads every inline table (23 misread,
       156 missed by XenonAnalyse). 9 tables still log errors: their
@@ -75,9 +76,11 @@ Rough phases. Each one is a large amount of work; that's fine.
       gamma 2); render target exponent bias; alpha test; blend constants
 - [x] Mipmaps (2D textures, decoded from the guest's mip chain), stacked
       (2D array) textures, anisotropic filtering
-- [ ] 3D textures, mips for cube/stacked textures, exact piecewise-linear
-      gamma
-- [ ] Culling, MSAA, point sizes
+- [x] 3D textures (base level), mips for cube maps, exact piecewise-linear
+      gamma (Xenia's curve; `H3_APPROX_GAMMA=1` for the old gamma 2)
+- [ ] Mips for stacked textures and 3D textures
+- [x] Culling (PA_SU_SC_MODE_CNTL), polygon offset (decals, shadow maps)
+- [ ] MSAA, point sizes
 - [ ] Batch draws better (one render pass per render target change today)
 - [x] EDRAM render targets and resolves (Halo 3 renders 1152x640 in four
       predicated tiles, deferred: G-buffer, shadow maps, post-processing)
@@ -86,8 +89,8 @@ Rough phases. Each one is a large amount of work; that's fine.
 - [ ] EDRAM tile layout: surfaces of different pitches at one base don't
       alias the way they do in tiled EDRAM
 - [x] Menu renders → mainmenu.map renders → a campaign level runs
-- [ ] In-game frames are washed out (stale render target contents where
-      nothing draws; see private notes)
+- [x] In-game frames are washed out (stale render target contents where
+      nothing draws; confirmed fixed 2026-10-12)
 
 ## 4. Audio, input, saves
 - [x] XAudio render driver (`apu/audio_system.cpp`) and the XMA hardware
@@ -106,8 +109,12 @@ Rough phases. Each one is a large amount of work; that's fine.
 ## 5. Native improvements
 - [x] Internal resolution scale (1x-3x render targets and resolves;
       screen-space draws snap to guest pixels), window size, fullscreen
-- [ ] Framerate unlock (engine tick vs render decoupling)
-- [ ] Replace hot recompiled functions with hand-written source
+- [~] Framerate unlock: experimental 60 Hz game tick (launcher Video >
+      Frame rate; `hooks/tick_rate.cpp`). Gameplay reaches 48-60 fps; needs
+      play-testing (physics, animation, AI, cutscenes) and more CPU headroom
+      to hold 60
+- [ ] Replace hot recompiled functions with hand-written source (started:
+      the 4 MB per-tick game state copy, `hooks/block_copy.cpp`)
 
 ## 6. Decompilation (optional, long-term)
 - [ ] Identify subsystems (tags, cache files, scenario, AI, physics) and

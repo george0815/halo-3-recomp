@@ -36,6 +36,8 @@ namespace h3::gpu::shader
     //                            bit 9: snap screen-space corners to guest
     //                            pixels (render scale above 1),
     //                            bit 10: tessellated triangle patches,
+    //                            bit 11: decode gamma textures by squaring
+    //                            (H3_APPROX_GAMMA) instead of the exact curve,
     //                            bits 12-15: clamp color output i to 0..1
     //                            (fixed-point targets kept as host floats)
     //   uint  rect_indices;      rectangle lists: dword offset of the guest
@@ -44,6 +46,9 @@ namespace h3::gpu::shader
     //   uint  tess_segments;     tessellated triangle patches (flags bit 10):
     //                            segments per patch edge of the host grid
     //   uint  tess_patch_base;   added to the patch index (VGT_INDX_OFFSET)
+    //   float depth_bias_slope;  pixel shaders: polygon offset slope factor
+    //                            (times the depth's largest screen-space
+    //                            derivative, added to the written depth)
     //   uvec4 tfetch[32];        per texture fetch constant: x = swizzle,
     //                            y = sign modes, z = exp adjust, w bits
     //                            0-7 = apply them (textures decoded from
@@ -98,6 +103,16 @@ namespace h3::gpu::shader
         std::string error;
         ShaderInfo info;
     };
+    // GLSL for the Xenos piecewise-linear gamma curve of 8_8_8_8_GAMMA
+    // (texture sign mode "gamma", gamma render targets), as Xenia's
+    // xenos.cc PWLGammaToLinear / LinearToPWLGamma: four linear pieces each
+    // way, with the truncations the hardware (and D3D) apply.
+    //   float xe_pwl_gamma_to_linear(float gamma);
+    //   float xe_linear_to_pwl_gamma(float linear);
+    //   vec3 versions of both.
+    // Translated shaders include it; the renderer's copy shaders too.
+    extern const char* const kPwlGammaGlsl;
+
 
     // dwords are host-endian (swap guest memory first). compute (vertex
     // shaders): emit a compute shader running the vertex shader once per

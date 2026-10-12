@@ -160,6 +160,16 @@ Environment variables:
 | `H3_SKIP_DRAWS=<first>-<last>[,...]` | Drop those draws (numbered like the capture's `draw #n`) in every frame, to find which draw causes an artifact |
 | `H3_NO_MEMEXPORT=1` | Don't run vertex shaders' memory exports (GPU particles, occlusion tests, water factors) |
 | `H3_LOG_MEMEXPORT=1` | Log memory export dispatches, their records (first few values) and buffer use |
+| `H3_TICK_RATE=<n>` | Game ticks (frames) per second, overriding the launcher's frame rate (30 original, 60 experimental) |
+| `H3_TICK_RATE_SKIP=<n>` | Leave the first n game time setups at 30 ticks (1: menus at 30, levels at `H3_TICK_RATE`; for frame-timed input scripts) |
+| `H3_LOG_TICK_RATE=1` | Log the game's time globals (tick rate, tick count) every 300 frames |
+| `H3_POKE=<frame>:<address>:<hex bytes>[,...]` | Write bytes into guest memory at that swap (addresses as for `H3_DUMP_MEMORY`), for experiments |
+| `H3_LOG_WAIT_DETAIL=1` | Log every WAIT_REG_MEM (address, function, reference, current value) |
+| `H3_APPROX_GAMMA=1` | Approximate the 8_8_8_8_GAMMA piecewise-linear curve as gamma 2 (the old behaviour), to compare |
+| `H3_LOG_CARRYOVER=1` | Log every EDRAM format switch (base, formats, rectangle carried over) |
+| `H3_FULL_CARRYOVER=1` | Carry whole render targets over on EDRAM format switches instead of only what changed, to compare |
+| `H3_NO_CULL=1` | Don't cull faces (PA_SU_SC_MODE_CNTL), to compare |
+| `H3_NO_POLY_OFFSET=1` | Ignore polygon offset (depth bias: Halo's decals and shadow maps) |
 | `H3_NO_STENCIL_RESTORE=1` | Don't turn stencil drawn through a color view (Halo's dither pattern) into stencil |
 | `H3_LOG_ZPD=1` | Log occlusion query (EVENT_WRITE_ZPD) events |
 | `H3_DUMP_PRIM=<type>` | With `H3_DUMP_FRAME`: save color target 0 before and after every draw of that primitive type (17: tessellated triangle patches, Halo's water) |
@@ -171,7 +181,7 @@ Environment variables:
 | `H3_LOG_CLEARS=1` | Log D3D clears (screen-space rectangle draws) with their rectangles, color and surface |
 | `H3_LOG_AUDIO=1` | Log audio frames submitted and their peak level, once a second |
 | `H3_AUDIO_DUMP=<file>` | Also write the audio output as raw 6-channel 48 kHz float (`ffmpeg -f f32le -ac 6 -ar 48000 -i <file> out.wav`) |
-| `H3_LOG_FPS=1` | Log presented frames per second and the slowest frame, once a second |
+| `H3_LOG_FPS=1` | Log presented frames per second and the slowest frame, once a second; also `[vram]` lines with the video memory held by render targets, resolves, textures and buffers (every 150 frames, and whenever it moves by 64 MB), and `[passes]` lines: GPU passes per frame by kind (draw, copy, depth/stencil restore, blit) with the host pixels they cover |
 | `H3_LOG_SLOW=1` | Log shader translations, pipeline creations and texture uploads that take 20 ms or more (pipelines with their shaders' cache names) |
 | `H3_DUMP_GLSL=1` | Write each translated shader's GLSL to the working directory as `<cache name>.glsl` |
 | `H3_DUMP_MEMORY=<frame>:<address>:<bytes>[,...]` | Save guest memory at that swap as `mem_<frame>_<address>.bin` (hex address; below 0x80000000 physical, otherwise a guest address such as the executable's data) |

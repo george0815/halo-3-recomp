@@ -528,6 +528,10 @@ namespace h3::gpu
                 uint32_t ref = reader.Read();
                 uint32_t mask = reader.Read();
                 reader.Read();  // wait interval
+                static const bool logDetail = EnvFlag("H3_LOG_WAIT_DETAIL");
+                if (logDetail)
+                    fprintf(stderr, "[gpu] wait %s %08X func %u ref %08X mask %08X now %08X\n", (waitInfo & kWaitMemory) ? "mem" : "reg", address,
+                        waitInfo & 7, ref, mask, PollValue(waitInfo, address));
                 auto start = std::chrono::steady_clock::now();
                 bool reported = false;
                 while (!Compare(waitInfo, PollValue(waitInfo, address) & mask, ref))

@@ -402,6 +402,7 @@ namespace h3::gpu::renderer::internal
                 x0 = std::clamp(x0, 0, int32_t(TargetWidth())), x1 = std::clamp(x1, x0, int32_t(TargetWidth()));
                 y0 = std::clamp(y0, 0, int32_t(TargetHeight())), y1 = std::clamp(y1, y0, int32_t(TargetHeight()));
                 FillRect(target->texture, target->format, x0, y0, uint32_t(x1 - x0), uint32_t(y1 - y0), color);
+                RecordColorWrite(EdramBase(ReadRegister(kRegRbDepthInfo)), SDL_Rect{ x0, y0, x1 - x0, y1 - y0 });
             }
         }
 
@@ -422,6 +423,14 @@ namespace h3::gpu::renderer::internal
                     value((v + 2) * kClearVertexFloats + 1));
             fprintf(stderr, " color %g %g %g %g\n", value(3), value(4), value(5), value(6));
         }
+
+        // PA_SU_SC_MODE_CNTL polygon offset enables, per facing (bit 13,
+        // points and lines, isn't used by Halo 3).
+        constexpr uint32_t kPolyOffsetFrontEnable = 1u << 11;
+        constexpr uint32_t kPolyOffsetBackEnable = 1u << 12;
+        // PA_SU_POLY_OFFSET_*_SCALE is in units of 1/16 of the depth slope
+        // per pixel (Xenia: xenos::kPolygonOffsetScaleSubpixelUnit).
+        constexpr float kPolyOffsetScaleUnit = 1.0f / 16.0f;
 
         // Fills the viewport, the NDC transform and the scissor of a draw.
         // The viewport transform maps into host clip space over the whole
@@ -460,7 +469,12 @@ namespace h3::gpu::renderer::internal
             system.ndcOffset[1] = 1.0f - (yOffset + windowY) * gridY * 2.0f / height;
             system.targetSize[0] = width, system.targetSize[1] = height;
             system.ndcScale[2] = zScale;
-            system.ndcOffset[2] = zOffset;
+            // The polygon offset's constant part moves NDC depth (which the
+            // 0..1 viewport maps 1:1 onto depth); the pixel shader adds its
+            // slope part. gridX/gridY are host texels per guest pixel.
+            PolygonOffset polygonOffset = CurrentPolygonOffset(modeControl, std::max(gridX, gridY));
+            system.ndcOffset[2] = zOffset + polygonOffset.constant;
+            system.depthBiasSlope = polygonOffset.slope;
             draw.viewport = { 0.0f, 0.0f, width, height, 0.0f, 1.0f };
 
             // Scissor: the window scissor (15-bit coordinates), offset by the
@@ -522,6 +536,8 @@ namespace h3::gpu::renderer::internal
             // D24FS8 depth: round to the 24-bit float format.
             if (targets.depth && DepthIsFloat(ReadRegister(kRegRbDepthInfo)))
                 system.flags |= kSystemFlagRoundDepth24;
+            if (ApproxGamma())
+                system.flags |= kSystemFlagApproxGamma;
         }
     }
 
@@ -589,6 +605,7 @@ namespace h3::gpu::renderer::internal
         depth.store_op = SDL_GPU_STOREOP_STORE;
         depth.stencil_load_op = SDL_GPU_LOADOP_LOAD;
         depth.stencil_store_op = SDL_GPU_STOREOP_STORE;
+        CountPass(PassKind::Draw, 0);
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(commands, colors, g_targets.colorCount, g_targets.depth ? &depth : nullptr);
 
         SDL_GPUBufferBinding indexBinding{ g_indexBuffer, 0 };
@@ -642,6 +659,53 @@ namespace h3::gpu::renderer::internal
     {
         g_memoryBase = g_indexBase = 0;
         RetireTransfers();
+    }
+
+    PolygonOffset CurrentPolygonOffset(uint32_t modeControl, float pixelScale)
+    {
+        // One offset per draw: the host can't pick per facing, so the front
+        // one wins when both are on (Halo sets them equal).
+        PolygonOffset offset;
+        // H3_NO_POLY_OFFSET=1: ignore polygon offset (to compare).
+        static const bool disabled = EnvFlag("H3_NO_POLY_OFFSET");
+        if (disabled)
+            return offset;
+        uint32_t scaleRegister, offsetRegister;
+        if (modeControl & kPolyOffsetFrontEnable)
+            scaleRegister = kRegPaSuPolyOffsetFrontScale, offsetRegister = kRegPaSuPolyOffsetFrontOffset;
+        else if (modeControl & kPolyOffsetBackEnable)
+            scaleRegister = kRegPaSuPolyOffsetBackScale, offsetRegister = kRegPaSuPolyOffsetBackOffset;
+        else
+            return offset;
+        // The host measures the slope per host texel, which is pixelScale
+        // times smaller than per guest pixel.
+        offset.slope = RegisterFloat(scaleRegister) * kPolyOffsetScaleUnit * pixelScale;
+        offset.constant = RegisterFloat(offsetRegister);
+        return offset;
+    }
+
+    VideoMemoryUse DrawBufferMemory()
+    {
+        VideoMemoryUse use;
+        use.count = (g_memoryBuffer ? 1 : 0) + (g_indexBuffer ? 1 : 0);
+        use.bytes = uint64_t(g_memoryBufferSize) + g_indexBufferSize;
+        return use;
+    }
+
+    VideoMemoryUse UploadBufferMemory()
+    {
+        VideoMemoryUse use;
+        auto add = [&](const std::vector<TransferBuffer>& buffers) {
+            for (const TransferBuffer& transfer : buffers)
+            {
+                use.count++;
+                use.bytes += transfer.size;
+            }
+        };
+        add(g_freeTransfers);
+        for (const std::vector<TransferBuffer>& frame : g_frameTransfers)
+            add(frame);
+        return use;
     }
 
     const TargetSet& CurrentTargetSet()
@@ -716,6 +780,18 @@ namespace h3::gpu::renderer::internal
         desc.depthControl = targets.depth ? depthControl : 0;
         desc.stencilMasks = targets.depth ? stencilRefMask & 0xFFFF00 : 0;  // not the reference (dynamic state)
         desc.psColorTargetMask = g_pixelShader->info.colorTargetMask;
+        // Culling, for real triangles only: rectangle lists are expanded in
+        // the vertex shader and tessellated patches drawn as host grids,
+        // neither in the guest's winding. Culling both faces draws nothing.
+        // H3_NO_CULL=1 turns culling off (to compare).
+        static const bool noCull = EnvFlag("H3_NO_CULL");
+        uint32_t cull = ReadRegister(kRegPaSuScModeCntl) & kRasterizerMask;
+        bool triangles = primitive == kPrimTriangleList || primitive == kPrimTriangleStrip || primitive == kPrimTriangleFan ||
+            primitive == kPrimQuadList;
+        if ((cull & (kRasterizerCullFront | kRasterizerCullBack)) == (kRasterizerCullFront | kRasterizerCullBack) && triangles && !noCull)
+            return;
+        if (triangles && !noCull)
+            desc.rasterizer = cull;
         SDL_GPUGraphicsPipeline* pipeline = GetPipeline(desc);
         if (!pipeline)
             return;
@@ -834,6 +910,12 @@ namespace h3::gpu::renderer::internal
         }
         SDL_Rect scissor = draw->scissor;
         g_pending.push_back(std::move(draw));
+        // The color targets this draw writes (for EDRAM format switches,
+        // targets.cpp), as CurrentTargets picked them.
+        if (mode == kEdramModeColorDepth)
+            for (uint32_t i = 0; i < 4; i++)
+                if (((colorMask >> (4 * i)) & 0xF) && (g_pixelShader->info.colorTargetMask & (1u << i)))
+                    RecordColorWrite(EdramBase(ReadRegister(kRegColorInfo[i])), scissor);
 
         // EDRAM aliasing of color onto depth. After predicated tiling Halo
         // restores the whole frame's depth buffer by drawing the resolved

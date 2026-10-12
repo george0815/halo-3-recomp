@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include "config/env.h"
 #include "gpu/command_processor.h"
 #include "gpu/registers.h"
 #include "gpu/shader/translator.h"
@@ -300,9 +301,26 @@ namespace h3::gpu::renderer::internal
         uint32_t depthControl = 0;    // RB_DEPTHCONTROL
         uint32_t stencilMasks = 0;    // RB_STENCILREFMASK without the reference
         uint32_t psColorTargetMask = 0;  // targets the pixel shader writes
-        uint32_t pad = 0;
+        uint32_t rasterizer = 0;      // kRasterizer* bits below (culling)
     };
+    // PipelineDesc::rasterizer: PA_SU_SC_MODE_CNTL's cull and face bits.
+    constexpr uint32_t kRasterizerCullFront = 1u << 0;
+    constexpr uint32_t kRasterizerCullBack = 1u << 1;
+    constexpr uint32_t kRasterizerFrontClockwise = 1u << 2;  // else counter-clockwise
+    constexpr uint32_t kRasterizerMask = 7;
     static_assert(sizeof(PipelineDesc) == 16 + 16 * 4);
+
+    // Polygon offset (depth bias) of a draw, from PA_SU_SC_MODE_CNTL and
+    // the PA_SU_POLY_OFFSET_* registers. Halo uses it for decals (on the
+    // main depth buffer) and shadow maps (shadow acne without it).
+    struct PolygonOffset
+    {
+        float slope = 0.0f;     // factor for the depth's slope per host texel
+        float constant = 0.0f;  // added to the depth (0..1 depth range units)
+    };
+    // The current draw's polygon offset; zero when disabled. pixelScale:
+    // host texels per guest pixel (samples per pixel times render scale).
+    PolygonOffset CurrentPolygonOffset(uint32_t modeControl, float pixelScale);
 
     // The id in a shader cache name (its 16 hex digits).
     uint64_t ShaderCacheId(const std::string& cacheName);
@@ -381,7 +399,25 @@ namespace h3::gpu::renderer::internal
         SDL_GPUTexture* texture = nullptr;
         SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_INVALID;
         uint32_t xenosFormat = 0;  // ColorRenderTargetFormat, or depth format
+        // Color targets: holds its base's contents as of write number
+        // syncedWrite (see targets.cpp, EDRAM aliasing); false until the
+        // first carry-over into it.
+        bool synced = false;
+        uint64_t syncedWrite = 0;
     };
+
+    // Video memory held by one kind of host resource (for the H3_LOG_FPS
+    // "[vram]" line): how many there are and their bytes.
+    struct VideoMemoryUse
+    {
+        size_t count = 0;
+        uint64_t bytes = 0;
+    };
+    // Bytes of a host texture of a format and size (all levels' base only).
+    inline uint64_t HostTextureBytes(SDL_GPUTextureFormat format, uint32_t width, uint32_t height, uint32_t layers = 1)
+    {
+        return SDL_CalculateGPUTextureFormatSize(format, width, height, layers);
+    }
 
     // The host texture for EDRAM at base in a format (created on first use).
     RenderTarget* GetRenderTarget(uint32_t base, uint32_t xenosFormat, bool depth);
@@ -390,8 +426,37 @@ namespace h3::gpu::renderer::internal
     RenderTarget* GetColorTarget(uint32_t base, uint32_t xenosFormat);
     // The color target last used at an EDRAM base, or null.
     RenderTarget* ColorTargetAt(uint32_t base);
+    // Records that the current color target at an EDRAM base was written
+    // in a rectangle (host texels), so a later format switch there copies
+    // only what changed.
+    void RecordColorWrite(uint32_t base, const SDL_Rect& rect);
     // Formats whose host texture holds floats (no unorm clamping/encoding).
     bool IsFloatHostFormat(SDL_GPUTextureFormat format);
+    // Host render targets and their video memory (for logs).
+    VideoMemoryUse RenderTargetMemory();
+
+    // GPU passes by kind and the pixels they cover (the scissor or blit
+    // rectangle), for H3_LOG_FPS's "[passes]" line: where fill rate goes
+    // at a render scale.
+    enum class PassKind : uint8_t
+    {
+        Draw,           // a Flush render pass (its draws aren't counted in pixels)
+        Copy,           // ConvertCopy / FillRect (copy.cpp)
+        DepthRestore,
+        StencilRestore, // one per bit plus the clear
+        Blit,           // format carry-overs, resolves, resolved views
+        Count,
+    };
+    struct PassCounter
+    {
+        uint64_t passes = 0, pixels = 0;
+    };
+    inline PassCounter g_passCounters[size_t(PassKind::Count)];
+    inline void CountPass(PassKind kind, uint64_t pixels)
+    {
+        g_passCounters[size_t(kind)].passes++;
+        g_passCounters[size_t(kind)].pixels += pixels;
+    }
     // 2_10_10_10_FLOAT and its alias: 7e3 floats in EDRAM.
     inline bool Is7e3(uint32_t xenosFormat)
     {
@@ -457,6 +522,9 @@ namespace h3::gpu::renderer::internal
     // a while. Once per frame. ResolvedViewCount is for logs.
     void TrimResolvedViews();
     size_t ResolvedViewCount();
+    // Resolved textures and resolved views, and their video memory (logs).
+    VideoMemoryUse ResolvedMemory();
+    VideoMemoryUse ResolvedViewMemory();
 
     // ------------------------------------------------------------------
     // Textures (textures.cpp)
@@ -475,7 +543,8 @@ namespace h3::gpu::renderer::internal
         uint32_t rectIndices;
         uint32_t tessSegments;     // tessellated patches: segments per edge
         uint32_t tessPatchBase;    // tessellated patches: first patch index
-        uint32_t pad[3];
+        float depthBiasSlope;      // polygon offset slope factor (pixel shaders)
+        uint32_t pad[2];
         uint32_t textures[32][4];  // per texture fetch constant: swizzle, signs, exp adjust, enabled
         float colorExpBias[4];     // 2^RB_COLOR_INFO exp bias, per render target
         float alphaRef;
@@ -493,6 +562,14 @@ namespace h3::gpu::renderer::internal
     constexpr uint32_t kSystemFlagAlphaTest = 1u << 8;
     constexpr uint32_t kSystemFlagSnapToPixels = 1u << 9;  // snap vertices to guest pixels
     constexpr uint32_t kSystemFlagTessellated = 1u << 10;  // tessellated triangle patches (grid per patch)
+    constexpr uint32_t kSystemFlagApproxGamma = 1u << 11;  // gamma decode by squaring (H3_APPROX_GAMMA)
+    // H3_APPROX_GAMMA=1: approximate the piecewise-linear gamma curve as
+    // gamma 2 (square / square root), as before the exact curve, to compare.
+    inline bool ApproxGamma()
+    {
+        static const bool approx = EnvFlag("H3_APPROX_GAMMA");
+        return approx;
+    }
     constexpr uint32_t kSystemFlagClampColorShift = 12;  // 4 bits: clamp color output i
 
     // Texture/sampler bindings for a shader's textures, filling the texture
@@ -537,6 +614,9 @@ namespace h3::gpu::renderer::internal
     void Flush();
     // Per-swap bookkeeping of the draw buffers.
     void EndFrameBuffers();
+    // Draw buffers (vertex/index GPU buffers) and upload buffers, for logs.
+    VideoMemoryUse DrawBufferMemory();
+    VideoMemoryUse UploadBufferMemory();
     // The targets pending draws render into (for draw dumps).
     const TargetSet& CurrentTargetSet();
     // Number of pipelines created (for logs).
@@ -559,6 +639,8 @@ namespace h3::gpu::renderer::internal
     void DumpDepthAfterRestore(SDL_GPUTexture* bytes, SDL_GPUTextureFormat bytesFormat, SDL_GPUTexture* depth);
     // H3_DUMP_MEMORY: dump guest memory at this swap.
     void DumpMemoryAtSwap();
+    // H3_POKE: writes bytes into guest memory at a swap (experiments).
+    void PokeMemoryAtSwap();
     // H3_DUMP_FRAME / H3_SNAPSHOT_EVERY: dump the presented frame.
     void DumpFrameAtSwap(uint32_t frontbuffer, SDL_GPUTexture* texture, uint32_t width, uint32_t height, SDL_GPUTextureFormat format);
 }

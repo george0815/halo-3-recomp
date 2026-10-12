@@ -8,6 +8,7 @@
 #include "config/env.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 
@@ -186,6 +187,44 @@ namespace h3::gpu::renderer::internal
             kDumpTargetWidth * g_renderScale, kDumpTargetHeight * g_renderScale, CopyMode::Value);
         snprintf(path, sizeof(path), "restore_%u_%04u_depth.png", dumpFrame, g_frameDraws);
         DumpTexture(floats, kDumpTargetWidth * g_renderScale, kDumpTargetHeight * g_renderScale, path, SDL_GPU_TEXTUREFORMAT_R32_FLOAT);
+    }
+
+    void PokeMemoryAtSwap()
+    {
+        // H3_POKE=<frame>:<address>:<hex bytes>[,...]: write those bytes
+        // (big-endian, as in memory) to guest memory at that swap, for
+        // experiments (e.g. changing a game variable mid-run). Addresses
+        // as for H3_DUMP_MEMORY.
+        static const char* spec = EnvString("H3_POKE");
+        if (!spec)
+            return;
+        for (const char* p = spec; *p;)
+        {
+            char* end;
+            uint32_t frameNumber = uint32_t(strtoul(p, &end, 0));
+            uint32_t address = *end == ':' ? uint32_t(strtoul(end + 1, &end, 16)) : 0;
+            if (*end != ':')
+                break;
+            const char* hex = end + 1;
+            constexpr uint32_t kFirstVirtual = 0x80000000;
+            uint8_t* guest = GuestPtr<uint8_t>(address >= kFirstVirtual ? address : PhysicalToGuest(address));
+            size_t i = 0;
+            for (; isxdigit(uint8_t(hex[i])) && isxdigit(uint8_t(hex[i + 1])); i += 2)
+            {
+                if (frameNumber == g_swaps)
+                {
+                    char byte[3] = { hex[i], hex[i + 1], 0 };
+                    guest[i / 2] = uint8_t(strtoul(byte, nullptr, 16));
+                }
+            }
+            if (frameNumber == g_swaps)
+                fprintf(stderr, "[debug] poked %zu bytes at %08X\n", i / 2, address);
+            p = hex + i;
+            if (*p == ',')
+                p++;
+            else
+                break;
+        }
     }
 
     void DumpMemoryAtSwap()

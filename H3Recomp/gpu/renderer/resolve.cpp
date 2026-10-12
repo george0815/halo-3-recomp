@@ -281,6 +281,7 @@ namespace h3::gpu::renderer::internal
             SDL_GPUTexture* source = nullptr;  // resolved texture it was copied from
             uint32_t generation = ~0u;         // source's generation at the copy
             uint32_t usedFrame = 0;            // last frame it was sampled
+            uint64_t bytes = 0;                // video memory (for logs)
         };
         std::unordered_map<uint64_t, SubTexture> g_subTextures;  // (address, size, format) -> copy
         // Views unused this many frames are freed (about ten seconds at
@@ -422,6 +423,28 @@ namespace h3::gpu::renderer::internal
         return g_subTextures.size();
     }
 
+    VideoMemoryUse ResolvedMemory()
+    {
+        VideoMemoryUse use;
+        for (const ResolvedTexture& texture : g_resolved)
+        {
+            use.count++;
+            use.bytes += HostTextureBytes(texture.hostFormat, texture.HostWidth(), texture.HostHeight());
+        }
+        return use;
+    }
+
+    VideoMemoryUse ResolvedViewMemory()
+    {
+        VideoMemoryUse use;
+        for (const auto& [key, sub] : g_subTextures)
+        {
+            use.count++;
+            use.bytes += sub.bytes;
+        }
+        return use;
+    }
+
     void PollWriteBacks(bool wait)
     {
         size_t done = 0;
@@ -473,6 +496,7 @@ namespace h3::gpu::renderer::internal
             sub.texture = SDL_CreateGPUTexture(g_device, &info);
             if (!sub.texture)
                 return resolved.texture;
+            sub.bytes = HostTextureBytes(format, info.width, info.height);
         }
         uint32_t w = std::min(width, guestWidth - x) * scale, h = std::min(height, guestHeight - y) * scale;
         if (depthBytes)
@@ -485,6 +509,7 @@ namespace h3::gpu::renderer::internal
             blit.destination = { sub.texture, 0, 0, 0, 0, w, h };
             blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
             blit.filter = SDL_GPU_FILTER_NEAREST;
+            CountPass(PassKind::Blit, uint64_t(w) * h);
             SDL_BlitGPUTexture(Commands(), &blit);
         }
         sub.source = resolved.texture;
@@ -623,6 +648,7 @@ namespace h3::gpu::renderer::internal
             blit.destination = { texture->texture, 0, 0, uint32_t(hostDestX), uint32_t(hostDestY), hostW, hostH };
             blit.load_op = SDL_GPU_LOADOP_LOAD;
             blit.filter = SDL_GPU_FILTER_NEAREST;
+            CountPass(PassKind::Blit, uint64_t(hostW) * hostH);
             SDL_BlitGPUTexture(Commands(), &blit);
         }
 

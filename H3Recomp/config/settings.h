@@ -90,6 +90,10 @@ namespace h3::config
     // target is 25 MB at 1x, 225 MB at 3x) and Halo keeps a dozen or more.
     constexpr int kMaxRenderScale = 3;   // 3x = 3840x2160 for a 720p game
     constexpr size_t kMaxGamertag = 15;  // the 360's limit (XUSER_NAME_SIZE - 1)
+    // Game tick rates (frame_rate): the original 30, or 60 (experimental;
+    // hooks/tick_rate.cpp). Halo 3 renders one frame per game tick.
+    constexpr int kOriginalTickRate = 30;
+    constexpr int kUnlockedTickRate = 60;
 
     struct VideoSettings
     {
@@ -107,6 +111,11 @@ namespace h3::config
         // Compile new shaders and pipelines on background threads and skip
         // what needs them meanwhile: no stutter, brief pop-in.
         bool asyncShaders = false;
+        // Game ticks (and so frames) per second: kOriginalTickRate or
+        // kUnlockedTickRate. 60 runs the whole simulation at 60 Hz, which
+        // the engine supports (it reads the rate everywhere) but Halo 3
+        // shipped at 30, so some content may misbehave.
+        int frameRate = kOriginalTickRate;
     };
 
     struct ProfileSettings

@@ -30,7 +30,7 @@ layout(set = 3, binding = 0) uniform XeCopy
 {
     ivec4 offset;  // xy: destination origin, zw: source origin (samples)
     ivec4 mode;    // x: copy mode, y: depth is 20e4 float, zw: source samples per pixel
-    vec4 scale;    // x: 2^RB_COPY_DEST_INFO exp bias, for color; fill color for mode 5
+    vec4 scale;    // x: 2^RB_COPY_DEST_INFO exp bias, for color; y: 0 = gamma 2 (H3_APPROX_GAMMA); fill color for mode 5
 };
 layout(location = 0) out vec4 xe_out;
 
@@ -86,10 +86,12 @@ void main()
         uint d = mode.y != 0 ? xe_float_to_20e4(v.r) : uint(round(clamp(v.r, 0.0, 1.0) * 16777215.0));
         xe_out = vec4(0.0, float(d & 255u), float((d >> 8) & 255u), float(d >> 16)) / 255.0;
     }
-    else if (mode.x == 3)  // LinearToGamma: Halo decodes by squaring
-        xe_out = vec4(sqrt(clamp(v.rgb, 0.0, 1.0)), v.a);
-    else if (mode.x == 4)  // GammaToLinear
-        xe_out = vec4(v.rgb * v.rgb, v.a);
+    // LinearToGamma / GammaToLinear: the hardware's piecewise-linear curve,
+    // or gamma 2 with H3_APPROX_GAMMA (scale.y = 0).
+    else if (mode.x == 3)
+        xe_out = vec4(scale.y != 0.0 ? xe_linear_to_pwl_gamma(v.rgb) : sqrt(clamp(v.rgb, 0.0, 1.0)), v.a);
+    else if (mode.x == 4)
+        xe_out = vec4(scale.y != 0.0 ? xe_pwl_gamma_to_linear(v.rgb) : v.rgb * v.rgb, v.a);
     else if (mode.x == 2)  // FloatTo7e3 (alpha is 2 bits)
         xe_out = vec4(xe_float_to_7e3(v.r), xe_float_to_7e3(v.g), xe_float_to_7e3(v.b), round(clamp(v.a, 0.0, 1.0) * 3.0) / 3.0);
     else
@@ -247,7 +249,11 @@ void main()
             if (pipeline)
                 return pipeline;
             SDL_GPUShader* vertex = CompileInternal(kCopyVertexShader, true, 0, 0);
-            SDL_GPUShader* fragment = CompileInternal(kCopyFragmentShader, false, 1, 1);
+            // The copy shader uses the shared piecewise-linear gamma GLSL,
+            // inserted after its #version line.
+            std::string source = kCopyFragmentShader;
+            source.insert(source.find('\n') + 1, shader::kPwlGammaGlsl);
+            SDL_GPUShader* fragment = CompileInternal(source.c_str(), false, 1, 1);
             if (vertex && fragment)
             {
                 SDL_GPUColorTargetDescription target{};
@@ -282,6 +288,7 @@ void main()
             color.texture = destination;
             color.load_op = SDL_GPU_LOADOP_LOAD;
             color.store_op = SDL_GPU_STOREOP_STORE;
+            CountPass(PassKind::Copy, uint64_t(rectangle.w) * uint64_t(rectangle.h));
             SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(Commands(), &color, 1, nullptr);
             SDL_BindGPUGraphicsPipeline(pass, pipeline);
             SDL_GPUViewport viewport{ 0.0f, 0.0f, float(destinationWidth), float(destinationHeight), 0.0f, 1.0f };
@@ -300,7 +307,7 @@ void main()
         uint32_t h, CopyMode mode, bool depthFloat, float scale, int32_t samplesX, int32_t samplesY)
     {
         CopyConstants constants = { { dx, dy, sx, sy }, { int32_t(mode), depthFloat ? 1 : 0, samplesX, samplesY },
-            { scale, 1.0f, 1.0f, 1.0f } };
+            { scale, ApproxGamma() ? 0.0f : 1.0f, 1.0f, 1.0f } };
         RunCopyPass(source, destination, destinationFormat, destinationWidth, destinationHeight, SDL_Rect{ dx, dy, int(w), int(h) },
             constants);
     }
@@ -352,6 +359,7 @@ void main()
         target.store_op = SDL_GPU_STOREOP_STORE;
         target.stencil_load_op = SDL_GPU_LOADOP_LOAD;
         target.stencil_store_op = SDL_GPU_STOREOP_STORE;
+        CountPass(PassKind::DepthRestore, uint64_t(rect.w) * uint64_t(rect.h));
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(Commands(), nullptr, 0, &target);
         SDL_BindGPUGraphicsPipeline(pass, g_depthRestorePipeline);
         SDL_GPUViewport viewport{ 0.0f, 0.0f, float(width), float(height), 0.0f, 1.0f };
@@ -418,6 +426,7 @@ void main()
         // (reference 0xFF through that bit's write mask).
         for (int32_t bit = -1; bit < int32_t(kStencilBits); bit++)
         {
+            CountPass(PassKind::StencilRestore, uint64_t(rect.w) * uint64_t(rect.h));
             SDL_BindGPUGraphicsPipeline(pass, g_stencilRestorePipelines[bit < 0 ? kStencilBits : uint32_t(bit)]);
             SDL_SetGPUStencilReference(pass, bit < 0 ? 0 : 0xFF);
             SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);

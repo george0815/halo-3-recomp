@@ -1480,7 +1480,7 @@ void main()
                     kFloatConstantCount);
                 out += Format("layout(std140, set = %u, binding = 1) uniform XeSystem\n{\n"
                               "    uvec4 bools[2];\n    uvec4 loops[8];\n    uvec4 vfetch[96];\n"
-                              "    vec4 ndc_scale;\n    vec4 ndc_offset;\n    uint ps_param_gen;\n    uint flags;\n    uint rect_indices;\n    uint tess_segments;\n    uint tess_patch_base;\n"
+                              "    vec4 ndc_scale;\n    vec4 ndc_offset;\n    uint ps_param_gen;\n    uint flags;\n    uint rect_indices;\n    uint tess_segments;\n    uint tess_patch_base;\n    float depth_bias_slope;\n"
                               "    uvec4 tfetch[32];\n    vec4 color_exp_bias;\n    float alpha_ref;\n    float pixel_scale_x;\n    float pixel_scale_y;\n    float render_scale;\n    float target_width;\n    float target_height;\n} xe_sys;\n",
                     uniformSet);
                 for (const TextureBinding& texture : m_info.textures)
@@ -1509,6 +1509,7 @@ void main()
                             out += Format("layout(location = %u) out vec4 xe_color%u_out;\n", i, i);
                 }
                 out += kPrelude;
+                out += kPwlGammaGlsl;
                 if (m_compute)
                     out += kMemExportFunctions;
 
@@ -1594,7 +1595,7 @@ vec4 xe_texture_result(vec4 v, uint fetchConstant)
         else if (sign == 2u)
             v[i] = v[i] * 2.0 - 1.0;
         else if (sign == 3u)
-            v[i] = v[i] * v[i];  // approximates the piecewise linear gamma (Halo's own decode squares)
+            v[i] = (xe_sys.flags & 0x800u) != 0u ? v[i] * v[i] : xe_pwl_gamma_to_linear(v[i]);
     }
     vec4 r;
     for (int i = 0; i < 4; i++)
@@ -1697,7 +1698,16 @@ vec3 xe_cube_direction(vec3 stf)
                         out += Format("    if ((xe_sys.flags & %uu) != 0u)\n        xe_color%u_out = clamp(xe_color%u_out, 0.0, 1.0);\n",
                             0x1000u << i, i, i);
                     }
-                out += m_info.writesDepth ? "    float xe_frag_depth = xe_depth.x;\n" : "    float xe_frag_depth = gl_FragCoord.z;\n";
+                // Polygon offset, slope part (the constant part moved the
+                // vertices' depth): the depth's steepest screen-space change
+                // times the factor. Done here rather than as host depth
+                // bias since the depth is written from the shader anyway.
+                // Only for rasterized depth, as on the console.
+                out += m_info.writesDepth ? "    float xe_frag_depth = xe_depth.x;\n"
+                                          : "    float xe_frag_depth = gl_FragCoord.z;\n"
+                                            "    if (xe_sys.depth_bias_slope != 0.0)\n"
+                                            "        xe_frag_depth = clamp(xe_frag_depth + xe_sys.depth_bias_slope *\n"
+                                            "            max(abs(dFdx(gl_FragCoord.z)), abs(dFdy(gl_FragCoord.z))), 0.0, 1.0);\n";
                 out += "    if ((xe_sys.flags & 2u) != 0u)\n        xe_frag_depth = xe_float24_round(xe_frag_depth);\n";
                 out += "    gl_FragDepth = xe_frag_depth;\n";
                 out += "}\n";
@@ -1705,6 +1715,53 @@ vec3 xe_cube_direction(vec3 stf)
             }
         };
     }
+
+    const char* const kPwlGammaGlsl = R"(
+// Xenos piecewise-linear gamma (Xenia's xenos.cc). Pieces are chosen with
+// value >= threshold so NaN falls into the lowest piece.
+float xe_pwl_gamma_to_linear(float gamma)
+{
+    gamma = clamp(gamma, 0.0, 1.0);
+    float scale, offset;
+    if (gamma >= 96.0 / 255.0)
+    {
+        if (gamma >= 192.0 / 255.0) { scale = 8.0 / 1024.0; offset = -1024.0; }
+        else { scale = 4.0 / 1024.0; offset = -256.0; }
+    }
+    else
+    {
+        if (gamma >= 64.0 / 255.0) { scale = 2.0 / 1024.0; offset = -64.0; }
+        else { scale = 1.0 / 1024.0; offset = 0.0; }
+    }
+    float linear = gamma * ((255.0 * 1024.0) * scale) + offset;
+    linear += trunc(linear * scale);
+    return linear * (1.0 / 1023.0);
+}
+float xe_linear_to_pwl_gamma(float linear)
+{
+    linear = clamp(linear, 0.0, 1.0);
+    float scale, offset;
+    if (linear >= 128.0 / 1023.0)
+    {
+        if (linear >= 512.0 / 1023.0) { scale = 1023.0 / 8.0; offset = 128.0 / 255.0; }
+        else { scale = 1023.0 / 4.0; offset = 64.0 / 255.0; }
+    }
+    else
+    {
+        if (linear >= 64.0 / 1023.0) { scale = 1023.0 / 2.0; offset = 32.0 / 255.0; }
+        else { scale = 1023.0; offset = 0.0; }
+    }
+    return trunc(linear * scale) * (1.0 / 255.0) + offset;
+}
+vec3 xe_pwl_gamma_to_linear(vec3 v)
+{
+    return vec3(xe_pwl_gamma_to_linear(v.r), xe_pwl_gamma_to_linear(v.g), xe_pwl_gamma_to_linear(v.b));
+}
+vec3 xe_linear_to_pwl_gamma(vec3 v)
+{
+    return vec3(xe_linear_to_pwl_gamma(v.r), xe_linear_to_pwl_gamma(v.g), xe_linear_to_pwl_gamma(v.b));
+}
+)";
 
     TranslationResult Translate(bool isVertex, const uint32_t* dwords, uint32_t dwordCount, bool compute)
     {

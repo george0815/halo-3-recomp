@@ -371,6 +371,16 @@ namespace h3::launcher
         scale.step = [&video](int delta) { video.renderScale = std::clamp(video.renderScale + delta, 1, config::kMaxRenderScale); };
         page.items.push_back(scale);
 
+        MenuItem frameRate{ MenuItem::Kind::Choice, QStringLiteral("Frame rate"),
+            QStringLiteral("60 runs the game's simulation at 60 ticks a second (experimental: Halo 3 shipped at 30, "
+                           "so some things may misbehave, and heavy scenes drop back to 30).") };
+        frameRate.value = [&video] { return QStringLiteral("%1 fps").arg(video.frameRate); };
+        frameRate.step = [&video](int)
+        {
+            video.frameRate = video.frameRate == config::kOriginalTickRate ? config::kUnlockedTickRate : config::kOriginalTickRate;
+        };
+        page.items.push_back(frameRate);
+
         MenuItem precompile{ MenuItem::Kind::Choice, QStringLiteral("Precompile shaders"),
             QStringLiteral("At start, rebuild every shader and pipeline this PC has used before, in the background, "
                            "so areas you've played don't stutter. The list grows as you play.") };

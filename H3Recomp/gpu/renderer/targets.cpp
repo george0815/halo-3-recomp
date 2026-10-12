@@ -6,6 +6,9 @@
 
 #include "gpu/renderer/internal.h"
 
+#include <algorithm>
+#include <cstdio>
+
 namespace h3::gpu::renderer::internal
 {
     namespace
@@ -22,6 +25,52 @@ namespace h3::gpu::renderer::internal
         // texture now in use. The console reinterprets the bits; this
         // converts values instead, which is close but not exact.
         std::unordered_map<uint32_t, RenderTarget*> g_colorAtBase;  // EDRAM base -> target last used there
+
+        // Carrying the whole target over on every switch was most of the GPU
+        // time at a render scale: Halo switches formats ~50 times a frame at
+        // two bases (8_8_8_8 <-> 8_8_8_8_GAMMA and others), and each switch
+        // converted all 2560x1280 sample-space texels (x9 at 3x: 2 Gpx a
+        // frame). So each base keeps a log of the rectangles written to it,
+        // numbered in order, and each target remembers the write number it
+        // was last in sync at (RenderTarget::syncedWrite). On a switch, the
+        // new target gets just the bounding box of what was written since
+        // it was in sync, from the current target, which always holds
+        // everything.
+        struct BaseWrites
+        {
+            uint64_t next = 1;  // number of the next write
+            std::vector<std::pair<uint64_t, SDL_Rect>> rects;  // (write number, rectangle), oldest first
+        };
+        std::unordered_map<uint32_t, BaseWrites> g_baseWrites;
+        // Writes kept per base before the oldest are merged into one
+        // (conservative: the merged rectangle covers them all).
+        constexpr size_t kMaxBaseWrites = 256;
+
+        // Union of two rectangles (an empty one is ignored).
+        SDL_Rect Union(const SDL_Rect& a, const SDL_Rect& b)
+        {
+            if (a.w <= 0 || a.h <= 0)
+                return b;
+            if (b.w <= 0 || b.h <= 0)
+                return a;
+            int x0 = std::min(a.x, b.x), y0 = std::min(a.y, b.y);
+            int x1 = std::max(a.x + a.w, b.x + b.w), y1 = std::max(a.y + a.h, b.y + b.h);
+            return SDL_Rect{ x0, y0, x1 - x0, y1 - y0 };
+        }
+
+        // The rectangle a target at a base is missing: everything written
+        // there after its last sync (the whole target if it never synced).
+        SDL_Rect StaleRect(uint32_t base, const RenderTarget& target)
+        {
+            SDL_Rect full{ 0, 0, int(TargetWidth()), int(TargetHeight()) };
+            if (!target.synced)
+                return full;
+            SDL_Rect stale{};
+            for (const auto& [write, rect] : g_baseWrites[base].rects)
+                if (write > target.syncedWrite)
+                    stale = Union(stale, rect);
+            return stale;
+        }
 
         // Host format for a ColorRenderTargetFormat.
         SDL_GPUTextureFormat ColorTargetFormat(uint32_t xenosFormat)
@@ -50,16 +99,17 @@ namespace h3::gpu::renderer::internal
             }
         }
 
-        // Moves what `from` holds into `to` (an EDRAM format switch).
-        void CarryOver(const RenderTarget& from, const RenderTarget& to)
+        // Moves what `from` holds in a rectangle into `to` (an EDRAM format
+        // switch).
+        void CarryOver(const RenderTarget& from, const RenderTarget& to, const SDL_Rect& rect)
         {
             // 8_8_8_8_GAMMA keeps linear values on the host (as 16-bit
             // floats), other 8-bit formats the stored (encoded) ones.
             bool fromGamma = from.xenosFormat == kColorFormat8888Gamma, toGamma = to.xenosFormat == kColorFormat8888Gamma;
             SDL_GPUTextureFormat encodedFormat = fromGamma ? to.format : from.format;
             auto convert = [&](CopyMode mode) {
-                ConvertCopy(from.texture, to.texture, to.format, TargetWidth(), TargetHeight(), 0, 0, 0, 0, TargetWidth(),
-                    TargetHeight(), mode);
+                ConvertCopy(from.texture, to.texture, to.format, TargetWidth(), TargetHeight(), rect.x, rect.y, rect.x, rect.y,
+                    uint32_t(rect.w), uint32_t(rect.h), mode);
             };
             if (Is7e3(from.xenosFormat) && !IsFloatHostFormat(to.format))
                 convert(CopyMode::FloatTo7e3);
@@ -68,10 +118,13 @@ namespace h3::gpu::renderer::internal
             else
             {
                 SDL_GPUBlitInfo blit{};
-                blit.source = { from.texture, 0, 0, 0, 0, TargetWidth(), TargetHeight() };
-                blit.destination = { to.texture, 0, 0, 0, 0, TargetWidth(), TargetHeight() };
-                blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                uint32_t x = uint32_t(rect.x), y = uint32_t(rect.y), w = uint32_t(rect.w), h = uint32_t(rect.h);
+                blit.source = { from.texture, 0, 0, x, y, w, h };
+                blit.destination = { to.texture, 0, 0, x, y, w, h };
+                // Only part of the target is replaced: keep the rest.
+                blit.load_op = SDL_GPU_LOADOP_LOAD;
                 blit.filter = SDL_GPU_FILTER_NEAREST;
+                CountPass(PassKind::Blit, uint64_t(w) * h);
                 SDL_BlitGPUTexture(Commands(), &blit);
             }
         }
@@ -112,19 +165,67 @@ namespace h3::gpu::renderer::internal
         if (!target)
             return nullptr;
         RenderTarget*& current = g_colorAtBase[base];
+        BaseWrites& writes = g_baseWrites[base];
         if (current && current != target)
         {
-            Flush();
-            CarryOver(*current, *target);
+            // H3_FULL_CARRYOVER=1: copy whole targets on a switch (the old
+            // behaviour), to compare.
+            static const bool fullCarry = EnvFlag("H3_FULL_CARRYOVER");
+            SDL_Rect stale = fullCarry ? SDL_Rect{ 0, 0, int(TargetWidth()), int(TargetHeight()) } : StaleRect(base, *target);
+            static const bool logCarry = EnvFlag("H3_LOG_CARRYOVER");
+            if (logCarry)
+                fprintf(stderr, "[carry] frame %u base %03X %u -> %u: %dx%d at %d,%d\n", g_swaps, base, current->xenosFormat, xenosFormat,
+                    stale.w, stale.h, stale.x, stale.y);
+            if (stale.w > 0 && stale.h > 0)
+            {
+                Flush();
+                CarryOver(*current, *target, stale);
+            }
+            // The outgoing target holds everything up to now too.
+            current->synced = true;
+            current->syncedWrite = writes.next - 1;
         }
+        target->synced = true;
+        target->syncedWrite = writes.next - 1;
         current = target;
         return target;
+    }
+
+    void RecordColorWrite(uint32_t base, const SDL_Rect& rect)
+    {
+        if (rect.w <= 0 || rect.h <= 0)
+            return;
+        BaseWrites& writes = g_baseWrites[base];
+        writes.rects.push_back({ writes.next++, rect });
+        if (writes.rects.size() > kMaxBaseWrites)
+        {
+            // Merge the older half into one write numbered as the newest of
+            // them: anything that needed one of them gets all of them.
+            size_t half = writes.rects.size() / 2;
+            SDL_Rect merged{};
+            for (size_t i = 0; i < half; i++)
+                merged = Union(merged, writes.rects[i].second);
+            uint64_t number = writes.rects[half - 1].first;
+            writes.rects.erase(writes.rects.begin(), writes.rects.begin() + half);
+            writes.rects.insert(writes.rects.begin(), { number, merged });
+        }
     }
 
     RenderTarget* ColorTargetAt(uint32_t base)
     {
         auto it = g_colorAtBase.find(base);
         return it != g_colorAtBase.end() ? it->second : nullptr;
+    }
+
+    VideoMemoryUse RenderTargetMemory()
+    {
+        VideoMemoryUse use;
+        for (const auto& [key, target] : g_renderTargets)
+        {
+            use.count++;
+            use.bytes += HostTextureBytes(target.format, TargetWidth(), TargetHeight());
+        }
+        return use;
     }
 
     bool IsFloatHostFormat(SDL_GPUTextureFormat format)

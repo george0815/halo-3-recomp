@@ -162,6 +162,8 @@ namespace h3::gpu::capture
         fprintf(out, "  viewport scale %g,%g,%g offset %g,%g,%g\n", RegFloat(kRegPaClVportXScale),
             RegFloat(kRegPaClVportYScale), RegFloat(kRegPaClVportZScale), RegFloat(kRegPaClVportXOffset),
             RegFloat(kRegPaClVportYOffset), RegFloat(kRegPaClVportZOffset));
+        fprintf(out, "  poly offset front %g,%g back %g,%g\n", RegFloat(kRegPaSuPolyOffsetFrontScale),
+            RegFloat(kRegPaSuPolyOffsetFrontOffset), RegFloat(kRegPaSuPolyOffsetBackScale), RegFloat(kRegPaSuPolyOffsetBackOffset));
         // Pixel shader constants c0-c7 and c255 (ALU constants 256 on).
         fprintf(out, "  ps constants");
         for (uint32_t c : { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 255u })
