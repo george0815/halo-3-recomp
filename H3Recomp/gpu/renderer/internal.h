@@ -254,6 +254,7 @@ namespace h3::gpu::renderer::internal
         HostShader* host = nullptr;    // the compiled program (maybe still compiling)
         shader::ShaderInfo info;       // what it reads (constants, fetches, textures)
         std::string cacheName;         // SPIR-V file in the shader cache (also its id)
+        uint64_t cacheId = 0;          // ShaderCacheId(cacheName), worked out once
         std::vector<uint32_t> microcode;  // kept for memexport vertex shaders (compute variant, memexport.cpp)
         uint64_t captureHash = 0;      // FNV-1a of the guest microcode, as H3_GPU_CAPTURE names gpu_shaders/
     };
@@ -273,6 +274,11 @@ namespace h3::gpu::renderer::internal
     SDL_GPUShader* CompileInternal(const char* glsl, bool vertex, uint32_t samplers, uint32_t uniformBuffers);
     // The shader cache file name for translated GLSL ("<16 hex digits>.spv").
     std::string ShaderCacheName(bool vertex, const std::string& glsl);
+    // A cache file name for one of the renderer's own shaders,
+    // "<prefix>_<16 hex digits of the source's hash>.spv": the cache is
+    // looked up by name alone, so a fixed name kept loading the old SPIR-V
+    // after the source changed.
+    std::string InternalCacheName(const char* prefix, const char* glsl);
     // SPIR-V for translated GLSL: from the shader cache, or compiled and
     // stored there. Any thread.
     enum class ShaderStage { Vertex, Fragment, Compute };
@@ -317,6 +323,10 @@ namespace h3::gpu::renderer::internal
     constexpr uint32_t kRasterizerNoDepthClip = 1u << 3;
     constexpr uint32_t kClipCntlClipDisable = 1u << 16;
     static_assert(sizeof(PipelineDesc) == 16 + 16 * 4);
+    // RB_DEPTHCONTROL's enable bits.
+    constexpr uint32_t kDepthControlStencilEnable = 1u << 0;
+    constexpr uint32_t kDepthControlZEnable = 1u << 1;
+    constexpr uint32_t kDepthControlZWriteEnable = 1u << 2;
 
     // Polygon offset (depth bias) of a draw, from PA_SU_SC_MODE_CNTL and
     // the PA_SU_POLY_OFFSET_* registers. Halo uses it for decals (on the
@@ -618,11 +628,24 @@ namespace h3::gpu::renderer::internal
     // Memory export (memexport.cpp)
     // ------------------------------------------------------------------
 
-    // Runs a memexport vertex shader's exports for the current draw (its
-    // compute variant); the results reach guest memory a frame or two later.
+    // Queues a memexport vertex shader's exports for the current draw (its
+    // compute variant, recorded in a batch with the others queued since);
+    // the results reach guest memory a frame or two later.
     void RunMemExport(const Shader& vs, uint32_t initiator, uint32_t indexBase, uint32_t dmaSize);
-    // Submits the command buffer with a fence if memexport results are
-    // waiting in it. Call before any other submit of g_commands.
+    // Records the queued memexport dispatches. Call before recording GPU
+    // work that may read their results or change what they read (Flush,
+    // resolves; FenceMemExports does it too).
+    void RecordPendingMemExports();
+    // Whether any memexport dispatch so far could write guest memory in
+    // [begin, end) (physical addresses): such vertex data changes on the
+    // GPU, so it's never kept resident (draw.cpp).
+    bool MemExportMayWrite(uint32_t begin, uint32_t end);
+    // Drops resident vertex ranges overlapping [begin, end) (physical), when
+    // memory export starts writing there (draw.cpp).
+    void ForgetResident(uint32_t begin, uint32_t end);
+    // Records queued dispatches, then submits the command buffer with a
+    // fence if memexport results are waiting in it. Call before any other
+    // submit of g_commands.
     void FenceMemExports();
     // Writes back memexport results whose GPU work finished.
     void PollMemExports();
@@ -700,9 +723,25 @@ namespace h3::gpu::renderer::internal
     inline double g_frameWaitSeconds = 0;
     inline uint64_t g_stagedBytes = 0;       // vertex data uploaded by Flush
     inline uint64_t g_stagedIndexBytes = 0;  // index data uploaded by Flush
+    inline uint64_t g_residentBytes = 0;     // resident vertex data uploaded (new or changed)
+    // H3_UNIFORM_CONSTANTS=1: push draws' float constants as uniforms, draw
+    // by draw (the old path), instead of the per-flush storage buffer.
+    inline bool g_uniformConstants = false;
     // Records everything pending into the command buffer. Call before
     // anything that can't happen inside a render pass.
     void Flush();
+
+    // H3_GPU_TIMING=1 (diagnostic): the GPU time of the work recorded inside
+    // the scope, under its label (the work is submitted and waited for at
+    // both ends). Nested scopes take their part out of the outer one's.
+    struct GpuTimedScope
+    {
+        explicit GpuTimedScope(const char* label);
+        ~GpuTimedScope();
+        GpuTimedScope(const GpuTimedScope&) = delete;
+        GpuTimedScope& operator=(const GpuTimedScope&) = delete;
+        bool active = false;
+    };
     // Per-swap bookkeeping of the draw buffers.
     void EndFrameBuffers();
     // Draw buffers (vertex/index GPU buffers) and upload buffers, for logs.

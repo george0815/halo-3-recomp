@@ -41,13 +41,24 @@ namespace h3::gpu::renderer::internal
     namespace
     {
         constexpr const char* kManifestFile = "pipelines.txt";
+        // The manifest's first line is "V <version>". Bump the version when
+        // the translator's output changes for every shader (new resource
+        // layout, new declarations): all shader ids change, and warming up
+        // the old manifest would build thousands of pipelines nothing uses
+        // at every start. A manifest of another version is set aside as
+        // pipelines.txt.old and a new one started.
+        // 2: float constants in a storage buffer (draw.cpp QueueDraw).
+        // 3: compact constant layouts (ShaderInfo::compactConstants).
+        // 4: resident vertex memory binding (draw.cpp ResidentOffset).
+        constexpr uint32_t kManifestVersion = 4;
         // Worker threads for shader and pipeline creation. The game itself
         // keeps about six host threads busy; drivers compile pipelines
         // single-threaded, so a few workers go a long way.
         constexpr unsigned kMinWorkers = 2, kMaxWorkers = 4;
 
-        // Each translated shader has two uniform buffers: its float
-        // constants and the system constants (translator.h).
+        // Each translated shader has two uniform slots: the float
+        // constants (used by compute shaders only; draws read them from a
+        // storage buffer) and the system constants (translator.h).
         constexpr uint32_t kShaderUniformBuffers = 2;
 
         // --- Shared state (g_mutex) ----------------------------------------
@@ -114,11 +125,38 @@ namespace h3::gpu::renderer::internal
 
         std::filesystem::path ManifestPath() { return g_shaderCacheDirectory / kManifestFile; }
 
+        // Makes sure the manifest is of this version (kManifestVersion):
+        // one of another version is set aside and a new one started. Once
+        // per run, before the first read or write (warm-up may be off).
+        // Returns whether an existing manifest of this version is there.
+        bool CheckManifestVersion()
+        {
+            static const bool current = [] {
+                std::ifstream file(ManifestPath());
+                std::string line;
+                if (file && std::getline(file, line) && line == "V " + std::to_string(kManifestVersion))
+                    return true;
+                file.close();
+                std::error_code error;
+                if (std::filesystem::exists(ManifestPath(), error))
+                {
+                    std::filesystem::path old = ManifestPath();
+                    old += ".old";
+                    std::filesystem::rename(ManifestPath(), old, error);
+                    fprintf(stderr, "[render] shader manifest from another version set aside as %s\n", old.string().c_str());
+                }
+                std::ofstream(ManifestPath()) << "V " << kManifestVersion << '\n';
+                return false;
+            }();
+            return current;
+        }
+
         // Appends a record (once per key).
         void Record(uint64_t key, const std::string& line)
         {
             if (g_shaderCacheDirectory.empty())
                 return;
+            CheckManifestVersion();
             std::lock_guard lock(g_manifestMutex);
             if (!g_recorded.insert(key).second)
                 return;
@@ -258,7 +296,11 @@ namespace h3::gpu::renderer::internal
             info.format = SDL_GPU_SHADERFORMAT_SPIRV;
             info.stage = vertex ? SDL_GPU_SHADERSTAGE_VERTEX : SDL_GPU_SHADERSTAGE_FRAGMENT;
             info.num_samplers = samplers;
-            info.num_storage_buffers = vertex ? 1 : 0;  // vertex shaders fetch from the vertex memory buffer
+            // Vertex shaders: vertex memory, float constants (unless pushed
+            // as uniforms), resident vertex memory; pixel shaders: float
+            // constants (unless pushed). Draw.cpp's Flush binds them in
+            // this order.
+            info.num_storage_buffers = (vertex ? 2 : 0) + (g_uniformConstants ? 0 : 1);
             info.num_uniform_buffers = kShaderUniformBuffers;
             SDL_GPUShader* shader = SDL_CreateGPUShader(g_device, &info);
             if (!shader)
@@ -464,14 +506,15 @@ namespace h3::gpu::renderer::internal
     {
         if (g_shaderCacheDirectory.empty())
             return;
+        if (!CheckManifestVersion())
+            return;  // new: nothing to warm up yet
         std::ifstream file(ManifestPath());
-        if (!file)
-            return;
+        std::string line;
+        std::getline(file, line);  // the version
         // Shaders first: the workers take jobs in order, so every shader is
         // started before any pipeline that waits on it.
         std::vector<std::pair<uint64_t, PipelineDesc>> pipelines;
         size_t shaders = 0;
-        std::string line;
         while (std::getline(file, line))
         {
             std::istringstream in(line);

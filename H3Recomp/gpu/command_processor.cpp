@@ -32,6 +32,11 @@
 #include <utility>
 #include <vector>
 
+namespace h3::debug
+{
+    void SetWallProfileThread();  // debug/profiler.cpp
+}
+
 namespace h3::gpu
 {
     namespace
@@ -258,12 +263,59 @@ namespace h3::gpu
             context.stack = context.ctx.r1.u64;
         }
 
+        // Recent history for the stuck-wait report (a rare hang at the
+        // mission list: the GPU waits on a mailbox D3D's interrupt work
+        // should write). Interrupts from both threads, under a mutex; packet
+        // headers from the command processor thread only.
+        struct InterruptRecord
+        {
+            uint32_t source = 0, cpu = 0;
+            std::chrono::steady_clock::time_point start, end;
+        };
+        constexpr size_t kInterruptHistory = 16;
+        std::mutex g_interruptHistoryMutex;
+        InterruptRecord g_interruptHistory[kInterruptHistory];
+        size_t g_interruptHistoryNext = 0;
+        constexpr size_t kPacketHistory = 32;
+        uint32_t g_packetHistory[kPacketHistory] = {};
+        size_t g_packetHistoryNext = 0;
+
+        // Logs the histories above (oldest first).
+        void DumpRecentHistory()
+        {
+            auto now = std::chrono::steady_clock::now();
+            auto ms = [&](std::chrono::steady_clock::time_point t) { return std::chrono::duration<double, std::milli>(now - t).count(); };
+            {
+                std::lock_guard lock(g_interruptHistoryMutex);
+                fprintf(stderr, "[gpu]   recent interrupts (source 0 vblank, 1 command processor):");
+                for (size_t i = 0; i < kInterruptHistory; i++)
+                {
+                    const InterruptRecord& record = g_interruptHistory[(g_interruptHistoryNext + i) % kInterruptHistory];
+                    if (record.start.time_since_epoch().count() == 0)
+                        continue;
+                    fprintf(stderr, " [s%u cpu%u %.1f ms ago, %s]", record.source, record.cpu, ms(record.start),
+                        record.end.time_since_epoch().count() ? "returned" : "RUNNING");
+                }
+                fprintf(stderr, "\n");
+            }
+            fprintf(stderr, "[gpu]   last packet headers:");
+            for (size_t i = 0; i < kPacketHistory; i++)
+                fprintf(stderr, " %08X", g_packetHistory[(g_packetHistoryNext + i) % kPacketHistory]);
+            fprintf(stderr, "\n");
+        }
+
         // Runs the game's graphics interrupt callback on the calling thread.
         void DeliverInterrupt(InterruptContext& context, uint32_t source, uint32_t cpu)
         {
             uint32_t callback = g_interruptCallback.load();
             if (callback == 0)
                 return;
+            size_t record;
+            {
+                std::lock_guard lock(g_interruptHistoryMutex);
+                record = g_interruptHistoryNext++ % kInterruptHistory;
+                g_interruptHistory[record] = { source, cpu, std::chrono::steady_clock::now(), {} };
+            }
             // The callback ignores a vblank unless the status register says
             // one is pending.
             if (source == kInterruptVblank)
@@ -280,6 +332,8 @@ namespace h3::gpu
             kernel::EnterInterrupt();
             (PPC_LOOKUP_FUNC(g_base, callback))(ctx, g_base);
             kernel::LeaveInterrupt();
+            std::lock_guard lock(g_interruptHistoryMutex);
+            g_interruptHistory[record].end = std::chrono::steady_clock::now();
         }
 
         // The command processor's own guest context (see CommandProcessorThread).
@@ -348,13 +402,18 @@ namespace h3::gpu
             }
         }
 
-        void CpWriteRegister(uint32_t index, uint32_t value)
+        // AluConstantGeneration's counters and AluConstantsHost's copy
+        // (command processor thread only).
+        uint32_t g_aluConstantGeneration[2] = {};
+        constexpr uint32_t kAluConstantsPerStage = 256 * 4;
+        uint32_t g_aluConstantsHost[2 * kAluConstantsPerStage] = {};
+
+        // H3_LOG_REG_WRITES=<first>-<last> (register indices, hex): log
+        // command-stream writes to that range (the first 4096). Empty
+        // (first > last) when not set.
+        const std::pair<uint32_t, uint32_t>& LogWriteRange()
         {
-            if (index >= kRegDcLutRwIndex && index <= kRegDcLutPwlData)
-                WriteGammaRegister(index, value);
-            // H3_LOG_REG_WRITES=<first>-<last> (register indices, hex): log
-            // command-stream writes to that range (the first 4096).
-            static const auto logRange = [] {
+            static const auto range = [] {
                 std::pair<uint32_t, uint32_t> range{ 1, 0 };
                 if (const char* spec = EnvString("H3_LOG_REG_WRITES"))
                 {
@@ -364,6 +423,19 @@ namespace h3::gpu
                 }
                 return range;
             }();
+            return range;
+        }
+
+        void CpWriteRegister(uint32_t index, uint32_t value)
+        {
+            if (index - kRegShaderConstantAlu < 2 * kAluConstantsPerStage)
+            {
+                g_aluConstantGeneration[(index - kRegShaderConstantAlu) / kAluConstantsPerStage]++;
+                g_aluConstantsHost[index - kRegShaderConstantAlu] = value;
+            }
+            if (index >= kRegDcLutRwIndex && index <= kRegDcLutPwlData)
+                WriteGammaRegister(index, value);
+            const auto& logRange = LogWriteRange();
             constexpr uint32_t kMaxLoggedWrites = 4096;
             static uint32_t logged = 0;
             if (index >= logRange.first && index <= logRange.second && logged < kMaxLoggedWrites)
@@ -378,6 +450,36 @@ namespace h3::gpu
                 if (ReadRegister(kRegScratchUmsk) & (1u << scratch))
                     GuestRef<uint32_t>(PhysicalToGuest(ReadRegister(kRegScratchAddr) + scratch * 4)) = value;
             }
+        }
+
+        // Writes count registers from index on, values from next() (host
+        // order). Runs of float constants, most of what the command stream
+        // writes (thousands of dwords a frame), skip CpWriteRegister's
+        // per-register checks: register file, host copy and generation
+        // directly.
+        template <typename Next>
+        void CpWriteRegisters(uint32_t index, uint32_t count, Next&& next)
+        {
+            const auto& logRange = LogWriteRange();
+            bool constants = index - kRegShaderConstantAlu < 2 * kAluConstantsPerStage &&
+                index + count - kRegShaderConstantAlu <= 2 * kAluConstantsPerStage;
+            bool logged = logRange.first <= logRange.second && index <= logRange.second && index + count > logRange.first;
+            if (!constants || logged || count == 0)
+            {
+                for (uint32_t i = 0; i < count; i++)
+                    CpWriteRegister(index + i, next());
+                return;
+            }
+            uint32_t first = index - kRegShaderConstantAlu;
+            be<uint32_t>* registers = &GuestRef<uint32_t>(kGpuRegisterBase + index * 4);
+            for (uint32_t i = 0; i < count; i++)
+            {
+                uint32_t value = next();
+                registers[i] = value;
+                g_aluConstantsHost[first + i] = value;
+            }
+            g_aluConstantGeneration[first / kAluConstantsPerStage]++;
+            g_aluConstantGeneration[(first + count - 1) / kAluConstantsPerStage]++;
         }
 
         // Executes one type-3 packet (header: opcode @8, payload dwords - 1
@@ -435,16 +537,14 @@ namespace h3::gpu
                 if (type >= std::size(kConstantBases))
                     break;
                 uint32_t index = kConstantBases[type] + (offsetType & 0x7FF);
-                for (uint32_t i = 0; i + 1 < count; i++)
-                    CpWriteRegister(index + i, reader.Read());
+                CpWriteRegisters(index, count - 1, [&] { return reader.Read(); });
                 break;
             }
             case kOpSetConstant2:
             case kOpSetShaderConstants:
             {
                 uint32_t index = reader.Read() & 0xFFFF;
-                for (uint32_t i = 0; i + 1 < count; i++)
-                    CpWriteRegister(index + i, reader.Read());
+                CpWriteRegisters(index, count - 1, [&] { return reader.Read(); });
                 break;
             }
             case kOpLoadAluConstant:
@@ -457,8 +557,12 @@ namespace h3::gpu
                 if (type >= std::size(kConstantBases))
                     break;
                 uint32_t index = kConstantBases[type] + (offsetType & 0x7FF);
-                for (uint32_t i = 0; i < dwords; i++)
-                    CpWriteRegister(index + i, GuestRef<uint32_t>(address + i * 4));
+                uint32_t source = address;
+                CpWriteRegisters(index, dwords, [&] {
+                    uint32_t value = GuestRef<uint32_t>(source);
+                    source += 4;
+                    return value;
+                });
                 break;
             }
             case kOpImLoad:
@@ -545,6 +649,7 @@ namespace h3::gpu
                         // from the CPU (often D3D's interrupt callback
                         // worker), so a stuck GPU is usually a stuck thread.
                         kernel::DumpThreadWaits();
+                        DumpRecentHistory();
                         reported = true;
                     }
                     // PERF: spins (yielding) until the CPU writes the value;
@@ -705,6 +810,7 @@ namespace h3::gpu
         void ExecutePacket(Reader& reader)
         {
             uint32_t header = reader.Read();
+            g_packetHistory[g_packetHistoryNext++ % kPacketHistory] = header;
             switch (header >> 30)
             {
             case 0:  // register writes: count, base index, write-one-register flag
@@ -712,8 +818,13 @@ namespace h3::gpu
                 uint32_t count = ((header >> 16) & 0x3FFF) + 1;
                 uint32_t base = header & 0x7FFF;
                 bool oneRegister = (header >> 15) & 1;
-                for (uint32_t i = 0; i < count && reader.Remaining() > 0; i++)
-                    CpWriteRegister(oneRegister ? base : base + i, reader.Read());
+                if (oneRegister)
+                {
+                    for (uint32_t i = 0; i < count && reader.Remaining() > 0; i++)
+                        CpWriteRegister(base, reader.Read());
+                }
+                else
+                    CpWriteRegisters(base, std::min<uint32_t>(count, reader.Remaining()), [&] { return reader.Read(); });
                 break;
             }
             case 1:  // two register writes
@@ -748,10 +859,47 @@ namespace h3::gpu
                 GuestRef<uint32_t>(writeback) = readPointer;
         }
 
+        // Wall clock and this thread's CPU time, in seconds.
+        struct CpTimes
+        {
+            double wall = 0, cpu = 0;
+            static CpTimes Now()
+            {
+                timespec wall, cpu;
+                clock_gettime(CLOCK_MONOTONIC, &wall);
+                clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu);
+                return { wall.tv_sec + wall.tv_nsec * 1e-9, cpu.tv_sec + cpu.tv_nsec * 1e-9 };
+            }
+        };
+
+        // Adds one stretch of packet execution to the H3_LOG_FPS totals and
+        // logs them every kBusyLogSwaps swaps.
+        void AccountBusy(const CpTimes& start, const CpTimes& end)
+        {
+            constexpr uint32_t kBusyLogSwaps = 150;
+            static double busyWall = 0, busyCpu = 0, idle = 0, lastEnd = 0;
+            static uint32_t loggedSwap = 0;
+            if (lastEnd)
+                idle += start.wall - lastEnd;
+            lastEnd = end.wall;
+            busyWall += end.wall - start.wall;
+            busyCpu += end.cpu - start.cpu;
+            uint32_t swaps = g_swapCounter.load();
+            if (swaps - loggedSwap >= kBusyLogSwaps)
+            {
+                double frames = swaps - loggedSwap;
+                fprintf(stderr, "[cp] frame %u, per frame: busy %.1f ms (cpu %.1f ms), idle %.1f ms\n", swaps,
+                    busyWall * 1000 / frames, busyCpu * 1000 / frames, idle * 1000 / frames);
+                busyWall = busyCpu = idle = 0;
+                loggedSwap = swaps;
+            }
+        }
+
         // The command processor thread: executes the ring buffer between the
         // read pointer and the CPU's write pointer, forever.
         void CommandProcessorThread()
         {
+            debug::SetWallProfileThread();
             // A guest thread, so it can run the interrupt callback itself.
             static InterruptContext context;
             InitInterruptContext(context);
@@ -775,11 +923,18 @@ namespace h3::gpu
                 // Publish the read pointer after every packet: a packet can
                 // wait on the CPU, which may be waiting for ring space.
                 Reader reader{ g_ringBase.load(), size, readPointer, writePointer, true };
+                // H3_LOG_FPS: how much of each frame this thread spends
+                // executing packets (wall and its own CPU time; the gap is
+                // time blocked, in the driver or on locks) and idle.
+                static const bool logBusy = EnvFlag("H3_LOG_FPS");
+                CpTimes start = logBusy ? CpTimes::Now() : CpTimes{};
                 while (reader.Remaining() > 0)
                 {
                     ExecutePacket(reader);
                     PublishReadPointer(reader.index);
                 }
+                if (logBusy)
+                    AccountBusy(start, CpTimes::Now());
                 readPointer = writePointer;
             }
         }
@@ -828,6 +983,16 @@ namespace h3::gpu
     uint32_t ReadRegister(uint32_t index)
     {
         return GuestRef<uint32_t>(kGpuRegisterBase + (index % kRegisterCount) * 4);
+    }
+
+    uint32_t AluConstantGeneration(uint32_t stage)
+    {
+        return g_aluConstantGeneration[stage];
+    }
+
+    const uint32_t* AluConstantsHost()
+    {
+        return g_aluConstantsHost;
     }
 
     void WriteRegister(uint32_t index, uint32_t value)

@@ -103,6 +103,7 @@ namespace h3::gpu::renderer::internal
         // switch).
         void CarryOver(const RenderTarget& from, const RenderTarget& to, const SDL_Rect& rect)
         {
+            GpuTimedScope timed{ "carry over" };  // H3_GPU_TIMING
             // 8_8_8_8_GAMMA keeps linear values on the host (as 16-bit
             // floats), other 8-bit formats the stored (encoded) ones.
             bool fromGamma = from.xenosFormat == kColorFormat8888Gamma, toGamma = to.xenosFormat == kColorFormat8888Gamma;
@@ -265,7 +266,7 @@ namespace h3::gpu::renderer::internal
                 }
             }
         }
-        if (depthControl & 7)  // stencil enable, depth test or depth write
+        if (depthControl & (kDepthControlStencilEnable | kDepthControlZEnable | kDepthControlZWriteEnable))
         {
             uint32_t info = ReadRegister(kRegRbDepthInfo);
             if (RenderTarget* target = GetRenderTarget(EdramBase(info), DepthIsFloat(info), true))

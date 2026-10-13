@@ -337,6 +337,7 @@ void main()
         uint32_t destinationWidth, uint32_t destinationHeight, int32_t sx, int32_t sy, int32_t dx, int32_t dy, uint32_t w,
         uint32_t h, CopyMode mode, bool depthFloat, float scale, int32_t samplesX, int32_t samplesY, uint32_t sampleMask)
     {
+        GpuTimedScope timed{ "convert copy" };  // H3_GPU_TIMING
         CopyConstants constants = { { dx, dy, sx, sy }, { int32_t(mode), depthFloat ? 1 : 0, samplesX, samplesY },
             { scale, ApproxGamma() ? 0.0f : 1.0f, 1.0f, 1.0f }, { int32_t(sampleMask), int32_t(g_renderScale), 0, 0 } };
         RunCopyPass(source, destination, destinationFormat, destinationWidth, destinationHeight, SDL_Rect{ dx, dy, int(w), int(h) },
@@ -357,6 +358,7 @@ void main()
     void RestoreDepthFromBytes(SDL_GPUTexture* source, SDL_GPUTexture* depth, uint32_t width, uint32_t height, const SDL_Rect& rect,
         bool depthFloat)
     {
+        GpuTimedScope timed{ "depth restore" };  // H3_GPU_TIMING
         if (!g_depthRestorePipeline)
         {
             SDL_GPUShader* vertex = CompileInternal(kCopyVertexShader, true, 0, 0);
@@ -406,6 +408,7 @@ void main()
 
     void RestoreStencilFromBytes(SDL_GPUTexture* source, SDL_GPUTexture* depth, uint32_t width, uint32_t height, const SDL_Rect& rect)
     {
+        GpuTimedScope timed{ "stencil restore" };  // H3_GPU_TIMING
         if (!g_stencilRestorePipelines[0])
         {
             SDL_GPUShader* vertex = CompileInternal(kCopyVertexShader, true, 0, 0);

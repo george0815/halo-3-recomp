@@ -61,6 +61,13 @@ namespace h3::gpu::renderer::internal
         return hash;
     }
 
+    std::string InternalCacheName(const char* prefix, const char* glsl)
+    {
+        char hash[17];
+        snprintf(hash, sizeof(hash), "%016llx", (unsigned long long)Hash(glsl, strlen(glsl)));
+        return std::string(prefix) + "_" + hash + ".spv";
+    }
+
     std::string ShaderCacheName(bool vertex, const std::string& glsl)
     {
         char name[32];
@@ -119,9 +126,15 @@ namespace h3::gpu::renderer::internal
         return spirv;
     }
 
+    // content_hash_avx2.cpp (compiled for AVX2).
+    uint64_t ContentHashAvx2(const void* data, size_t size);
+
     uint64_t ContentHash(const void* data, size_t size)
     {
-        return XXH3_64bits(data, size);
+        // Both variants compute the same XXH3 value; the AVX2 one is
+        // roughly twice as fast on large data.
+        static const bool avx2 = __builtin_cpu_supports("avx2");
+        return avx2 ? ContentHashAvx2(data, size) : XXH3_64bits(data, size);
     }
 
     void LogOnce(const std::string& message)
@@ -178,7 +191,9 @@ namespace h3::gpu::renderer::internal
 
     Shader* LoadShader(bool vertex, const uint32_t* dwords, uint32_t count)
     {
-        uint64_t key = Hash(dwords, count * 4, vertex ? kVertexSeed : kPixelSeed);
+        // XXH3 for the lookup: the command stream loads shaders ~1,700 times
+        // a frame, and FNV over their microcode cost ~3% of the thread.
+        uint64_t key = ContentHash(dwords, size_t(count) * 4) ^ (vertex ? kVertexSeed : kPixelSeed);
         auto it = g_shaders.find(key);
         if (it != g_shaders.end())
             return it->second.get();
@@ -202,6 +217,7 @@ namespace h3::gpu::renderer::internal
             // The program itself is shared by cache name (and may already be
             // there from warm-up, or still compiling on a worker).
             entry->cacheName = ShaderCacheName(vertex, translated.glsl);
+            entry->cacheId = ShaderCacheId(entry->cacheName);
             entry->host = RequestHostShader(vertex, translated.glsl, uint32_t(translated.info.textures.size()), entry->cacheName);
             entry->info = translated.info;
             // (Also kept for H3_DEBUG_VS_POSITIONS, which runs any vertex

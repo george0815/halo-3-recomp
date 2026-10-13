@@ -5,6 +5,11 @@
 // "<thread id> <address> [<return address>...]" line per sample (return
 // addresses with H3_PROFILE_STACKS=1). tools/h3profile.py turns that into a
 // per-function report.
+//
+// H3_PROFILE_WALL=1 instead samples only the command processor thread, 1000
+// times per wall-clock second whether it runs or not, so time it spends
+// blocked (in the GPU driver, on locks) shows up as samples in the blocking
+// call.
 
 #include <algorithm>
 #include "config/env.h"
@@ -15,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <sys/syscall.h>
+#include <ctime>
 #include <sys/time.h>
 #include <ucontext.h>
 #include <unwind.h>
@@ -40,6 +46,8 @@ namespace h3::debug
         std::atomic<bool> g_running{ false };
         bool g_done = false;
         bool g_stacks = false;
+        std::atomic<uint32_t> g_wallThread{ 0 };  // H3_PROFILE_WALL: the thread to sample
+        timer_t g_wallTimer{};
 
         // Unwinder callback: records one return address of the sample.
         _Unwind_Reason_Code CollectFrame(_Unwind_Context* context, void* argument)
@@ -70,14 +78,45 @@ namespace h3::debug
                 _Unwind_Backtrace(CollectFrame, &sample);
         }
 
-        // Starts or stops the CPU-time profiling timer.
+        // Starts or stops the profiling timer: CPU time for the whole
+        // process, or wall time aimed at one thread (H3_PROFILE_WALL).
         void SetTimer(bool on)
         {
-            itimerval timer{};
+            constexpr long kIntervalNs = 1'000'000;
+            static const bool wall = EnvFlag("H3_PROFILE_WALL");
+            if (!wall)
+            {
+                itimerval timer{};
+                if (on)
+                    timer.it_interval.tv_usec = timer.it_value.tv_usec = kIntervalNs / 1000;
+                setitimer(ITIMER_PROF, &timer, nullptr);
+                return;
+            }
             if (on)
-                timer.it_interval.tv_usec = timer.it_value.tv_usec = 1000;
-            setitimer(ITIMER_PROF, &timer, nullptr);
+            {
+                sigevent event{};
+                event.sigev_notify = SIGEV_THREAD_ID;
+                event.sigev_signo = SIGPROF;
+                event._sigev_un._tid = int(g_wallThread.load());
+                if (timer_create(CLOCK_MONOTONIC, &event, &g_wallTimer) != 0)
+                {
+                    fprintf(stderr, "[profile] no wall-clock timer for thread %u\n", g_wallThread.load());
+                    return;
+                }
+                itimerspec spec{};
+                spec.it_interval.tv_nsec = spec.it_value.tv_nsec = kIntervalNs;
+                timer_settime(g_wallTimer, 0, &spec, nullptr);
+            }
+            else
+                timer_delete(g_wallTimer);
         }
+    }
+
+    // The thread H3_PROFILE_WALL samples (the command processor registers
+    // itself).
+    void SetWallProfileThread()
+    {
+        g_wallThread = uint32_t(syscall(SYS_gettid));
     }
 
     // Called once per presented frame.

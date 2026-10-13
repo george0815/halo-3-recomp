@@ -129,7 +129,16 @@ Rough phases. Each one is a large amount of work; that's fine.
       waiting for the next vblank (D3D's present interval 1 turned every
       frame slower than 16.7 ms into a 33 ms one): Sierra gameplay went from
       a locked 30 fps to 35-45. Needs play-testing (physics, animation, AI,
-      cutscenes) and more CPU headroom to hold 60
+      cutscenes) and more headroom to hold 60. The command processor
+      thread went from ~21.5 to ~10 ms of CPU per frame for ~1770 draws in
+      Sierra (staging written straight into upload buffers, float constants
+      in a per-flush storage buffer instead of per-draw uniform pushes,
+      lazy AVX2 content hashing, a texture lookup cache, batched export
+      scatters; H3_LOG_FPS `[cp]` lines). GPU time went
+      from ~27 to ~11 ms a frame (memory export dispatches recorded in
+      batches, resident vertex data, compact constants; draws that can't
+      write anything skipped): the Sierra, Tsavo and Storm starts hold 60
+      fps. Heavier scenes untested
 - [ ] Replace hot recompiled functions with hand-written source (started:
       the 4 MB per-tick game state copy, `hooks/block_copy.cpp`)
 

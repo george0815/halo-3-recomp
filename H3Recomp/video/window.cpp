@@ -106,8 +106,11 @@ namespace h3::video
             SDL_PropertiesID props = SDL_CreateProperties();
             SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
             // Off, as SDL_CreateGPUDevice(..., false, ...) had it (the
-            // property defaults to on): its checks assert on viewports larger
-            // than the target, which some guest draws produce.
+            // property defaults to on). SDL's debug checks keep the current
+            // pass's target size on the device, not per command buffer, so
+            // the window's presentation passes on the main thread make the
+            // renderer thread's full-size viewports look oversized (and the
+            // check then skips setting them).
             SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, false);
             SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, "vulkan");
             SDL_SetPointerProperty(props, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER, &vulkan);

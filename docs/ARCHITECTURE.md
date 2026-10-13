@@ -114,10 +114,23 @@ shader caches) stays local.
   stencil byte as red) at the depth buffer's base; the renderer turns those
   draws back into depth/stencil (`gpu/renderer/copy.cpp`), undoing the
   swapped 40-sample halves of EDRAM depth tiles.
+- **Draw data**: draws are queued and recorded together when the render
+  targets change (a *flush*, `gpu/renderer/draw.cpp`). Each draw's vertex
+  data, converted indices and float constants are written straight into
+  the frame's mapped upload buffers (`UploadStream`), and each flush
+  uploads its part; vertex ranges that stay the same from frame to frame
+  live in a resident buffer instead and are uploaded only when they
+  change. Shaders read vertex data as storage buffers, and
+  float constants from a per-flush storage buffer: the draw's first
+  instance indexes a header with its vertex and pixel shader constant
+  bases. Shaders without relative constant addressing get their constants
+  renumbered densely (`ShaderInfo::compactConstants`).
 - **Memory export**: vertex shaders can write guest memory (Halo's GPU
   particles, occlusion tests, water). They also run as compute shaders whose
   writes come back to guest memory a frame or two later
-  (`gpu/renderer/memexport.cpp`).
+  (`gpu/renderer/memexport.cpp`). Independent dispatches are recorded in
+  batches: one at a time, the ~120 tiny dispatches a frame cost ~9 ms of
+  GPU time in pipeline drains.
 - **Tessellation**: Halo's water is drawn as tessellated triangle patches;
   with no tessellator in SDL_GPU each patch becomes a uniform grid in the
   vertex shader (`kVertexMain` in `gpu/shader/translator.cpp`).

@@ -98,6 +98,12 @@ namespace h3::gpu::shader
         // or all of them when indexed by an address register. The renderer
         // copies and uploads only these.
         uint32_t floatConstantCount = 0;
+        // Draw shaders without relative constant addressing read their float
+        // constants compacted: XE_C(k) is float constant compactConstants[k]
+        // (the renderer gathers just those per draw; a pixel shader reading
+        // c0-c7 and c255 used to take a 256-constant snapshot). Empty: the
+        // full layout (XE_C(i) is constant i).
+        std::vector<uint32_t> compactConstants;
     };
 
     struct TranslationResult
@@ -123,6 +129,12 @@ namespace h3::gpu::shader
     // invocation with its memory exports stored to a buffer (the memexport
     // variant; layout and uniforms in translator.cpp, kMemExportFunctions).
     TranslationResult Translate(bool isVertex, const uint32_t* dwords, uint32_t dwordCount, bool compute = false);
+
+    // Whether draws' shaders read their float constants from a storage
+    // buffer (the default; see the XE_C declaration in translator.cpp) or
+    // from a uniform block the renderer pushes per draw (the renderer
+    // clears it for H3_UNIFORM_CONSTANTS=1, before translating anything).
+    extern bool g_storageConstants;
 
     // Microcode disassembly, for debugging the translator.
     std::string Disassemble(bool isVertex, const uint32_t* dwords, uint32_t dwordCount);

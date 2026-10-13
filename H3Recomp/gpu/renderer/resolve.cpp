@@ -540,6 +540,7 @@ namespace h3::gpu::renderer::internal
 
     SDL_GPUTexture* ResolvedView(ResolvedTexture& resolved, const texture::FetchConstant& fetch, uint32_t address)
     {
+        GpuTimedScope timed{ "resolved view" };  // H3_GPU_TIMING
         // Positions and sizes in guest texels; host ones are times the scale.
         uint32_t guestWidth = resolved.GuestWidth(), guestHeight = resolved.GuestHeight();
         const uint32_t scale = g_renderScale;
@@ -605,6 +606,7 @@ namespace h3::gpu::renderer::internal
 
     void Resolve()
     {
+        GpuTimedScope timed{ "resolve" };  // H3_GPU_TIMING
         if (!g_enabled)
             return;
         uint32_t copyControl = ReadRegister(kRegRbCopyControl);

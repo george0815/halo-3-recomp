@@ -148,7 +148,7 @@ Environment variables:
 | `H3_RENDER_SCALE=<1-3>` | Override the launcher's render resolution |
 | `H3_AA=off\|fxaa` | Override the launcher's anti-aliasing (FXAA on the finished frame) |
 | `H3_ASYNC_SHADERS=1\|0` | Override background shader compilation |
-| `H3_NO_WARMUP=1` | Don't rebuild the shader cache's pipelines at start |
+| `H3_NO_WARMUP=1` | Don't rebuild the shader cache's pipelines at start (the list of them, `pipelines.txt` in the shader cache, starts over when the translator's output changes for every shader) |
 | `H3_LAUNCHER_SCREENSHOT=out.png` | (H3Launcher) render the launcher window to a PNG and exit; `H3_LAUNCHER_KEYS="Down,Return"` sends keys first. Works with `QT_QPA_PLATFORM=offscreen` |
 | `H3_NO_TEXTURES=1` | Bind gray placeholders instead of textures decoded from memory |
 | `H3_NO_WRITEBACK=1` | Don't copy small resolves back to guest memory |
@@ -175,6 +175,7 @@ Environment variables:
 | `H3_FAKE_ZPD=1` | Report every occlusion query as visible (the old behaviour) instead of counting samples (tac lights, light glows) |
 | `H3_MEMEXPORT_ASYNC=1` | Don't wait for earlier frames' memory exports before reading their data (the old behaviour) |
 | `H3_NO_EXPORT_SCATTER=1` | Don't copy a memory export's results into the data later dispatches in the same frame read (GPU particles spawned and updated in one frame: muzzle flashes, splashes) |
+| `H3_NO_EXPORT_BATCHING=1` | Record each memory export dispatch on its own (the old way) instead of in batches of independent dispatches |
 | `H3_HIGHLIGHT_VS=<hash>` | Draw that vertex shader's draws (hash prefix of a captured `gpu_shaders/vs_<hash>.bin`; `list` prints them) in magenta with depth test off, and log their vertex fetch data |
 | `H3_LOG_VS_DATA=<hash>[:<dwords>]` | Log each draw of that vertex shader (hash prefix as for `H3_HIGHLIGHT_VS`): primitive, clip control, some VS constants, its vertex fetch ranges, which of this frame's memory exports write them, and their records (record size in dwords, default 16; contrail draws log exactly the points they read); `H3_LOG_VS_DATA_FRAMES=<first>-<last>` limits it to those frames |
 | `H3_VERIFY_VS_DATA=1` | With `H3_LOG_VS_DATA`: also read those records back from the GPU after the export scatter (all-zero records, `JUMP` for a stray point) |
@@ -183,6 +184,9 @@ Environment variables:
 | `H3_LOG_STREAMS=<8 hex>` | Log that memexport shader's stream constants (base, format, endian) |
 | `H3_CHECK_EXPORT_DUPES=1` | Report dispatches that export one address twice with different values |
 | `H3_NO_STAGING_REUSE=1` | Copy every vertex buffer and convert every index list again on each flush (the old way), instead of reusing what earlier flushes this frame staged when the guest memory is unchanged |
+| `H3_NO_RESIDENT=1` | Stage every vertex buffer into each frame's upload buffer (the old way) instead of keeping ones that don't change in a resident GPU buffer |
+| `H3_NO_CONSTANT_REUSE=1` | Snapshot every draw's float constants, instead of sharing the previous draw's snapshot when the command stream wrote no constants in between |
+| `H3_UNIFORM_CONSTANTS=1` | Push draws' float constants as uniform data draw by draw (the old way), instead of one storage buffer per flush that shaders index through the draw's first instance. Translates shaders differently, so they compile again the first time |
 | `H3_LOG_VOLUMES=1` | Log each 3D or stacked texture once (size, layers, mips) |
 | `H3_DUMP_TEXTURE=<physical address>` | Save that texture's decoded levels and layers (RGBA8 formats) as `tex_<address>_l<level>_<layer>.png` |
 | `H3_NO_CULL=1` | Don't cull faces (PA_SU_SC_MODE_CNTL), to compare |
@@ -198,12 +202,16 @@ Environment variables:
 | `H3_LOG_CLEARS=1` | Log D3D clears (screen-space rectangle draws) with their rectangles, color and surface |
 | `H3_LOG_AUDIO=1` | Log audio frames submitted and their peak level, once a second |
 | `H3_AUDIO_DUMP=<file>` | Also write the audio output as raw 6-channel 48 kHz float (`ffmpeg -f f32le -ac 6 -ar 48000 -i <file> out.wav`) |
-| `H3_LOG_FPS=1` | Log presented frames per second and the slowest frame, once a second; also `[vram]` lines with the video memory held by render targets, resolves, textures and buffers (every 150 frames, and whenever it moves by 64 MB), and `[passes]` lines: GPU passes per frame by kind (draw, copy, depth/stencil restore, blit) with the host pixels they cover |
+| `H3_LOG_FPS=1` | Log presented frames per second and the slowest frame, once a second; also `[vram]` lines with the video memory held by render targets, resolves, textures and buffers (every 150 frames, and whenever it moves by 64 MB), `[passes]` lines: GPU passes per frame by kind (draw, copy, depth/stencil restore, blit) with the host pixels they cover, and `[cp]` lines: per frame, how long the command processor thread executes packets (wall and CPU time; the gap is time blocked) and sits idle. A busy thread with little idle time is what limits the frame rate |
 | `H3_LOG_SLOW=1` | Log shader translations, pipeline creations and texture uploads that take 20 ms or more (pipelines with their shaders' cache names) |
 | `H3_DUMP_GLSL=1` | Write each translated shader's GLSL to the working directory as `<cache name>.glsl` |
 | `H3_DUMP_MEMORY=<frame>:<address>:<bytes>[,...]` | Save guest memory at that swap as `mem_<frame>_<address>.bin` (hex address; below 0x80000000 physical, otherwise a guest address such as the executable's data) |
 | `H3_WATCH_WRITES=<first>-<last>:<physical address>:<bytes>` | Linux: write-protect that range during those frames and log every host instruction that writes it to `write_watch.txt` (offsets into the executable; `addr2line`/`nm` them) |
 | `H3_PROFILE=<first>-<last>` | Sample host CPU time between those frames into `profile.txt`; `tools/h3profile.py` symbolizes it. With `H3_PROFILE_STACKS=1` it also attributes time in libraries to the calling function |
+| `H3_PROFILE_WALL=1` | With `H3_PROFILE`: sample only the command processor thread, 1000 times per wall-clock second whether it runs or not, so time it spends blocked (GPU driver, fences, locks) shows up in the blocking call |
+| `H3_GPU_TIMING=<frame>` | From that swap on, run each draw flush and each labelled piece of other GPU work (resolves, copies, restores, carry-overs, memexport) alone on the GPU and wait for it, logging GPU ms per frame by flush and label (`[gpu timing]`). Slow; trustworthy for large passes, while waiting after many small dispatches inflates their numbers |
+| `H3_GPU_TIMING_COARSE=1` | With `H3_GPU_TIMING`: no waits around labelled work; everything between two flushes is timed together, and the longest of those gaps are listed by the flush they precede |
+| `H3_GPU_TIMING_LABELS=<label>[,...]` | With `H3_GPU_TIMING`: wait around those labels only (e.g. `memexport,resolve`) |
 | `H3_WATCH_READS=<first>-<last>:<address>:<bytes>` | Like `H3_WATCH_WRITES`, but every access (reads too); writes `read_watch.txt` |
 | `H3_TRAP_ON_STUCK=1` | Raise SIGTRAP when a thread is stuck on a critical section (for an attached debugger) |
 

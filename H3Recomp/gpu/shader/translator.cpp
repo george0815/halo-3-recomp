@@ -16,16 +16,23 @@
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <cctype>
 #include <set>
+#include <unordered_map>
 
 namespace h3::gpu::shader
 {
+    bool g_storageConstants = true;
+
     using namespace ucode;
 
     namespace
     {
         constexpr uint32_t kMaxRegisters = 64;
         constexpr uint32_t kFloatConstantCount = 256;
+        // Interpolator location of the pixel shader's constant base (after
+        // the 16 guest interpolators, xe_out / xe_in).
+        constexpr uint32_t kConstantBaseLocation = 16;
 
         const char kSwizzleChars[] = "xyzw";
 
@@ -126,6 +133,9 @@ void xe_write_vertex(vec4 position, vec4 outputs[16])
 {
     for (int i = 0; i < 16; i++)
         xe_out[i] = outputs[i];
+#ifdef XE_STORAGE_CONSTANTS
+    xe_ps_constant_base = xe_constants[gl_InstanceIndex].y;  // the draw's header (see EmitShader)
+#endif
     // PA_CL_VTE_CNTL formats (Xenia's CompleteVertexOrTessEvalShaderInMain):
     // W may be 1/W, and XY and Z may already be divided by W.
     if ((xe_sys.flags & 16u) == 0u)
@@ -240,8 +250,11 @@ void main()
         // eM0-4 (exports 33-37: consecutive elements); each alloc and the
         // end of the shader store what was written (Xenia's
         // ExportToMemory). Each stored dword is appended to xe_export as an
-        // (address, value) record: xe_export[0] counts them (atomically),
-        // records start at dword 2, at most xe_export_capacity of them. Only
+        // (address, value) record in this dispatch's region, which starts at
+        // dword xe_export_record_base (dispatches of a batch share the
+        // buffer, renderer/memexport.cpp): its dword 0 counts them
+        // (atomically), records start at dword 2, at most
+        // xe_export_capacity of them. Only
         // addresses inside xe_export_streams (x = guest byte address, y =
         // bytes) are recorded. The renderer applies the records to guest
         // memory once the GPU is done. Formats of 32 bits and more per
@@ -260,11 +273,11 @@ void xe_export_store(uint address, uint value)
         uvec4 stream = xe_export_streams[i];
         if (address >= stream.x && address - stream.x < stream.y)
         {
-            uint record = atomicAdd(xe_export[0], 1u);
+            uint record = atomicAdd(xe_export[xe_export_record_base], 1u);
             if (record < xe_export_capacity)
             {
-                xe_export[2u + record * 2u] = address;
-                xe_export[3u + record * 2u] = value;
+                xe_export[xe_export_record_base + 2u + record * 2u] = address;
+                xe_export[xe_export_record_base + 3u + record * 2u] = value;
             }
             return;
         }
@@ -487,6 +500,48 @@ void main()
             uint32_t m_cfCount = 0;
 
             std::string m_body;
+            // Float constants read by fixed index, and whether any is read
+            // relative to an address register (CompactConstants).
+            std::set<uint32_t> m_usedConstants;
+            bool m_relativeConstants = false;
+
+            // The body with fixed constant indices renumbered densely
+            // (ShaderInfo::compactConstants), for draw shaders that never
+            // address constants relatively; otherwise the body as is.
+            std::string CompactConstants(const std::string& body)
+            {
+                if (m_compute || m_relativeConstants || m_usedConstants.empty())
+                    return body;
+                std::unordered_map<uint32_t, uint32_t> compact;
+                for (uint32_t index : m_usedConstants)
+                {
+                    compact[index] = uint32_t(m_info.compactConstants.size());
+                    m_info.compactConstants.push_back(index);
+                }
+                // Every fixed access was emitted as "XE_C(<digits>)".
+                static const std::string kToken = "XE_C(";
+                std::string out;
+                out.reserve(body.size());
+                size_t at = 0;
+                while (true)
+                {
+                    size_t found = body.find(kToken, at);
+                    if (found == std::string::npos)
+                        break;
+                    size_t digits = found + kToken.size();
+                    size_t end = digits;
+                    while (end < body.size() && isdigit(uint8_t(body[end])))
+                        end++;
+                    out.append(body, at, digits - at);
+                    if (end > digits && end < body.size() && body[end] == ')')
+                        out += std::to_string(compact.at(uint32_t(std::stoul(body.substr(digits, end - digits)))));
+                    else
+                        out.append(body, digits, end - digits);
+                    at = end;
+                }
+                out.append(body, at, std::string::npos);
+                return out;
+            }
             std::set<uint32_t> m_vertexFetchSet;
             bool m_usesPosition = false;
             int m_indent = 0;
@@ -746,11 +801,13 @@ void main()
             {
                 if (addressed)
                 {
+                    m_relativeConstants = true;
                     m_info.floatConstantCount = kFloatConstantCount;  // any of them
-                    return Format("c[clamp(%u + %s, 0, %u)]", index, registerRelative ? "a0" : "aL", kFloatConstantCount - 1);
+                    return Format("XE_C(clamp(%u + %s, 0, %u))", index, registerRelative ? "a0" : "aL", kFloatConstantCount - 1);
                 }
                 m_info.floatConstantCount = std::max(m_info.floatConstantCount, std::min(index + 1, kFloatConstantCount));
-                return Format("c[%u]", index);
+                m_usedConstants.insert(index);
+                return Format("XE_C(%u)", index);
             }
 
             // Decodes ALU source operand i (1-3): register or constant, relative addressing,
@@ -1515,6 +1572,10 @@ void main()
                 return "sampler2D";
             }
 
+            // Whether this shader reads float constants from the draws'
+            // storage buffer (else a uniform block; compute shaders always).
+            bool StorageConstants() const { return !m_compute && g_storageConstants; }
+
             // Assembles the final GLSL: header, interface declarations, helper functions, the body
             // and main().
             std::string EmitShader()
@@ -1526,8 +1587,29 @@ void main()
                 uint32_t uniformSet = m_compute ? 2 : (m_vertex ? 1 : 3);
 
                 std::string out = "#version 450\n";
-                out += Format("layout(std140, set = %u, binding = 0) uniform XeFloatConstants { vec4 c[%u]; };\n", uniformSet,
-                    kFloatConstantCount);
+                // Float constants (XE_C(i): constant i). Compute shaders
+                // (memory export) get them pushed as a uniform block. Draws
+                // read them from a storage buffer holding every draw's
+                // snapshots of a flush (renderer/draw.cpp): the draw's first
+                // instance indexes its header there, (vertex base, pixel
+                // base) in vec4s, and the vertex shader hands the pixel base
+                // on as a flat interpolator. Pushing ~12 MB of uniforms a
+                // frame, draw by draw, cost more CPU than the draws.
+                if (!StorageConstants())
+                {
+                    out += Format("layout(std140, set = %u, binding = 0) uniform XeFloatConstants { vec4 c[%u]; };\n", uniformSet,
+                        kFloatConstantCount);
+                    out += "#define XE_C(i) c[i]\n";
+                }
+                else
+                {
+                    out += Format("layout(std430, set = %u, binding = %u) readonly buffer XeFloatConstants { uvec4 xe_constants[]; };\n",
+                        textureSet, m_info.storageBufferBinding + (m_vertex ? 1 : 0));
+                    out += "#define XE_C(i) uintBitsToFloat(xe_constants[xe_constant_base + uint(i)])\n";
+                    out += Format("layout(location = %u) flat %s uint xe_ps_constant_base;\n", kConstantBaseLocation,
+                        m_vertex ? "out" : "in");
+                    out += "#define XE_STORAGE_CONSTANTS\n";
+                }
                 out += Format("layout(std140, set = %u, binding = 1) uniform XeSystem\n{\n"
                               "    uvec4 bools[2];\n    uvec4 loops[8];\n    uvec4 vfetch[96];\n"
                               "    vec4 ndc_scale;\n    vec4 ndc_offset;\n    uint ps_param_gen;\n    uint flags;\n    uint rect_indices;\n    uint tess_segments;\n    uint tess_patch_base;\n    float depth_bias_slope;\n    float point_size;\n"
@@ -1540,13 +1622,20 @@ void main()
                 {
                     out += Format("layout(std430, set = 0, binding = %u) readonly buffer XeVertexMemory { uint xe_memory[]; };\n",
                         m_info.storageBufferBinding);
+                    // Draws: vertex data unchanged across frames stays in a
+                    // resident buffer (renderer/draw.cpp, ResidentOffset); a
+                    // fetch constant's w says which buffer it's in. After
+                    // the float constants' buffer, if that's in use.
+                    if (!m_compute)
+                        out += Format("#define XE_RESIDENT\nlayout(std430, set = 0, binding = %u) readonly buffer XeResidentMemory { uint xe_resident[]; };\n",
+                            m_info.storageBufferBinding + (StorageConstants() ? 2 : 1));
                     if (m_compute)
                     {
                         out += "layout(std430, set = 1, binding = 0) buffer XeExport { uint xe_export[]; };\n";
                         out += Format("layout(std140, set = %u, binding = 2) uniform XeExportInfo\n{\n"
                                       "    uvec4 xe_export_streams[4];\n    uint xe_export_vertex_count;\n    uint xe_export_indexed;\n"
                                       "    uint xe_export_index_offset;\n    uint xe_export_index_base;\n    uint xe_export_capacity;\n"
-                                      "    uint xe_export_debug;\n};\n",
+                                      "    uint xe_export_debug;\n    uint xe_export_record_base;\n};\n",
                             uniformSet);
                     }
                     else
@@ -1574,6 +1663,10 @@ uint xe_vfetch(uint constant, int offset)
     uvec4 info = xe_sys.vfetch[constant];
     if (offset < 0 || uint(offset) >= info.y)
         return 0u;
+#ifdef XE_RESIDENT
+    if (info.w != 0u)
+        return xe_swap(xe_resident[info.x + uint(offset)], info.z);
+#endif
     return xe_swap(xe_memory[info.x + uint(offset)], info.z);
 }
 float xe_round_index(float value) { return floor(value + 0.5); }
@@ -1694,6 +1787,9 @@ vec3 xe_cube_direction(vec3 stf)
                     out += "\nvoid xe_vertex_shader(int xe_vertex_index, vec3 xe_domain, out vec4 xe_position, out vec4 xe_outputs[16])\n{\n";
                 else
                     out += "\nvoid main()\n{\n";
+                if (StorageConstants())  // the draw's constants (see the XE_C declaration)
+                    out += m_vertex ? "    uint xe_constant_base = xe_constants[gl_InstanceIndex].x;\n"
+                                    : "    uint xe_constant_base = xe_ps_constant_base;\n";
                 out += "    vec4 r[64];\n    for (int i = 0; i < 64; i++) r[i] = vec4(0.0);\n";
                 out += "    int a0 = 0;\n    int aL = 0;\n    bool p0 = false;\n    float ps = 0.0;\n";
                 out += "    int newA0 = 0;\n    bool newP0 = false;\n    bool kill = false;\n";
@@ -1726,7 +1822,7 @@ vec3 xe_cube_direction(vec3 stf)
                 }
                 out += "    int pc = 0;\n    bool running = true;\n";
                 out += "    while (running)\n    {\n        switch (pc)\n        {\n";
-                out += m_body;
+                out += CompactConstants(m_body);
                 out += "        default:\n            running = false;\n            break;\n";
                 out += "        }\n    }\n";
                 if (m_vertex)

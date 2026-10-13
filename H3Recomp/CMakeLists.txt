@@ -7,6 +7,7 @@ add_executable(H3Recomp
     gpu/command_processor.cpp
     gpu/frame_capture.cpp
     gpu/renderer.cpp
+    gpu/renderer/content_hash_avx2.cpp
     gpu/renderer/copy.cpp
     gpu/renderer/debug.cpp
     gpu/renderer/draw.cpp
@@ -66,6 +67,10 @@ add_executable(H3Recomp
 target_include_directories(H3Recomp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # xxHash (header only, vendored by XenonRecomp): fast hashing of texture memory.
 target_include_directories(H3Recomp PRIVATE ${PROJECT_SOURCE_DIR}/thirdparty/XenonRecomp/thirdparty/xxHash)
+# XXH3's AVX2 build, picked at runtime (ContentHash) so the executable
+# still runs on CPUs without AVX2.
+set_source_files_properties(gpu/renderer/content_hash_avx2.cpp PROPERTIES COMPILE_OPTIONS -mavx2)
+
 find_package(SDL3 REQUIRED CONFIG)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SHADERC REQUIRED IMPORTED_TARGET shaderc)

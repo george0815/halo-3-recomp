@@ -145,6 +145,8 @@ namespace h3::gpu::renderer
             fprintf(stderr, "[render] render scale %ux\n", g_renderScale);
         g_noTextures = EnvFlag("H3_NO_TEXTURES");
         g_noWriteBack = EnvFlag("H3_NO_WRITEBACK");
+        g_uniformConstants = EnvFlag("H3_UNIFORM_CONSTANTS");
+        shader::g_storageConstants = !g_uniformConstants;
         CreatePlaceholders(device);
 
         // Shader compilation (pipelines.cpp): asynchronous if asked
@@ -263,6 +265,10 @@ namespace h3::gpu::renderer
 
     void OnResolve()
     {
+        // Queued memory exports first: a resolve may overwrite a texture
+        // they sample (last frame's depth for visibility tests).
+        if (g_enabled)
+            RecordPendingMemExports();
         Resolve();
         g_frameDraws++;
     }
@@ -286,6 +292,7 @@ namespace h3::gpu::renderer
             frame.width = std::min(width ? width : texture->pitch, texture->pitch) * g_renderScale;
             frame.height = std::min(height ? height : texture->height, texture->height) * g_renderScale;
             frameFormat = texture->hostFormat;
+            GpuTimedScope timed{ "display" };  // H3_GPU_TIMING
             ApplyDisplayGamma(frame, frameFormat);
             ApplyAntiAliasing(frame, frameFormat);
         }
@@ -343,11 +350,13 @@ namespace h3::gpu::renderer
             static uint64_t loggedSyncs = 0;
             static uint64_t loggedSubmits = 0;
             static double loggedWait = 0;
-            static uint64_t loggedStaged = 0, loggedIndices = 0;
-            fprintf(stderr, " memexport syncs %.1f submits %.1f frame-fence wait %.2f ms staged %.1f MB vertices %.1f MB indices\n",
+            static uint64_t loggedStaged = 0, loggedIndices = 0, loggedResident = 0;
+            fprintf(stderr, " memexport syncs %.1f submits %.1f frame-fence wait %.2f ms staged %.1f MB vertices %.1f MB indices %.2f MB resident\n",
                 double(g_memExportSyncs - loggedSyncs) / kCountLogInterval, double(g_submits - loggedSubmits) / kCountLogInterval,
                 (g_frameWaitSeconds - loggedWait) * 1000.0 / kCountLogInterval, double(g_stagedBytes - loggedStaged) / kCountLogInterval / (1 << 20),
-                double(g_stagedIndexBytes - loggedIndices) / kCountLogInterval / (1 << 20));
+                double(g_stagedIndexBytes - loggedIndices) / kCountLogInterval / (1 << 20),
+                double(g_residentBytes - loggedResident) / kCountLogInterval / (1 << 20));
+            loggedResident = g_residentBytes;
             loggedStaged = g_stagedBytes;
             loggedIndices = g_stagedIndexBytes;
             loggedSubmits = g_submits;

@@ -23,6 +23,14 @@ namespace h3::gpu::renderer::internal
         // every other frame when the hash had the wrong parity: the Halo 3
         // logo screen's second Bink buffer stayed black and flickered.)
         constexpr uint32_t kCheckInterval = 8;
+        // Those checks hash kSampleCount evenly spread kSampleBytes pieces
+        // (a texture streamed in over another differs everywhere); the whole
+        // memory is hashed every kFullCheckInterval frames, for changes in a
+        // corner. Hashing every check in full was ~7.5 MB a frame at the
+        // Sierra start, none of it changed.
+        constexpr uint32_t kSampleCount = 32;
+        constexpr uint32_t kSampleBytes = 64;
+        constexpr uint32_t kFullCheckInterval = 64;
         // Textures that changed within this many frames are checked every
         // frame: Bink double-buffers its frames, and a buffer also sampled
         // while it holds the previous frame must not count as settled (stale
@@ -55,20 +63,45 @@ namespace h3::gpu::renderer::internal
         // Textures used within this many frames are never freed (the
         // current frame's command buffer may still reference them).
         constexpr uint32_t kMinIdleFrames = 4;
+        // Dwords per texture fetch constant.
+        constexpr uint32_t kTextureFetchDwords = 6;
+        // Hash seeds for g_frontTextures' keys: binds as 2D/cube, and as
+        // layers (3D or stacked).
+        constexpr uint64_t kFrontSeed = 0x46524F4E54ull, kFrontLayersSeed = 0x4C41594552ull;
 
         // A texture decoded from guest memory.
         struct CachedTexture
         {
             SDL_GPUTexture* texture = nullptr;
             uint64_t contentHash = 0;      // hash of the guest memory it was decoded from
+            uint64_t sampleHash = 0;       // SampleHash of it
+            uint32_t fullCheckedFrame = kNever;  // last frame its memory was hashed in full
             uint32_t checkedFrame = kNever;  // last frame its memory was hashed
             uint32_t changedFrame = kNever;  // last frame its contents changed (videos, render-to-memory)
             uint32_t usedFrame = 0;          // last frame it was bound
             uint64_t bytes = 0;              // host memory it holds (approximate: the decoded data)
         };
         std::unordered_map<uint64_t, CachedTexture> g_textures;  // fetch constant layout -> texture
+        // The entry a fetch constant's raw dwords (and the layers flag)
+        // lead to, so a bind skips working out its layout: the largest
+        // usable level, mip chain and sizes took ~8% of the command
+        // processor thread for ~5,000 binds a frame. Cleared whenever an
+        // entry of g_textures is erased (TrimTextureCache).
+        std::unordered_map<uint64_t, CachedTexture*> g_frontTextures;
         uint64_t g_textureBytes = 0;  // sum of g_textures' bytes
         std::unordered_map<uint32_t, SDL_GPUSampler*> g_samplers;  // clamp/filter modes -> sampler
+
+        // Hash of kSampleCount evenly spread kSampleBytes pieces of size
+        // bytes (all of them when that's smaller).
+        uint64_t SampleHash(const uint8_t* data, size_t size)
+        {
+            if (size <= size_t(kSampleCount) * kSampleBytes)
+                return ContentHash(data, size);
+            uint8_t samples[kSampleCount * kSampleBytes];
+            for (uint32_t i = 0; i < kSampleCount; i++)
+                memcpy(samples + i * kSampleBytes, data + (size - kSampleBytes) * i / (kSampleCount - 1), kSampleBytes);
+            return ContentHash(samples, sizeof(samples));
+        }
 
         // Gray stand-in of the right type for a shader's texture binding.
         SDL_GPUTexture* PlaceholderFor(shader::TextureBinding binding)
@@ -108,6 +141,7 @@ namespace h3::gpu::renderer::internal
         void UploadTexture(SDL_GPUTexture* texture, const std::vector<texture::Decoded>& faces,
             const std::vector<std::vector<texture::Decoded>>& mips, bool volume)
         {
+            GpuTimedScope timed{ "texture upload" };  // H3_GPU_TIMING
             const texture::Decoded& base = faces[0];
             uint32_t faceBytes = uint32_t(base.data.size());
             uint32_t totalBytes = faceBytes * uint32_t(faces.size());
@@ -183,8 +217,17 @@ namespace h3::gpu::renderer::internal
         // sample it as 3D-or-stacked); otherwise its first layer as 2D. True
         // 3D textures are 3D host textures (base level). Null if the texture
         // can't be decoded.
-        SDL_GPUTexture* MemoryTexture(const texture::FetchConstant& constant, bool layers = false)
+        SDL_GPUTexture* MemoryTexture(const texture::FetchConstant& constant, bool layers, uint64_t frontKey)
         {
+            // Known fetch constant: its entry, if it needs no check now.
+            if (auto front = g_frontTextures.find(frontKey); front != g_frontTextures.end())
+            {
+                CachedTexture& cached = *front->second;
+                cached.usedFrame = g_swaps;
+                bool recentlyChanged = cached.changedFrame != kNever && g_swaps - cached.changedFrame < kRecentFrames;
+                if (cached.texture && (cached.checkedFrame == g_swaps || (!recentlyChanged && g_swaps - cached.checkedFrame < kCheckInterval)))
+                    return cached.texture;
+            }
             const texture::FetchConstant fetch = texture::LargestUsableLevel(constant);
             // Cube maps: six 2D faces one after another; stacked textures the
             // same with their layers. True 3D textures tile in 3D: their
@@ -220,6 +263,7 @@ namespace h3::gpu::renderer::internal
                     (faces << 8) | (levels << 20),
                 levels > 1 ? constant.mipAddress : 0 };
             CachedTexture& cached = g_textures[Hash(layout, sizeof(layout))];
+            g_frontTextures[frontKey] = &cached;
             cached.usedFrame = g_swaps;
 
             bool recentlyChanged = cached.changedFrame != kNever && g_swaps - cached.changedFrame < kRecentFrames;
@@ -228,7 +272,15 @@ namespace h3::gpu::renderer::internal
                 return cached.texture;
             cached.checkedFrame = g_swaps;
             const uint8_t* guest = GuestPtr<uint8_t>(PhysicalToGuest(fetch.address));
+            // Settled textures: the samples first, in full now and then.
+            uint64_t sampleHash = SampleHash(guest, size);
+            bool full = !cached.texture || recentlyChanged || cached.fullCheckedFrame == kNever ||
+                g_swaps - cached.fullCheckedFrame >= kFullCheckInterval || sampleHash != cached.sampleHash;
+            if (!full)
+                return cached.texture;
+            cached.fullCheckedFrame = g_swaps;
             uint64_t contentHash = ContentHash(guest, size);
+            cached.sampleHash = sampleHash;
             if (cached.texture && contentHash != cached.contentHash)
                 cached.changedFrame = g_swaps;
             if (cached.texture && contentHash == cached.contentHash)
@@ -364,10 +416,12 @@ namespace h3::gpu::renderer::internal
         }
 
         // Binds a texture decoded from memory, if it decodes.
-        bool BindMemoryTexture(const texture::FetchConstant& fetch, bool layers, SDL_GPUTexture*& texture, SDL_GPUSampler*& sampler,
-            uint32_t* constants)
+        // frontKey: Hash of the fetch constant's raw dwords and layers
+        // (g_frontTextures).
+        bool BindMemoryTexture(const texture::FetchConstant& fetch, bool layers, uint64_t frontKey, SDL_GPUTexture*& texture,
+            SDL_GPUSampler*& sampler, uint32_t* constants)
         {
-            SDL_GPUTexture* decoded = MemoryTexture(fetch, layers);
+            SDL_GPUTexture* decoded = MemoryTexture(fetch, layers, frontKey);
             if (!decoded)
                 return false;
             texture = decoded;
@@ -386,14 +440,20 @@ namespace h3::gpu::renderer::internal
         {
             SDL_GPUTexture* texture = PlaceholderFor(binding);
             SDL_GPUSampler* sampler = g_sampler;
-            texture::FetchConstant fetch = ReadTextureFetch(binding.fetchConstant);
+            uint32_t words[kTextureFetchDwords];
+            for (uint32_t i = 0; i < kTextureFetchDwords; i++)
+                words[i] = ReadRegister(kRegShaderConstantFetch + binding.fetchConstant * kTextureFetchDwords + i);
+            texture::FetchConstant fetch = texture::ParseFetchConstant(words);
+            // g_frontTextures' keys: 2D and cube binds, and stacked layers.
+            uint64_t frontKey = Hash(words, sizeof(words), kFrontSeed);
+            uint64_t layersKey = Hash(words, sizeof(words), kFrontLayersSeed);
             uint32_t* constants = system.textures[binding.fetchConstant & 31];
             bool usable = fetch.valid && !g_noTextures;
             switch (binding.dimension)
             {
             case ucode::TextureDimension::Cube:
                 if (usable && fetch.dimension == kDimensionCube && !FindResolved(fetch.address))
-                    BindMemoryTexture(fetch, false, texture, sampler, constants);
+                    BindMemoryTexture(fetch, false, frontKey, texture, sampler, constants);
                 break;
             case ucode::TextureDimension::D3OrStacked:
                 // Each 3D-or-stacked fetch has two bindings (translator.cpp):
@@ -411,7 +471,7 @@ namespace h3::gpu::renderer::internal
                         fprintf(stderr, "[render] %s texture %08X %ux%ux%u format %u mips %u-%u at %08X packed %d (frame %u)\n",
                             fetch.dimension == kDimension3D ? "3D" : (fetch.stacked ? "stacked" : "2D-as-3D"), fetch.address, fetch.width,
                             fetch.height, fetch.depth, fetch.format, fetch.mipMin, fetch.mipMax, fetch.mipAddress, fetch.packedMips, g_swaps);
-                    if (BindMemoryTexture(fetch, true, texture, sampler, constants) && binding.array)
+                    if (BindMemoryTexture(fetch, true, layersKey, texture, sampler, constants) && binding.array)
                         constants[3] |= (std::min(fetch.depth, kMaxStackedLayers) << kStackedLayersShift) |
                             (fetch.volumeLinear ? kStackedLinearBit : 0);
                 }
@@ -447,7 +507,7 @@ namespace h3::gpu::renderer::internal
                 }
                 else if (usable && fetch.dimension <= kDimension2D)
                 {
-                    if (!BindMemoryTexture(fetch, false, texture, sampler, constants))
+                    if (!BindMemoryTexture(fetch, false, frontKey, texture, sampler, constants))
                         LogOnce("unsupported texture format " + std::to_string(fetch.format));
                 }
                 break;
@@ -480,6 +540,7 @@ namespace h3::gpu::renderer::internal
                     SDL_ReleaseGPUTexture(g_device, it->second.texture);
                 g_textureBytes -= it->second.bytes;
                 it = g_textures.erase(it);
+                g_frontTextures.clear();
                 continue;
             }
             if (g_textureBytes > kTextureBudgetBytes && idle > kMinIdleFrames)
@@ -499,6 +560,7 @@ namespace h3::gpu::renderer::internal
             SDL_ReleaseGPUTexture(g_device, cached.texture);
             g_textureBytes -= cached.bytes;
             g_textures.erase(key);
+            g_frontTextures.clear();
         }
     }
 }

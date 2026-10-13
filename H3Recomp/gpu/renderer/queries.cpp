@@ -157,7 +157,7 @@ void main()
             }
             if (!g_countPipeline)
             {
-                std::vector<uint8_t> spirv = CompileSpirv(ShaderStage::Compute, kCountComputeShader, "query_count.spv");
+                std::vector<uint8_t> spirv = CompileSpirv(ShaderStage::Compute, kCountComputeShader, InternalCacheName("query_count", kCountComputeShader));
                 if (spirv.empty())
                     return false;
                 SDL_GPUComputePipelineCreateInfo info{};

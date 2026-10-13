@@ -55,6 +55,16 @@ namespace h3::gpu
     // The latest ramp (thread-safe copy).
     GammaRamp CurrentGammaRamp();
 
+    // How many times the command stream has written the vertex (stage 0)
+    // or pixel (stage 1) shader float constants: unchanged means a draw
+    // sees the same constants as the last one that read them.
+    uint32_t AluConstantGeneration(uint32_t stage);
+    // The float constants as the command stream wrote them, host-endian
+    // (1024 dwords per stage: vertex, then pixel), so a draw's snapshot is
+    // a plain copy instead of a byte swap of the register file (~8% of the
+    // command processor thread). Command processor thread only.
+    const uint32_t* AluConstantsHost();
+
     // GPU register access (big-endian words at kGpuRegisterBase).
     uint32_t ReadRegister(uint32_t index);
     void WriteRegister(uint32_t index, uint32_t value);
