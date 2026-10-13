@@ -76,6 +76,12 @@ namespace h3::gpu::renderer::internal
             bool indexed = true;       // false for rectangle lists (the vertex shader expands them)
             uint32_t firstIndex = 0;   // in the frame's index buffer, in indices
             uint32_t count = 0;        // indices (or vertices) to draw
+            // Triangles reused from an earlier flush this frame (see
+            // g_frameIndices): what to convert again if the index buffer has
+            // to grow before this draw's flush.
+            bool reusedIndices = false;
+            uint32_t initiator = 0, indexBase = 0, dmaSize = 0, resetIndex = 0;
+            bool resetEnabled = false;
         };
 
         TargetSet g_targets;  // what the pending draws render into
@@ -131,6 +137,35 @@ namespace h3::gpu::renderer::internal
         // (guest address, dwords) -> offset in the memory buffer, so draws
         // sharing a vertex buffer stage it once per flush.
         std::unordered_map<uint64_t, uint32_t> g_stagedRanges;
+        // Ranges staged by this frame's earlier flushes, still in the memory
+        // buffer (it's only cycled at the frame's first flush): a later
+        // flush reuses one whose guest memory hasn't changed (same content
+        // hash) instead of copying and uploading it again. Halo's particle
+        // buffer alone was staged 7 times a frame (4 MB); everything came to
+        // ~20 MB a frame, copied twice on the CPU, at 60 Hz the GPU thread's
+        // biggest cost after waiting.
+        struct FrameRange
+        {
+            uint32_t offset;  // dwords into the memory buffer
+            uint64_t hash;
+        };
+        std::unordered_map<uint64_t, FrameRange> g_frameRanges;
+        // This flush's reused ranges (key, offset): if the flush has to grow
+        // the buffer they're staged again (the new buffer holds only this
+        // flush's data).
+        std::vector<std::pair<uint64_t, uint32_t>> g_reusedRanges;
+        // Smaller ranges aren't worth hashing.
+        constexpr uint32_t kMinReuseDwords = 1024;
+        // The same for converted indices: draws of one mesh in several
+        // passes (depth, lighting, shadows) convert the same guest indices
+        // into the same triangle list. Key: everything the conversion
+        // depends on and the guest indices' content hash.
+        struct FrameIndices
+        {
+            uint32_t firstIndex;  // in the index buffer
+            uint32_t count;
+        };
+        std::unordered_map<uint64_t, FrameIndices> g_frameIndices;
 
         SDL_GPUBuffer* g_memoryBuffer = nullptr;
         uint32_t g_memoryBufferSize = 0;
@@ -328,8 +363,9 @@ namespace h3::gpu::renderer::internal
 
         // Vertex fetch constants the shader uses: copy their data into the
         // frame's memory staging and point the system constants at it.
-        // PERF: copies every vertex buffer a draw reads, every flush; vertex
-        // buffers that don't change could stay resident on the GPU.
+        // Ranges an earlier flush this frame staged are reused while their
+        // content hash matches (g_frameRanges). PERF: static vertex buffers
+        // are still uploaded once per frame; they could stay resident.
         void StageVertexData(const Shader& vs, SystemConstants& system)
         {
             for (uint32_t index : vs.info.vertexFetchConstants)
@@ -353,8 +389,25 @@ namespace h3::gpu::renderer::internal
                     entry[0] = staged->second;
                     continue;
                 }
+                // Staged by an earlier flush this frame, unchanged since?
+                static const bool noReuse = EnvFlag("H3_NO_STAGING_REUSE");
+                uint64_t hash = 0;
+                if (!noReuse && fetch.dwords >= kMinReuseDwords)
+                {
+                    hash = ContentHash(GuestPtr<uint8_t>(address), size_t(fetch.dwords) * 4);
+                    auto earlier = g_frameRanges.find(key);
+                    if (earlier != g_frameRanges.end() && earlier->second.hash == hash)
+                    {
+                        entry[0] = earlier->second.offset;
+                        g_stagedRanges.emplace(key, entry[0]);
+                        g_reusedRanges.push_back({ key, entry[0] });
+                        continue;
+                    }
+                }
                 entry[0] = g_memoryBase + uint32_t(g_memoryStaging.size());
                 g_stagedRanges.emplace(key, entry[0]);
+                if (hash)
+                    g_frameRanges[key] = { entry[0], hash };
                 size_t start = g_memoryStaging.size();
                 g_memoryStaging.resize(start + fetch.dwords);
                 memcpy(g_memoryStaging.data() + start, GuestPtr<uint8_t>(address), size_t(fetch.dwords) * 4);
@@ -476,6 +529,13 @@ namespace h3::gpu::renderer::internal
             PolygonOffset polygonOffset = CurrentPolygonOffset(modeControl, std::max(gridX, gridY));
             system.ndcOffset[2] = zOffset + polygonOffset.constant;
             system.depthBiasSlope = polygonOffset.slope;
+            // Point lists: the register's half-width (Halo 3 leaves it at
+            // 0.5, one guest pixel), scaled so a point still covers its whole
+            // guest pixel at a render scale. Host points are square, so the
+            // height is ignored; no Halo 3 shader exports its own point size.
+            constexpr float kPointHalfSizeUnit = 1.0f / 16.0f;
+            float pointDiameter = float(ReadRegister(kRegPaSuPointSize) >> 16) * kPointHalfSizeUnit * 2.0f;
+            system.pointSize = std::max(pointDiameter * gridX, 1.0f);
             draw.viewport = { 0.0f, 0.0f, width, height, 0.0f, 1.0f };
 
             // Scissor: the window scissor (15-bit coordinates), offset by the
@@ -565,6 +625,50 @@ namespace h3::gpu::renderer::internal
         // to [base, base + size) of each buffer. A replaced buffer only needs
         // to hold this flush's range: earlier passes keep the old one until
         // they finish.
+        // Growing the memory buffer replaces it, and the new one holds only
+        // this flush's data: stage the reused ranges again (their guest
+        // memory is unchanged) and point the draws at the copies; earlier
+        // flushes' ranges are gone.
+        if (g_memoryBase != 0 && (g_memoryBase * 4 + std::max<size_t>(g_memoryStaging.size(), 1) * 4 > g_memoryBufferSize))
+        {
+            std::unordered_map<uint32_t, uint32_t> moved;  // old offset -> new
+            for (const auto& [key, offset] : g_reusedRanges)
+            {
+                uint32_t dwords = uint32_t(key);
+                uint32_t newOffset = g_memoryBase + uint32_t(g_memoryStaging.size());
+                size_t start = g_memoryStaging.size();
+                g_memoryStaging.resize(start + dwords);
+                memcpy(g_memoryStaging.data() + start, GuestPtr<uint8_t>(uint32_t(key >> 32)), size_t(dwords) * 4);
+                moved[offset] = newOffset;
+                g_stagedRanges[key] = newOffset;
+            }
+            if (!moved.empty())
+                for (std::unique_ptr<PendingDraw>& draw : g_pending)
+                    for (auto& entry : draw->system.vfetch)
+                        if (auto it = moved.find(entry[0]); entry[1] != 0 && it != moved.end())
+                            entry[0] = it->second;
+            std::erase_if(g_frameRanges, [](const auto& item) { return item.second.offset < g_memoryBase; });
+            for (const auto& [key, offset] : g_stagedRanges)
+                if (auto it = g_frameRanges.find(key); it != g_frameRanges.end())
+                    it->second.offset = offset;
+        }
+        g_reusedRanges.clear();
+        // The same for reused triangle lists: convert them again into this
+        // flush's part of the (new) index buffer.
+        if (g_indexBase != 0 && (g_indexBase * 4 + std::max<size_t>(g_indexStaging.size(), 1) * 4 > g_indexBufferSize))
+        {
+            for (std::unique_ptr<PendingDraw>& draw : g_pending)
+            {
+                if (!draw->reusedIndices)
+                    continue;
+                std::vector<uint32_t> indices = GuestIndices(draw->initiator, draw->indexBase, draw->dmaSize);
+                uint32_t first = uint32_t(g_indexStaging.size());
+                AppendTriangles(g_indexStaging, indices, draw->initiator & 0x3F, draw->resetIndex, draw->resetEnabled);
+                draw->firstIndex = g_indexBase + first;
+                draw->reusedIndices = false;
+            }
+            std::erase_if(g_frameIndices, [](const auto& item) { return item.second.firstIndex < g_indexBase; });
+        }
         uint32_t memoryBytes = uint32_t(std::max<size_t>(g_memoryStaging.size(), 1) * 4);
         uint32_t indexBytes = uint32_t(std::max<size_t>(g_indexStaging.size(), 1) * 4);
         bool memoryCycle = g_memoryBase == 0;
@@ -578,6 +682,8 @@ namespace h3::gpu::renderer::internal
             indexCycle = false;
         // Cycling is only a safety net: the buffer is kTransferAge frames
         // old, so normally no longer in use.
+        g_stagedBytes += memoryBytes;
+        g_stagedIndexBytes += indexBytes;
         SDL_GPUTransferBuffer* transfer = AcquireTransfer(memoryBytes + indexBytes);
         uint8_t* mapped = static_cast<uint8_t*>(SDL_MapGPUTransferBuffer(g_device, transfer, true));
         memcpy(mapped, g_memoryStaging.data(), g_memoryStaging.size() * 4);
@@ -676,6 +782,8 @@ namespace h3::gpu::renderer::internal
     void EndFrameBuffers()
     {
         g_memoryBase = g_indexBase = 0;
+        g_frameRanges.clear();  // the next flush cycles the memory buffer
+        g_frameIndices.clear();
         RetireTransfers();
     }
 
@@ -968,9 +1076,9 @@ namespace h3::gpu::renderer::internal
             return;
         }
 
-        std::vector<uint32_t> indices = GuestIndices(initiator, indexBase, dmaSize);
         if (primitive == kPrimRectangleList)
         {
+            std::vector<uint32_t> indices = GuestIndices(initiator, indexBase, dmaSize);
             // Rectangles: the vertex shader reads the three given vertices'
             // indices from the memory buffer and makes two triangles.
             system.flags |= kSystemFlagRectangleList;
@@ -984,11 +1092,40 @@ namespace h3::gpu::renderer::internal
         {
             uint32_t resetIndex = ReadRegister(kRegVgtMultiPrimIbResetIndx);
             bool resetEnabled = (modeControl >> 21) & 1;
-            uint32_t first = uint32_t(g_indexStaging.size());
-            AppendTriangles(g_indexStaging, indices, primitive, resetIndex, resetEnabled);
             draw->indexed = true;
-            draw->firstIndex = g_indexBase + first;
-            draw->count = uint32_t(g_indexStaging.size()) - first;
+            draw->initiator = initiator, draw->indexBase = indexBase, draw->dmaSize = dmaSize;
+            draw->resetIndex = resetIndex, draw->resetEnabled = resetEnabled;
+            draw->reusedIndices = false;
+            // Converted by an earlier draw this frame?
+            static const bool noReuse = EnvFlag("H3_NO_STAGING_REUSE");
+            uint64_t key = 0;
+            if (!noReuse)
+            {
+                bool autoIndexed = ((initiator >> 6) & 3) != 0 || indexBase == 0;
+                uint32_t count = initiator >> 16;
+                uint32_t bytes = autoIndexed ? 0 : count * (((initiator >> 11) & 1) ? 4 : 2);
+                uint64_t parameters[] = { initiator, autoIndexed ? 0 : indexBase, dmaSize >> 30, ReadRegister(kRegVgtIndxOffset),
+                    resetEnabled ? resetIndex : 0, uint64_t(resetEnabled),
+                    bytes ? ContentHash(GuestPtr<uint8_t>(indexBase), bytes) : 0 };
+                key = ContentHash(parameters, sizeof(parameters));
+                auto earlier = g_frameIndices.find(key);
+                if (earlier != g_frameIndices.end())
+                {
+                    draw->firstIndex = earlier->second.firstIndex;
+                    draw->count = earlier->second.count;
+                    draw->reusedIndices = true;
+                }
+            }
+            if (!draw->reusedIndices)
+            {
+                std::vector<uint32_t> indices = GuestIndices(initiator, indexBase, dmaSize);
+                uint32_t first = uint32_t(g_indexStaging.size());
+                AppendTriangles(g_indexStaging, indices, primitive, resetIndex, resetEnabled);
+                draw->firstIndex = g_indexBase + first;
+                draw->count = uint32_t(g_indexStaging.size()) - first;
+                if (key)
+                    g_frameIndices[key] = { draw->firstIndex, draw->count };
+            }
         }
         if (draw->count == 0)
         {

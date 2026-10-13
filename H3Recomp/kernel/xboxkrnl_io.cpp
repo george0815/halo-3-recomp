@@ -19,6 +19,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using namespace h3;
@@ -84,6 +85,8 @@ namespace
     constexpr uint32_t kStatusObjectNameNotFound = 0xC0000034;
     constexpr uint32_t kStatusObjectNameCollision = 0xC0000035;
     constexpr uint32_t kStatusObjectPathNotFound = 0xC000003A;
+    constexpr uint32_t kStatusSharingViolation = 0xC0000043;
+    constexpr uint32_t kStatusDeletePending = 0xC0000056;
     constexpr uint32_t kStatusFileIsADirectory = 0xC00000BA;
     constexpr uint32_t kStatusNotADirectory = 0xC0000103;
 
@@ -110,6 +113,119 @@ namespace
     const bool g_logFiles = EnvFlag("H3_LOG_FILES");
     const bool g_logReads = EnvFlag("H3_LOG_READS");
 
+    // Access mask bits, grouped the way NT's share access check sees them.
+    // Opens that ask for none of these (attributes, SYNCHRONIZE) neither
+    // check nor count against other opens' sharing.
+    constexpr uint32_t kGenericRead = 0x80000000;
+    constexpr uint32_t kGenericWrite = 0x40000000;
+    constexpr uint32_t kGenericExecute = 0x20000000;
+    constexpr uint32_t kGenericAll = 0x10000000;
+    constexpr uint32_t kMaximumAllowed = 0x02000000;
+    constexpr uint32_t kReadAccess = kGenericRead | kGenericExecute | kGenericAll | kMaximumAllowed
+        | 0x1 /* FILE_READ_DATA */ | 0x20 /* FILE_EXECUTE */;
+    constexpr uint32_t kDataWriteAccess = kGenericWrite | kGenericAll | kMaximumAllowed
+        | 0x2 /* FILE_WRITE_DATA */ | 0x4 /* FILE_APPEND_DATA */;
+    constexpr uint32_t kDeleteAccess = kGenericAll | kMaximumAllowed | 0x10000 /* DELETE */;
+
+    // Share access flags (FILE_SHARE_*).
+    constexpr uint32_t kShareRead = 0x1;
+    constexpr uint32_t kShareWrite = 0x2;
+    constexpr uint32_t kShareDelete = 0x4;
+
+    // NT's SHARE_ACCESS for one host file, shared by all its open handles
+    // (IoCheckShareAccess). Halo 3 relies on it: its autosave queue deletes
+    // every *.temp in cache1:\autosave it can open for DELETE, and the film
+    // being recorded right now survives only because the recorder's handle
+    // doesn't share delete access.
+    struct File;
+
+    struct ShareAccess
+    {
+        std::vector<File*> handles;  // the open Files, so a rename can move them all
+        uint32_t openCount = 0;
+        uint32_t readers = 0, writers = 0, deleters = 0;
+        uint32_t sharedRead = 0, sharedWrite = 0, sharedDelete = 0;
+        // FileDispositionInformation was set on some handle: the file is
+        // deleted when its last handle closes, and can't be opened until then.
+        bool deletePending = false;
+    };
+
+    // What one handle added to its file's ShareAccess.
+    struct ShareGrant
+    {
+        bool read = false, write = false, del = false;
+        bool shareRead = false, shareWrite = false, shareDelete = false;
+    };
+
+    std::mutex g_shareMutex;
+    std::unordered_map<std::string, ShareAccess> g_shareAccess;  // by host path
+
+    std::string ShareKey(const std::filesystem::path& path)
+    {
+        return path.lexically_normal().string();
+    }
+
+    // Opens a handle against the file's share access, or returns the NT
+    // status the open fails with.
+    uint32_t AcquireShareAccess(File* file, const std::filesystem::path& path, uint32_t access, uint32_t share,
+        ShareGrant& grant)
+    {
+        std::lock_guard lock(g_shareMutex);
+        ShareAccess& state = g_shareAccess[ShareKey(path)];
+        if (state.deletePending)
+            return kStatusDeletePending;
+        grant.read = (access & kReadAccess) != 0;
+        grant.write = (access & kDataWriteAccess) != 0;
+        grant.del = (access & kDeleteAccess) != 0;
+        grant.shareRead = (share & kShareRead) != 0;
+        grant.shareWrite = (share & kShareWrite) != 0;
+        grant.shareDelete = (share & kShareDelete) != 0;
+        if (grant.read || grant.write || grant.del)
+        {
+            if ((grant.read && state.sharedRead < state.openCount)
+                || (grant.write && state.sharedWrite < state.openCount)
+                || (grant.del && state.sharedDelete < state.openCount)
+                || (state.readers && !grant.shareRead)
+                || (state.writers && !grant.shareWrite)
+                || (state.deleters && !grant.shareDelete))
+                return kStatusSharingViolation;
+        }
+        state.handles.push_back(file);
+        state.openCount++;
+        state.readers += grant.read;
+        state.writers += grant.write;
+        state.deleters += grant.del;
+        state.sharedRead += grant.shareRead;
+        state.sharedWrite += grant.shareWrite;
+        state.sharedDelete += grant.shareDelete;
+        return kStatusSuccess;
+    }
+
+    // Closes a handle's share access. Returns true if this was the file's
+    // last handle and it is to be deleted.
+    bool ReleaseShareAccess(File* file, const std::filesystem::path& path, const ShareGrant& grant, bool deleteOnClose)
+    {
+        std::lock_guard lock(g_shareMutex);
+        auto it = g_shareAccess.find(ShareKey(path));
+        if (it == g_shareAccess.end())
+            return deleteOnClose;
+        ShareAccess& state = it->second;
+        std::erase(state.handles, file);
+        state.openCount--;
+        state.readers -= grant.read;
+        state.writers -= grant.write;
+        state.deleters -= grant.del;
+        state.sharedRead -= grant.shareRead;
+        state.sharedWrite -= grant.shareWrite;
+        state.sharedDelete -= grant.shareDelete;
+        state.deletePending |= deleteOnClose;
+        if (state.openCount != 0)
+            return false;
+        bool remove = state.deletePending;
+        g_shareAccess.erase(it);
+        return remove;
+    }
+
     struct File : KernelObject
     {
         File() : KernelObject(ObjectType::File) {}
@@ -117,7 +233,8 @@ namespace
         {
             if (stream != nullptr)
                 fclose(stream);
-            if (deleteOnClose)
+            bool remove = shared ? ReleaseShareAccess(this, hostPath, grant, deleteOnClose) : deleteOnClose;
+            if (remove)
             {
                 std::error_code error;
                 std::filesystem::remove(hostPath, error);
@@ -133,6 +250,10 @@ namespace
         bool writable = false;
         bool deleteOnClose = false;
 
+        // Counted in g_shareAccess (writable files only; see OpenFile).
+        bool shared = false;
+        ShareGrant grant;
+
         // FileCompletionInformation: I/O on the file posts packets here.
         std::shared_ptr<IoCompletion> completionPort;
         uint32_t completionKey = 0;
@@ -146,6 +267,29 @@ namespace
         size_t nextEntry = 0;
         bool listed = false;
     };
+
+    // Moves a renamed file's share access, and every handle open on it, to
+    // its new path. The caller holds `renamed`'s mutex; other handles' paths
+    // are only read when they're opened, closed or resized.
+    void RenameShareAccess(File& renamed, const std::filesystem::path& to, const std::string& guestPath)
+    {
+        std::lock_guard lock(g_shareMutex);
+        auto it = g_shareAccess.find(ShareKey(renamed.hostPath));
+        if (it == g_shareAccess.end())
+        {
+            renamed.hostPath = to;
+            renamed.guestPath = guestPath;
+            return;
+        }
+        ShareAccess state = std::move(it->second);
+        g_shareAccess.erase(it);
+        for (File* file : state.handles)
+        {
+            file->hostPath = to;
+            file->guestPath = guestPath;
+        }
+        g_shareAccess[ShareKey(to)] = std::move(state);
+    }
 
     // Seeks a host file to a 64-bit offset (fseeko/_fseeki64). Returns 0 on success.
     int Seek(std::FILE* stream, uint64_t offset)
@@ -252,7 +396,7 @@ namespace
 
     // NtCreateFile and NtOpenFile.
     uint32_t OpenFile(uint32_t handlePtr, uint32_t access, uint32_t attributes, uint32_t iosb,
-        uint32_t disposition, uint32_t options)
+        uint32_t share, uint32_t disposition, uint32_t options)
     {
         std::string guestPath = GuestPath(attributes);
         auto mapped = MapGuestPath(guestPath);
@@ -260,8 +404,8 @@ namespace
         auto finish = [&](uint32_t status, uint32_t information)
         {
             if (g_logFiles || (status != kStatusSuccess && status != kStatusObjectNameNotFound))
-                fprintf(stderr, "[io] open %s (disposition %u, options 0x%X, access 0x%08X) -> 0x%08X\n", guestPath.c_str(),
-                    disposition, options, access, status);
+                fprintf(stderr, "[io] open %s (disposition %u, options 0x%X, access 0x%08X, share %u) -> 0x%08X\n",
+                    guestPath.c_str(), disposition, options, access, share, status);
             CompleteIo(iosb, status, information, 0);
             return status;
         };
@@ -293,6 +437,18 @@ namespace
         file->hostPath = mapped->path;
         file->writable = mapped->writable;
         file->directory = isDirectory || (create && (options & kDirectoryFile));
+
+        // Sharing is checked before the open touches the file (a truncating
+        // open that violates it must leave the file alone). Only hard drive
+        // files take part: the disc is read-only, so sharing never matters
+        // there, and directories are opened freely for listing.
+        if (mapped->writable && !file->directory)
+        {
+            uint32_t status = AcquireShareAccess(file.get(), file->hostPath, access, share, file->grant);
+            if (status != kStatusSuccess)
+                return finish(status, 0);
+            file->shared = true;
+        }
 
         if (create && file->directory)
         {
@@ -352,14 +508,14 @@ namespace
 //     ULONG shareAccess, ULONG disposition, ULONG options)
 PPC_FUNC(__imp__NtCreateFile)
 {
-    ctx.r3.u64 = OpenFile(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r10.u32, StackArgument(ctx, 8));
+    ctx.r3.u64 = OpenFile(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r9.u32, ctx.r10.u32, StackArgument(ctx, 8));
 }
 
 // NTSTATUS NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attributes,
 //     PIO_STATUS_BLOCK iosb, ULONG shareAccess, ULONG options)
 PPC_FUNC(__imp__NtOpenFile)
 {
-    ctx.r3.u64 = OpenFile(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, kOpen, ctx.r8.u32);
+    ctx.r3.u64 = OpenFile(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, kOpen, ctx.r8.u32);
 }
 
 // NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apcRoutine,
@@ -592,6 +748,8 @@ PPC_FUNC(__imp__NtSetInformationFile)
     uint32_t infoClass = ctx.r7.u32;
 
     std::lock_guard lock(file->mutex);
+    if (g_logFiles)
+        fprintf(stderr, "[io] set information class %u on %s\n", infoClass, file->guestPath.c_str());
     switch (infoClass)
     {
     case 4:  // FileBasicInformation: times and attributes, ignored
@@ -607,6 +765,46 @@ PPC_FUNC(__imp__NtSetInformationFile)
     case 14:  // FilePositionInformation
         file->position = GuestRef<uint64_t>(in);
         break;
+    case 10:  // FileRenameInformation: replace if exists, root directory, ANSI_STRING name
+    {
+        // Halo 3 finishes a saved film by renaming cache1:\autosave\*.temp
+        // to *.film.
+        bool replace = GuestRef<uint32_t>(in) != 0;
+        uint32_t root = GuestRef<uint32_t>(in + 4);
+        std::string name = AnsiString(in + 8);
+        if (root != 0)
+        {
+            if (auto directory = LookupHandleAs<File>(root))
+                name = directory->guestPath + (name.empty() || name.front() == '\\' ? "" : "\\") + name;
+        }
+        auto mapped = MapGuestPath(name);
+        if (g_logFiles)
+            fprintf(stderr, "[io] rename %s -> %s\n", file->guestPath.c_str(), name.c_str());
+        if (!mapped)
+        {
+            ctx.r3.u64 = kStatusObjectPathNotFound;
+            return;
+        }
+        if (!file->writable || !mapped->writable)
+        {
+            ctx.r3.u64 = kStatusAccessDenied;
+            return;
+        }
+        if (mapped->exists && !replace)
+        {
+            ctx.r3.u64 = kStatusObjectNameCollision;
+            return;
+        }
+        std::error_code error;
+        std::filesystem::rename(file->hostPath, mapped->path, error);
+        if (error)
+        {
+            ctx.r3.u64 = kStatusAccessDenied;
+            return;
+        }
+        RenameShareAccess(*file, mapped->path, mapped->devicePath);
+        break;
+    }
     case 30:  // FileCompletionInformation: port handle, key
     {
         auto port = LookupHandleAs<IoCompletion>(GuestRef<uint32_t>(in));

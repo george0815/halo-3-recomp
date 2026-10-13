@@ -135,6 +135,9 @@ void xe_write_vertex(vec4 position, vec4 outputs[16])
     if ((xe_sys.flags & 8u) != 0u)
         position.z *= position.w;
     gl_Position = vec4(position.xyz * xe_sys.ndc_scale.xyz + position.w * xe_sys.ndc_offset.xyz, position.w);
+    // Point lists (SDL_GPU requires the output for them; other topologies
+    // ignore it).
+    gl_PointSize = xe_sys.point_size;
     // Flags bit 9 (screen-space draws at a render scale): move the corner
     // to the guest pixel boundary the console's coverage rule implies.
     // Host texels map to guest pixels in blocks of pixel_scale, offset by
@@ -558,6 +561,15 @@ void main()
                             f.Opcode() == FetchOpcode::GetTextureComputedLod)
                         {
                             TextureBindingFor(f.TextureConstIndex(), f.TextureDim());
+                            // Stacked textures' second (2D array) binding,
+                            // registered here too: every sampler must be
+                            // numbered before the vertex memory buffer, which
+                            // follows them in the same set (registered later,
+                            // it took the buffer's binding and the water's
+                            // vertex shader read its vertex data from the
+                            // wrong resource).
+                            if (f.Opcode() == FetchOpcode::TextureFetch && f.TextureDim() == TextureDimension::D3OrStacked)
+                                TextureBindingFor(f.TextureConstIndex(), f.TextureDim(), true);
                         }
                     }
                 }
@@ -1518,7 +1530,7 @@ void main()
                     kFloatConstantCount);
                 out += Format("layout(std140, set = %u, binding = 1) uniform XeSystem\n{\n"
                               "    uvec4 bools[2];\n    uvec4 loops[8];\n    uvec4 vfetch[96];\n"
-                              "    vec4 ndc_scale;\n    vec4 ndc_offset;\n    uint ps_param_gen;\n    uint flags;\n    uint rect_indices;\n    uint tess_segments;\n    uint tess_patch_base;\n    float depth_bias_slope;\n"
+                              "    vec4 ndc_scale;\n    vec4 ndc_offset;\n    uint ps_param_gen;\n    uint flags;\n    uint rect_indices;\n    uint tess_segments;\n    uint tess_patch_base;\n    float depth_bias_slope;\n    float point_size;\n"
                               "    uvec4 tfetch[32];\n    vec4 color_exp_bias;\n    float alpha_ref;\n    float pixel_scale_x;\n    float pixel_scale_y;\n    float render_scale;\n    float target_width;\n    float target_height;\n} xe_sys;\n",
                     uniformSet);
                 for (const TextureBinding& texture : m_info.textures)

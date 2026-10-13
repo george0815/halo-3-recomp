@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 
 using namespace h3;
 
@@ -112,6 +113,32 @@ PPC_FUNC_IMPL(__imp__sub_821D7098);
 PPC_FUNC(sub_821D7098)
 {
     WithTickRate(ctx, base, __imp__sub_821D7098);
+}
+
+// D3D's swap interrupt (the GPU reached a Swap): r3 = the swap's flags,
+// bits 8-11 the present interval in vblanks. The swap is released (the
+// front buffer flipped, the ring let past its wait) once the vblank count
+// reaches the last swap's plus the interval; Halo 3 asks for 1, so a frame
+// that misses one vblank waits for the next and 17-33 ms frames all become
+// 33 ms ones. With the tick rate raised, the interval goes to 0: the swap
+// is released at once, and frames present as fast as they finish (the
+// window's own vsync still paces what is shown). Halo 3 runs as many ticks
+// per frame as real time demands, so the game's speed doesn't change.
+// H3_PRESENT_INTERVAL=<n> sets the interval explicitly (to compare).
+PPC_FUNC_IMPL(__imp__sub_825A95B8);
+PPC_FUNC(sub_825A95B8)
+{
+    constexpr uint32_t kIntervalShift = 8;
+    constexpr uint32_t kIntervalMask = 0xFu << kIntervalShift;
+    static const int interval = [] {
+        const char* value = EnvString("H3_PRESENT_INTERVAL");
+        if (value)
+            return int(strtol(value, nullptr, 0)) & 0xF;
+        return ConfiguredTickRate() ? 0 : -1;  // -1: the game's own
+    }();
+    if (interval >= 0)
+        ctx.r3.u64 = (ctx.r3.u32 & ~kIntervalMask) | (uint32_t(interval) << kIntervalShift);
+    __imp__sub_825A95B8(ctx, base);
 }
 
 namespace h3::hooks

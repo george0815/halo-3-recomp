@@ -285,6 +285,7 @@ namespace h3::gpu::renderer::internal
             SDL_GPUTextureTransferInfo destination{ download, 0, w, h };
             SDL_DownloadFromGPUTexture(copy, &region, &destination);
             SDL_EndGPUCopyPass(copy);
+            g_submits++;
             SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(g_commands);
             g_commands = nullptr;
             if (!fence)

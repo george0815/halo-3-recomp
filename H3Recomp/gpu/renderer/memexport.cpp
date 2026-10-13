@@ -849,6 +849,7 @@ void main()
         SDL_GPUTransferBufferLocation location{ download, 0 };
         SDL_DownloadFromGPUBuffer(copy, &region, &location);
         SDL_EndGPUCopyPass(copy);
+        g_submits++;
         SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(g_commands);
         g_commands = nullptr;
         SDL_WaitForGPUFences(g_device, true, &fence, 1);
@@ -956,6 +957,7 @@ void main()
     {
         if (g_unfenced.empty() || !g_commands)
             return;
+        g_submits++;
         SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(g_commands);
         g_commands = nullptr;
         g_batches.push_back({ fence, std::move(g_unfenced), g_swaps });

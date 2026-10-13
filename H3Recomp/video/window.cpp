@@ -88,6 +88,37 @@ namespace h3::video
             return true;
         }
 
+        // The SDL_GPU (Vulkan) device. It asks for Vulkan's largePoints
+        // feature, so point lists can be wider than one host pixel (a guest
+        // pixel at a render scale); without it, the plain device.
+        SDL_GPUDevice* CreateDevice()
+        {
+            // VkPhysicalDeviceFeatures is 55 VkBool32s; largePoints is the
+            // 17th. (Spelled out here: the Vulkan headers aren't a dependency.)
+            constexpr size_t kVkPhysicalDeviceFeatureCount = 55;
+            constexpr size_t kVkLargePoints = 16;
+            uint32_t features[kVkPhysicalDeviceFeatureCount] = {};
+            features[kVkLargePoints] = 1;
+            SDL_GPUVulkanOptions vulkan{};
+            vulkan.vulkan_api_version = 0;  // SDL's default (1.0)
+            vulkan.vulkan_10_physical_device_features = features;
+
+            SDL_PropertiesID props = SDL_CreateProperties();
+            SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+            // Off, as SDL_CreateGPUDevice(..., false, ...) had it (the
+            // property defaults to on): its checks assert on viewports larger
+            // than the target, which some guest draws produce.
+            SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, false);
+            SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, "vulkan");
+            SDL_SetPointerProperty(props, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER, &vulkan);
+            SDL_GPUDevice* device = SDL_CreateGPUDeviceWithProperties(props);
+            SDL_DestroyProperties(props);
+            if (device)
+                return device;
+            fprintf(stderr, "[video] no GPU device with large points (%s); points stay one pixel\n", SDL_GetError());
+            return SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, nullptr);
+        }
+
         // The Bink movie's current frame straight from its YUV buffers (shown
         // until the renderer has a frame of its own).
         void DrawBinkFrame()
@@ -154,7 +185,7 @@ namespace h3::video
         // One SDL_GPU (Vulkan) device: the command processor renders the
         // game with it, and the window's SDL renderer sits on top of it to
         // present frames (and the Bink debug view).
-        g_device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, nullptr);
+        g_device = CreateDevice();
         if (g_device)
             g_renderer = SDL_CreateGPURenderer(g_device, g_window);
         if (!g_renderer)

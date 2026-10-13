@@ -292,6 +292,7 @@ void main()
                 SDL_DownloadFromGPUBuffer(copy, &source, &destination);
                 SDL_EndGPUCopyPass(copy);
                 FenceMemExports();  // submits g_commands if memexport results wait in it
+                g_submits++;
                 readback.fence = SDL_SubmitGPUCommandBufferAndAcquireFence(Commands());
                 g_commands = nullptr;
                 for (const Interval& interval : g_intervals)

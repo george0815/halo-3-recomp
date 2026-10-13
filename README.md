@@ -140,7 +140,7 @@ Environment variables:
 | Variable | Effect |
 |---|---|
 | `H3_STRICT_IMPORTS=1` | Abort on the first unimplemented import instead of logging it |
-| `H3_LOG_FILES=1` | Log file opens, attribute queries and symbolic links |
+| `H3_LOG_FILES=1` | Log file opens (with share access), attribute queries, information changes, renames and symbolic links |
 | `H3_LOG_READS=1` | Log every file read (path, offset, length, destination) |
 | `H3_LOG_MEMORY=1` | Log physical memory allocations |
 | `H3_LOG_GPU=1` | Log ring buffer setup, the first use of each PM4 opcode, and frame counts |
@@ -165,6 +165,7 @@ Environment variables:
 | `H3_LOG_MEMEXPORT=1` | Log memory export dispatches, their records (first few values) and buffer use |
 | `H3_TICK_RATE=<n>` | Game ticks (frames) per second, overriding the launcher's frame rate (30 original, 60 experimental) |
 | `H3_TICK_RATE_SKIP=<n>` | Leave the first n game time setups at 30 ticks (1: menus at 30, levels at `H3_TICK_RATE`; for frame-timed input scripts) |
+| `H3_PRESENT_INTERVAL=<n>` | Vblanks each swap waits for (Halo 3 asks for 1; with the 60 Hz tick it is 0, swaps present at once). Set 1 to compare |
 | `H3_LOG_TICK_RATE=1` | Log the game's time globals (tick rate, tick count) every 300 frames |
 | `H3_POKE=<frame>:<address>:<hex bytes>[,...]` | Write bytes into guest memory at that swap (addresses as for `H3_DUMP_MEMORY`), for experiments |
 | `H3_LOG_WAIT_DETAIL=1` | Log every WAIT_REG_MEM (address, function, reference, current value) |
@@ -181,6 +182,7 @@ Environment variables:
 | `H3_TRACE_EXPORTS=<a>-<b>` | Log every memory export record applied in that physical range (frame, address, value, shader); `H3_TRACE_EXPORTS_VS=<8 hex>[,...]` only those shaders, `H3_TRACE_EXPORTS_AT=<modulus>:<remainder>` only those offsets. Output can be gigabytes |
 | `H3_LOG_STREAMS=<8 hex>` | Log that memexport shader's stream constants (base, format, endian) |
 | `H3_CHECK_EXPORT_DUPES=1` | Report dispatches that export one address twice with different values |
+| `H3_NO_STAGING_REUSE=1` | Copy every vertex buffer and convert every index list again on each flush (the old way), instead of reusing what earlier flushes this frame staged when the guest memory is unchanged |
 | `H3_LOG_VOLUMES=1` | Log each 3D or stacked texture once (size, layers, mips) |
 | `H3_DUMP_TEXTURE=<physical address>` | Save that texture's decoded levels and layers (RGBA8 formats) as `tex_<address>_l<level>_<layer>.png` |
 | `H3_NO_CULL=1` | Don't cull faces (PA_SU_SC_MODE_CNTL), to compare |

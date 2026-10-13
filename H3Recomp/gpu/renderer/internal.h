@@ -64,6 +64,7 @@ namespace h3::gpu::renderer::internal
     constexpr uint32_t kRegVgtIndxOffset = 0x2102;   // added to every index
     constexpr uint32_t kRegVgtMultiPrimIbResetIndx = 0x2103;  // strip/fan restart index
     constexpr uint32_t kRegSqContextMisc = 0x2181;   // bits 8-15: pixel parameter register
+    constexpr uint32_t kRegPaSuPointSize = 0x2280;   // point half-size, 12.4 fixed point: height bits 0-15, width 16-31
     constexpr uint32_t kRegPaSuVtxCntl = 0x2302;     // bit 0: pixel center (0 = D3D, integer centers)
     constexpr uint32_t kRegVgtOutputPathCntl = 0x2284;  // bits 0-1: 1 = tessellation enabled
     constexpr uint32_t kRegVgtHosCntl = 0x2285;      // bits 0-1: tessellation mode (discrete, continuous, adaptive)
@@ -558,7 +559,8 @@ namespace h3::gpu::renderer::internal
         uint32_t tessSegments;     // tessellated patches: segments per edge
         uint32_t tessPatchBase;    // tessellated patches: first patch index
         float depthBiasSlope;      // polygon offset slope factor (pixel shaders)
-        uint32_t pad[2];
+        float pointSize;           // point list diameter in host pixels (PA_SU_POINT_SIZE)
+        uint32_t pad;
         uint32_t textures[32][4];  // per texture fetch constant: swizzle, signs, exp adjust, enabled
         float colorExpBias[4];     // 2^RB_COLOR_INFO exp bias, per render target
         float alphaRef;
@@ -692,6 +694,12 @@ namespace h3::gpu::renderer::internal
     void SyncMemExportsFor(const Shader& shader);
     // How many times that waited (for logs).
     inline uint64_t g_memExportSyncs = 0;
+    // Command buffer submissions (for H3_LOG_FPS's "[passes]" line), and
+    // time spent waiting for earlier frames' GPU work (SubmitFrame).
+    inline uint64_t g_submits = 0;
+    inline double g_frameWaitSeconds = 0;
+    inline uint64_t g_stagedBytes = 0;       // vertex data uploaded by Flush
+    inline uint64_t g_stagedIndexBytes = 0;  // index data uploaded by Flush
     // Records everything pending into the command buffer. Call before
     // anything that can't happen inside a render pass.
     void Flush();

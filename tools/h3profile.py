@@ -3,7 +3,7 @@
 hottest functions overall and per thread. Samples in shared libraries are
 named by library and nearest exported symbol.
 
-Usage: tools/h3profile.py <H3Recomp binary> <profile.txt> [top N]
+Usage: tools/h3profile.py <H3Recomp binary> <profile.txt> [top N] [thread id]
 """
 import bisect
 import collections
@@ -32,6 +32,7 @@ def nearest(table, offset):
 def main():
     binary, profile = sys.argv[1], sys.argv[2]
     top = int(sys.argv[3]) if len(sys.argv) > 3 else 30
+    only_thread = int(sys.argv[4]) if len(sys.argv) > 4 else None  # one thread's samples only
     executable = load_symbols(binary, False)
     base = 0
     maps = []  # (start, end, file offset, path)
@@ -47,6 +48,8 @@ def main():
             maps.append((start, end, int(fields[4], 16), path))
         else:
             fields = line.split()
+            if only_thread is not None and int(fields[0]) != only_thread:
+                continue
             samples.append((int(fields[0]), int(fields[1], 16)))
             stacks.append([int(x, 16) for x in fields[2:]])
     maps.sort()

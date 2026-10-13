@@ -5,7 +5,8 @@ Rough phases. Each one is a large amount of work; that's fine.
 ## 0. Ground truth
 - [x] Own dump of `default.xex` in `private/`; SHA-1 recorded
 - [x] `h3xexinfo` runs: sections, entry point, imports listed
-- [ ] XEX loaded into Ghidra (XEX loader plugin) for manual analysis
+- [x] XEX loaded into Ghidra (XEX loader plugin) for manual analysis
+      (`~/tools/ghidra_*`, project in `private/ghidra/`)
 
 ## 1. Recompile
 - [x] Fill save/restore helper addresses (`h3xexinfo` output)
@@ -86,8 +87,13 @@ Rough phases. Each one is a large amount of work; that's fine.
       G-buffer, D3D's 4x fast clears); resolves honour the sample select
       (depth from sample 0). Halo 3 has no AA of its own: optional FXAA on
       the finished frame (launcher Video > Anti-aliasing)
-- [ ] Point sizes (no point sprites seen drawn)
-- [ ] Batch draws better (one render pass per render target change today)
+- [x] Point sizes: point lists take PA_SU_POINT_SIZE's diameter times the
+      render scale (Halo 3 draws a few one-pixel point lists per frame;
+      no shader exports its own size). Needs Vulkan largePoints
+- [ ] Batch draws better (one render pass per render target change today).
+      Profiled 2026-10-13: ~54 draw passes per frame, and draw submission is a
+      few percent of the command processor thread, which spends a third of
+      its time waiting on the game; not the bottleneck at the moment
 - [x] EDRAM render targets and resolves (Halo 3 renders 1152x640 in four
       predicated tiles, deferred: G-buffer, shadow maps, post-processing)
 - [x] EDRAM aliasing between formats at one base: 7e3 read as 2_10_10_10
@@ -108,6 +114,9 @@ Rough phases. Each one is a large amount of work; that's fine.
       (`kernel/xam_content.cpp`), offline XNet basics (`kernel/xnet.cpp`)
 - [x] Persist profile settings (`hdd/profile_settings.bin`); gamertag and
       profile defaults from the launcher
+- [x] Saved films: hard drive files honour NT share access (the autosave
+      queue's *.temp cleanup used to delete the film being recorded) and
+      renames (*.temp -> *.film); Theater lists and plays campaign films
 - [x] Launcher (`H3Launcher/`, Qt): video, controls, profile; writes
       `settings.ini`, which the runtime reads (`H3Recomp/config/settings.h`)
 - [ ] Xbox Live features
@@ -116,9 +125,11 @@ Rough phases. Each one is a large amount of work; that's fine.
 - [x] Internal resolution scale (1x-3x render targets and resolves;
       screen-space draws snap to guest pixels), window size, fullscreen
 - [~] Framerate unlock: experimental 60 Hz game tick (launcher Video >
-      Frame rate; `hooks/tick_rate.cpp`). Gameplay reaches 48-60 fps; needs
-      play-testing (physics, animation, AI, cutscenes) and more CPU headroom
-      to hold 60
+      Frame rate; `hooks/tick_rate.cpp`). Swaps present at once instead of
+      waiting for the next vblank (D3D's present interval 1 turned every
+      frame slower than 16.7 ms into a 33 ms one): Sierra gameplay went from
+      a locked 30 fps to 35-45. Needs play-testing (physics, animation, AI,
+      cutscenes) and more CPU headroom to hold 60
 - [ ] Replace hot recompiled functions with hand-written source (started:
       the 4 MB per-tick game state copy, `hooks/block_copy.cpp`)
 

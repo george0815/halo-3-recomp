@@ -10,6 +10,7 @@
 #include "gpu/renderer/internal.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <deque>
 #include <mutex>
@@ -50,6 +51,7 @@ namespace h3::gpu::renderer
         {
             // Always submit (even an empty command buffer) for a fence that
             // marks the end of this frame's work; submissions finish in order.
+            g_submits++;
             SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(Commands());
             g_commands = nullptr;
             if (fence)
@@ -57,7 +59,9 @@ namespace h3::gpu::renderer
             while (g_frameFences.size() > kMaxFramesInFlight)
             {
                 SDL_GPUFence* oldest = g_frameFences.front();
+                auto waitStart = std::chrono::steady_clock::now();
                 SDL_WaitForGPUFences(g_device, true, &oldest, 1);
+                g_frameWaitSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - waitStart).count();
                 SDL_ReleaseGPUFence(g_device, oldest);
                 g_frameFences.pop_front();
             }
@@ -337,7 +341,17 @@ namespace h3::gpu::renderer
                 g_passCounters[i] = {};
             }
             static uint64_t loggedSyncs = 0;
-            fprintf(stderr, " memexport syncs %.1f\n", double(g_memExportSyncs - loggedSyncs) / kCountLogInterval);
+            static uint64_t loggedSubmits = 0;
+            static double loggedWait = 0;
+            static uint64_t loggedStaged = 0, loggedIndices = 0;
+            fprintf(stderr, " memexport syncs %.1f submits %.1f frame-fence wait %.2f ms staged %.1f MB vertices %.1f MB indices\n",
+                double(g_memExportSyncs - loggedSyncs) / kCountLogInterval, double(g_submits - loggedSubmits) / kCountLogInterval,
+                (g_frameWaitSeconds - loggedWait) * 1000.0 / kCountLogInterval, double(g_stagedBytes - loggedStaged) / kCountLogInterval / (1 << 20),
+                double(g_stagedIndexBytes - loggedIndices) / kCountLogInterval / (1 << 20));
+            loggedStaged = g_stagedBytes;
+            loggedIndices = g_stagedIndexBytes;
+            loggedSubmits = g_submits;
+            loggedWait = g_frameWaitSeconds;
             loggedSyncs = g_memExportSyncs;
         }
         DumpFrameAtSwap(frontbuffer, frame.texture, frame.width, frame.height, frameFormat);
