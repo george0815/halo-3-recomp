@@ -13,6 +13,7 @@ add_executable(H3Recomp
     gpu/renderer/memexport.cpp
     gpu/renderer/queries.cpp
     gpu/renderer/pipelines.cpp
+    gpu/renderer/postprocess.cpp
     gpu/renderer/resolve.cpp
     gpu/renderer/shaders.cpp
     gpu/renderer/targets.cpp

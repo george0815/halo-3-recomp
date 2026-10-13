@@ -626,6 +626,24 @@ namespace h3::gpu::renderer::internal
         // its samples.
         uint32_t surfaceMsaa = SurfaceMsaa();
         int32_t samplesX = int32_t(SamplesX(surfaceMsaa)), samplesY = int32_t(SamplesY(surfaceMsaa));
+        // RB_COPY_CONTROL sample select (bits 4-6): 0-3 one sample, 4 samples
+        // 0+1, 5 samples 2+3, 6 all four. Halo's 4x menu G-buffer resolves
+        // depth from sample 0 alone (averaging made in-between depths along
+        // every silhouette) and colors from all four.
+        constexpr uint32_t kSampleSelectPair01 = 4, kSampleSelectPair23 = 5;
+        constexpr uint32_t kSampleMaskPair01 = 0x3, kSampleMaskPair23 = 0xC;
+        uint32_t sampleSelect = (copyControl >> 4) & 7;
+        uint32_t samples = surfaceMsaa == 0 ? 1 : (surfaceMsaa == 1 ? 2 : 4);
+        uint32_t sampleMask = 0;  // the whole pixel
+        if (samples > 1)
+        {
+            if (sampleSelect < samples)
+                sampleMask = 1u << sampleSelect;
+            else if (sampleSelect == kSampleSelectPair01 && samples == 4)
+                sampleMask = kSampleMaskPair01;
+            else if (sampleSelect == kSampleSelectPair23 && samples == 4)
+                sampleMask = kSampleMaskPair23;
+        }
         constexpr int32_t kAlignMask = ~(kResolveAlignment - 1);
         x0 = std::clamp(x0 & kAlignMask, 0, int32_t(kRenderTargetWidth) / samplesX);
         y0 = std::clamp(y0 & kAlignMask, 0, int32_t(kRenderTargetHeight) / samplesY);
@@ -703,7 +721,7 @@ namespace h3::gpu::renderer::internal
         uint32_t hostW = w * uint32_t(scale), hostH = h * uint32_t(scale);
         auto copy = [&](CopyMode copyMode, float colorScale) {
             ConvertCopy(target->texture, texture->texture, texture->hostFormat, texture->HostWidth(), texture->HostHeight(), sampleX0,
-                sampleY0, hostDestX, hostDestY, hostW, hostH, copyMode, depthFloat, colorScale, samplesX, samplesY);
+                sampleY0, hostDestX, hostDestY, hostW, hostH, copyMode, depthFloat, colorScale, samplesX, samplesY, sampleMask);
         };
         if (depthSource)
         {

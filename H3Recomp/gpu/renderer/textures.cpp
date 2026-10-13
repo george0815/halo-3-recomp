@@ -8,6 +8,7 @@
 #include "gpu/renderer/internal.h"
 
 #include <algorithm>
+#include <set>
 #include <functional>
 
 namespace h3::gpu::renderer::internal
@@ -34,6 +35,10 @@ namespace h3::gpu::renderer::internal
         // Where the host-to-guest texel ratio goes in a texture's system
         // constant word 3 (translator.h, tfetch.w).
         constexpr uint32_t kTextureScaleShift = 8;
+        // A stacked texture's layer count (0: the 3D binding is used) and
+        // whether to filter between layers, in the same word.
+        constexpr uint32_t kStackedLayersShift = 16, kMaxStackedLayers = 0x7FF;
+        constexpr uint32_t kStackedLinearBit = 1u << 27;
         // Fetch constant dimension values (texture.h).
         constexpr uint32_t kDimension2D = 1, kDimension3D = 2, kDimensionCube = 3;
         // Faces of a cube map.
@@ -68,6 +73,8 @@ namespace h3::gpu::renderer::internal
         // Gray stand-in of the right type for a shader's texture binding.
         SDL_GPUTexture* PlaceholderFor(shader::TextureBinding binding)
         {
+            if (binding.array)
+                return g_placeholderArray;
             switch (binding.dimension)
             {
             case ucode::TextureDimension::D3OrStacked: return g_placeholder3D;
@@ -172,9 +179,10 @@ namespace h3::gpu::renderer::internal
 
         // The host texture for a fetch constant, decoded from guest memory
         // (and re-decoded when the memory changes). layers: a stacked
-        // texture's layers as the slices of a 3D host texture (for shaders
-        // that sample it as 3D-or-stacked); otherwise its first layer as 2D.
-        // Null if the texture can't be decoded.
+        // texture's layers as a 2D array texture with mips (for shaders that
+        // sample it as 3D-or-stacked); otherwise its first layer as 2D. True
+        // 3D textures are 3D host textures (base level). Null if the texture
+        // can't be decoded.
         SDL_GPUTexture* MemoryTexture(const texture::FetchConstant& constant, bool layers = false)
         {
             const texture::FetchConstant fetch = texture::LargestUsableLevel(constant);
@@ -183,20 +191,24 @@ namespace h3::gpu::renderer::internal
             // slices decode from one block of memory (stride 0 below).
             bool cube = fetch.dimension == kDimensionCube;
             bool true3D = fetch.dimension == kDimension3D;
-            bool volume = (layers && fetch.depth > 1) || true3D;
-            uint32_t faces = cube ? kCubeFaces : volume ? fetch.depth : 1;
+            bool volume = true3D;
+            bool array = layers && !true3D && fetch.dimension == kDimension2D;
+            uint32_t faces = cube ? kCubeFaces : volume ? fetch.depth : array ? fetch.depth : 1;
             uint32_t faceSize = texture::GuestSize(fetch);
-            uint32_t stride = true3D ? 0 : (cube || volume) ? texture::FaceStride(fetch) : faceSize;
+            uint32_t stride = true3D ? 0 : (cube || array) ? texture::FaceStride(fetch) : faceSize;
             uint32_t size = stride * (faces - 1) + faceSize;
             if (!faceSize || fetch.address + uint64_t(size) > kPhysicalMemorySize)
                 return nullptr;
-            // Mip levels of 2D textures and cube maps: without them distant
-            // surfaces aliased into high-contrast noise (Halo's detail maps
-            // above all), and reflections sampled at a lower level were as
-            // sharp as level 0. Only when the base level is the fetch
-            // constant's own.
+            // Mip levels of 2D, stacked and cube textures: without them
+            // distant surfaces aliased into high-contrast noise (Halo's
+            // detail maps above all), and reflections sampled at a lower
+            // level were as sharp as level 0. Only when the base level is the
+            // fetch constant's own (a stacked texture whose base isn't
+            // resident starts at level 1, which may share its address). A
+            // 2D view of a stacked texture gets each level's first layer.
             std::vector<texture::FetchConstant> mips;
-            if (!volume && fetch.address == constant.address)
+            bool ownBase = fetch.address == constant.address && fetch.width == constant.width && fetch.height == constant.height;
+            if (!volume && ownBase)
                 mips = UsableMips(constant, fetch);  // (none for 3D textures yet)
             uint32_t levels = uint32_t(mips.size()) + 1;
 
@@ -204,6 +216,7 @@ namespace h3::gpu::renderer::internal
             // cache entry.
             uint32_t layout[] = { fetch.address, fetch.format, fetch.endian, fetch.width, fetch.height, fetch.pitch,
                 uint32_t(fetch.tiled) | (uint32_t(fetch.packedMips) << 1) | (uint32_t(cube) << 2) | (uint32_t(volume) << 3) |
+                    (uint32_t(array) << 4) |
                     (faces << 8) | (levels << 20),
                 levels > 1 ? constant.mipAddress : 0 };
             CachedTexture& cached = g_textures[Hash(layout, sizeof(layout))];
@@ -239,11 +252,39 @@ namespace h3::gpu::renderer::internal
                 }
             }
 
+            // H3_DUMP_TEXTURE=<hex physical address>: save that texture's
+            // decoded levels and layers (RGBA8 ones) as
+            // tex_<address>_l<level>_<layer>.png when it's decoded.
+            static const char* dumpTexture = EnvString("H3_DUMP_TEXTURE");
+            if (dumpTexture && uint32_t(strtoul(dumpTexture, nullptr, 16)) == constant.address)
+            {
+                auto save = [&](const texture::Decoded& decoded, uint32_t level, uint32_t layer) {
+                    if (decoded.format != SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)
+                        return;
+                    SDL_Surface* surface = SDL_CreateSurfaceFrom(int(decoded.width), int(decoded.height), SDL_PIXELFORMAT_ABGR8888,
+                        const_cast<uint8_t*>(decoded.data.data()), int(decoded.rowTexels * 4));
+                    if (!surface)
+                        return;
+                    char path[64];
+                    snprintf(path, sizeof(path), "tex_%08X_l%u_%u.png", constant.address, level, layer);
+                    SDL_SavePNG(surface, path);
+                    SDL_DestroySurface(surface);
+                };
+                for (uint32_t face = 0; face < faces; face++)
+                    save(decodedFaces[face], 0, face);
+                for (size_t i = 0; i < decodedMips.size(); i++)
+                    for (uint32_t face = 0; face < decodedMips[i].size(); face++)
+                        save(decodedMips[i][face], uint32_t(i) + 1, face);
+            }
+
             if (!cached.texture)
             {
                 const texture::Decoded& decoded = decodedFaces[0];
                 SDL_GPUTextureCreateInfo info{};
-                info.type = cube ? SDL_GPU_TEXTURETYPE_CUBE : volume ? SDL_GPU_TEXTURETYPE_3D : SDL_GPU_TEXTURETYPE_2D;
+                info.type = cube   ? SDL_GPU_TEXTURETYPE_CUBE
+                    : volume       ? SDL_GPU_TEXTURETYPE_3D
+                    : array        ? SDL_GPU_TEXTURETYPE_2D_ARRAY
+                                   : SDL_GPU_TEXTURETYPE_2D;
                 info.format = decoded.format;
                 info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
                 info.width = decoded.width;
@@ -355,10 +396,25 @@ namespace h3::gpu::renderer::internal
                     BindMemoryTexture(fetch, false, texture, sampler, constants);
                 break;
             case ucode::TextureDimension::D3OrStacked:
-                // Stacked (2D array) textures as 3D host textures, and true
-                // 3D textures (base level only).
-                if (usable && (fetch.dimension == kDimension2D || fetch.dimension == kDimension3D) && !FindResolved(fetch.address))
-                    BindMemoryTexture(fetch, true, texture, sampler, constants);
+                // Each 3D-or-stacked fetch has two bindings (translator.cpp):
+                // a 3D one for true 3D textures (base level only) and a 2D
+                // array one for stacked textures (with mips; a 3D host
+                // texture's mips would shrink the layer count). The shader
+                // picks by the layer count in tfetch.w (0: 3D).
+                if (usable && (binding.array ? fetch.dimension == kDimension2D : fetch.dimension == kDimension3D) &&
+                    !FindResolved(fetch.address))
+                {
+                    // H3_LOG_VOLUMES: each 3D or stacked texture once.
+                    static const bool logVolumes = EnvFlag("H3_LOG_VOLUMES");
+                    static std::set<uint32_t> logged;
+                    if (logVolumes && logged.insert(fetch.address).second)
+                        fprintf(stderr, "[render] %s texture %08X %ux%ux%u format %u mips %u-%u at %08X packed %d (frame %u)\n",
+                            fetch.dimension == kDimension3D ? "3D" : (fetch.stacked ? "stacked" : "2D-as-3D"), fetch.address, fetch.width,
+                            fetch.height, fetch.depth, fetch.format, fetch.mipMin, fetch.mipMax, fetch.mipAddress, fetch.packedMips, g_swaps);
+                    if (BindMemoryTexture(fetch, true, texture, sampler, constants) && binding.array)
+                        constants[3] |= (std::min(fetch.depth, kMaxStackedLayers) << kStackedLayersShift) |
+                            (fetch.volumeLinear ? kStackedLinearBit : 0);
+                }
                 break;
             case ucode::TextureDimension::D1:
             case ucode::TextureDimension::D2:

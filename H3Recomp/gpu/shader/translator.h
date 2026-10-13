@@ -72,6 +72,10 @@ namespace h3::gpu::shader
         uint32_t fetchConstant;
         ucode::TextureDimension dimension;
         uint32_t binding;
+        // A 3D-or-stacked fetch's second binding: a 2D array for stacked
+        // textures (the first is a 3D texture; the renderer binds one and the
+        // shader picks by tfetch.w's layer count).
+        bool array = false;
     };
 
     struct ShaderInfo

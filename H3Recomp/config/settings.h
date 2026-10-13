@@ -95,6 +95,14 @@ namespace h3::config
     constexpr int kOriginalTickRate = 30;
     constexpr int kUnlockedTickRate = 60;
 
+    // Post-process anti-aliasing on the finished frame (Halo 3 renders
+    // without any; render scale > 1 supersamples on top).
+    enum class AntiAliasing
+    {
+        Off,
+        Fxaa,
+    };
+
     struct VideoSettings
     {
         int width = 1280;   // window size in windowed mode (the game renders 1280x720)
@@ -116,6 +124,7 @@ namespace h3::config
         // the engine supports (it reads the rate everywhere) but Halo 3
         // shipped at 30, so some content may misbehave.
         int frameRate = kOriginalTickRate;
+        AntiAliasing antiAliasing = AntiAliasing::Fxaa;
     };
 
     struct ProfileSettings

@@ -23,6 +23,7 @@
 
 #include "config/env.h"
 #include "gpu/command_processor.h"
+#include "gpu/renderer.h"
 #include "gpu/registers.h"
 #include "gpu/shader/translator.h"
 #include "gpu/texture.h"
@@ -157,6 +158,7 @@ namespace h3::gpu::renderer::internal
     inline SDL_GPUTexture* g_placeholder2D = nullptr;
     inline SDL_GPUTexture* g_placeholder3D = nullptr;
     inline SDL_GPUTexture* g_placeholderCube = nullptr;
+    inline SDL_GPUTexture* g_placeholderArray = nullptr;  // 2D array (stacked textures)
 
     // The command buffer being recorded (created on demand, submitted at
     // swaps and when a write-back needs a fence).
@@ -371,7 +373,8 @@ namespace h3::gpu::renderer::internal
     // (resolving MSAA). Not inside a render pass.
     void ConvertCopy(SDL_GPUTexture* source, SDL_GPUTexture* destination, SDL_GPUTextureFormat destinationFormat,
         uint32_t destinationWidth, uint32_t destinationHeight, int32_t sx, int32_t sy, int32_t dx, int32_t dy, uint32_t w,
-        uint32_t h, CopyMode mode, bool depthFloat = false, float scale = 1.0f, int32_t samplesX = 1, int32_t samplesY = 1);
+        uint32_t h, CopyMode mode, bool depthFloat = false, float scale = 1.0f, int32_t samplesX = 1, int32_t samplesY = 1,
+        uint32_t sampleMask = 0);  // sampleMask: average only those samples (bit n: sample n) of an MSAA source
 
     // Writes depth from 24_8 depth words drawn as 8_8_8_8 color (Halo's
     // depth restore; see draw.cpp): the rectangle of source (in texels)
@@ -387,6 +390,9 @@ namespace h3::gpu::renderer::internal
 
     // Writes width x height of source (from sourceX, sourceY) through the
     // display gamma ramp into an RGBA8 destination (presentation).
+    // Post-processing (postprocess.cpp): FXAA on the finished frame if
+    // enabled; replaces the frame with its output (RGBA8, at 0,0).
+    void ApplyAntiAliasing(Frame& frame, SDL_GPUTextureFormat& format);
     void ApplyGammaRamp(SDL_GPUTexture* source, int32_t sourceX, int32_t sourceY, SDL_GPUTexture* destination, uint32_t width,
         uint32_t height, const GammaRamp& ramp);
 
@@ -659,6 +665,11 @@ namespace h3::gpu::renderer::internal
     // Debugging: this frame's export streams overlapping physical
     // [begin, end), as text.
     std::string FrameExportsOverlapping(uint32_t begin, uint32_t end);
+    // H3_DEBUG_VS_POSITIONS=1 with H3_LOG_VS_DATA: runs a logged draw's
+    // vertex shader as compute and logs each vertex's clip-space position
+    // ("ODD": behind the eye or far off screen). Auto-indexed draws only;
+    // waits for the GPU.
+    void DebugVertexPositions(const Shader& vs, uint32_t initiator);
     // Per frame: count this frame's query samples (before the frame's
     // submit), and take in counts that came back.
     void EndFrameQueries();

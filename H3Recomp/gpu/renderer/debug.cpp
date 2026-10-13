@@ -427,6 +427,12 @@ void main() { xe_color = vec4(1.0, 0.0, 1.0, 1.0); }
         if (strncmp(text, wanted, length) != 0)
             return;
         uint32_t stride = colon ? uint32_t(strtoul(colon + 1, nullptr, 0)) : 16;
+        // H3_LOG_VS_DATA_FRAMES=<first>-<last>: only those frames.
+        static const char* frames = EnvString("H3_LOG_VS_DATA_FRAMES");
+        static const uint32_t firstFrame = frames ? uint32_t(strtoul(frames, nullptr, 0)) : 0;
+        static const uint32_t lastFrame = frames && strchr(frames, '-') ? uint32_t(strtoul(strchr(frames, '-') + 1, nullptr, 0)) : ~0u;
+        if (g_swaps < firstFrame || g_swaps > lastFrame)
+            return;
         static uint32_t logged = 0;
         if (logged++ > 100000)
             return;
@@ -439,9 +445,20 @@ void main() { xe_color = vec4(1.0, 0.0, 1.0, 1.0); }
             RegisterFloat(kRegShaderConstantAlu + 253 * 4 + 2), RegisterFloat(kRegShaderConstantAlu + 253 * 4 + 3),
             RegisterFloat(kRegShaderConstantAlu + 255 * 4), RegisterFloat(kRegShaderConstantAlu + 255 * 4 + 1),
             RegisterFloat(kRegShaderConstantAlu + 255 * 4 + 2), RegisterFloat(kRegShaderConstantAlu + 255 * 4 + 3));
+        for (uint32_t c : { 32u, 157u, 230u })
+        {
+            uint32_t bits = ReadRegister(kRegShaderConstantAlu + c * 4);
+            fprintf(stderr, " | c%u.x %g (%08X) y %g z %g w %g", c, RegisterFloat(kRegShaderConstantAlu + c * 4), bits,
+                RegisterFloat(kRegShaderConstantAlu + c * 4 + 1), RegisterFloat(kRegShaderConstantAlu + c * 4 + 2),
+                RegisterFloat(kRegShaderConstantAlu + c * 4 + 3));
+        }
+        fprintf(stderr, " |");
         for (uint32_t c = 158; c < 166; c++)
             fprintf(stderr, " %g", RegisterFloat(kRegShaderConstantAlu + c * 4));
         fprintf(stderr, "\n");
+        static const bool positions = EnvString("H3_DEBUG_VS_POSITIONS") != nullptr;
+        if (positions)
+            DebugVertexPositions(vs, initiator);
         for (uint32_t index : vs.info.vertexFetchConstants)
         {
             VertexFetch fetch = ReadVertexFetch(index);
@@ -480,6 +497,10 @@ void main() { xe_color = vec4(1.0, 0.0, 1.0, 1.0); }
                     memcpy(&f, &bits, 4);
                     fprintf(stderr, " %g", f);
                 }
+                // The rest of the record as raw words.
+                fprintf(stderr, " |");
+                for (uint32_t i = 4; i < stride; i++)
+                    fprintf(stderr, " %08X", __builtin_bswap32(GuestRef<uint32_t>(PhysicalToGuest(fetch.address) + (r * stride + i) * 4).value));
                 fprintf(stderr, "\n");
             }
         }

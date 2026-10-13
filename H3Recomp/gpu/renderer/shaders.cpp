@@ -204,7 +204,10 @@ namespace h3::gpu::renderer::internal
             entry->cacheName = ShaderCacheName(vertex, translated.glsl);
             entry->host = RequestHostShader(vertex, translated.glsl, uint32_t(translated.info.textures.size()), entry->cacheName);
             entry->info = translated.info;
-            if (translated.info.usesMemExport)
+            // (Also kept for H3_DEBUG_VS_POSITIONS, which runs any vertex
+            // shader's compute variant.)
+            static const bool debugPositions = EnvString("H3_DEBUG_VS_POSITIONS") != nullptr;
+            if (translated.info.usesMemExport || (vertex && debugPositions))
                 entry->microcode.assign(dwords, dwords + count);
             entry->ok = true;
         }

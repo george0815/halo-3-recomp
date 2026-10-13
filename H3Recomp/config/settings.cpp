@@ -102,6 +102,8 @@ namespace h3::config
                     video.asyncShaders = ParseBool(value);
                 else if (key == "frame_rate")
                     video.frameRate = atoi(value.c_str()) >= kUnlockedTickRate ? kUnlockedTickRate : kOriginalTickRate;
+                else if (key == "anti_aliasing")
+                    video.antiAliasing = value == "off" ? AntiAliasing::Off : AntiAliasing::Fxaa;
             }
             else if (section == "profile")
             {
@@ -228,7 +230,8 @@ namespace h3::config
             << "render_scale = " << video.renderScale << "\n"
             << "precompile_shaders = " << BoolText(video.precompileShaders) << "\n"
             << "async_shaders = " << BoolText(video.asyncShaders) << "\n"
-            << "frame_rate = " << video.frameRate << "\n\n";
+            << "frame_rate = " << video.frameRate << "\n"
+            << "anti_aliasing = " << (video.antiAliasing == AntiAliasing::Off ? "off" : "fxaa") << "\n\n";
 
         const ProfileSettings& profile = settings.profile;
         out << "[profile]\n"

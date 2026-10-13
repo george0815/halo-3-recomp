@@ -308,6 +308,7 @@ namespace h3::gpu::texture
         fetch.dimension = (words[5] >> 9) & 3;
         fetch.packedMips = (words[5] >> 11) & 1;
         fetch.mipAddress = words[5] & 0xFFFFF000;
+        fetch.volumeLinear = words[4] & 1;  // vol_mag_filter
         fetch.mipMin = (words[4] >> 2) & 0xF;
         fetch.mipMax = (words[4] >> 6) & 0xF;
         switch (fetch.dimension)
@@ -429,17 +430,17 @@ namespace h3::gpu::texture
     {
         std::vector<FetchConstant> levels;
         Format f = FormatFor(fetch.format);
-        // 2D textures and cube maps (stacked textures are hosted as 3D
-        // textures, whose mips would shrink the layer count).
+        // 2D textures, stacked textures (2D arrays) and cube maps.
         constexpr uint32_t kDimension2D = 1, kDimensionCube = 3;
         constexpr uint32_t kCubeFaces = 6;
         bool cube = fetch.dimension == kDimensionCube;
-        if (!f.blockBytes || !(fetch.dimension == kDimension2D || cube) || fetch.stacked || fetch.mipAddress == 0 ||
-            fetch.mipMax == 0)
+        bool stacked = fetch.dimension == kDimension2D && fetch.stacked;
+        if (!f.blockBytes || !(fetch.dimension == kDimension2D || cube) || fetch.mipAddress == 0 || fetch.mipMax == 0)
             return levels;
-        // Each level holds all of its faces, one level stride apart, before
-        // the next level starts (Xenia's GetGuestTextureLayout).
-        uint32_t slices = cube ? kCubeFaces : 1;
+        // Each level holds all of its faces (or layers), one level stride
+        // apart, before the next level starts (Xenia's GetGuestTextureLayout).
+        uint32_t slices = cube ? kCubeFaces : stacked ? fetch.depth : 1;
+        bool layered = slices > 1;
         uint32_t log2w = Log2Ceil(fetch.width), log2h = Log2Ceil(fetch.height);
         uint32_t maxLevel = std::min(fetch.mipMax, std::max(log2w, log2h));
         // Levels from packedLevel on share one tile (Xenia's
@@ -474,7 +475,7 @@ namespace h3::gpu::texture
                 for (uint32_t l = 1; l < std::max(packedLevel, 1u); l++)
                     tailAddress += strideBytes(l) * slices;
                 mip.address = tailAddress;
-                if (cube)
+                if (layered)
                     mip.sliceStride = strideBytes(std::max(packedLevel, 1u));
                 mip.pitch = stridePitch(std::max(packedLevel, 1u));
                 uint32_t baseLevel = log2Min > kPackedMipMaxSizeLog2 ? log2Min - kPackedMipMaxSizeLog2 : 0;
@@ -501,7 +502,7 @@ namespace h3::gpu::texture
             {
                 mip.address = address;
                 mip.pitch = stridePitch(level);
-                if (cube)
+                if (layered)
                     mip.sliceStride = strideBytes(level);
                 address += strideBytes(level) * slices;
             }
@@ -512,8 +513,24 @@ namespace h3::gpu::texture
 
     FetchConstant LargestUsableLevel(const FetchConstant& fetch)
     {
-        if (fetch.mipMin == 0 || fetch.mipAddress == 0 || fetch.dimension != 1 || fetch.stacked)
+        if (fetch.mipMin == 0 || fetch.mipAddress == 0 || fetch.dimension != 1)
             return fetch;
+        if (fetch.stacked)
+        {
+            // Levels hold all layers (MipLevels' layout); the base level
+            // may not be resident (its address is then the mip address).
+            // Packed tail levels share a tile: stay above them.
+            std::vector<FetchConstant> levels = MipLevels(fetch);
+            for (uint32_t level = fetch.mipMin; level >= 1; level--)
+                if (level - 1 < levels.size() && !levels[level - 1].explicitOffset)
+                {
+                    FetchConstant result = levels[level - 1];
+                    result.mipAddress = 0;
+                    result.mipMax = 0;
+                    return result;
+                }
+            return fetch;
+        }
         // Levels 1 on start at the mip address, each with power-of-two
         // dimensions and 4 KB aligned. Levels of 16 texels or less share a
         // packed tile; stop above those.

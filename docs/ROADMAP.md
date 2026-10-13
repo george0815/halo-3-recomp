@@ -78,9 +78,15 @@ Rough phases. Each one is a large amount of work; that's fine.
       (2D array) textures, anisotropic filtering
 - [x] 3D textures (base level), mips for cube maps, exact piecewise-linear
       gamma (Xenia's curve; `H3_APPROX_GAMMA=1` for the old gamma 2)
-- [ ] Mips for stacked textures and 3D textures
+- [x] Mips for stacked textures (hosted as 2D arrays; the shader picks the
+      array or 3D binding per fetch constant and blends layers itself).
+      True 3D textures keep their base level only (none seen in Halo 3)
 - [x] Culling (PA_SU_SC_MODE_CNTL), polygon offset (decals, shadow maps)
-- [ ] MSAA, point sizes
+- [x] MSAA: guest MSAA surfaces live in sample space (the menu's 4x
+      G-buffer, D3D's 4x fast clears); resolves honour the sample select
+      (depth from sample 0). Halo 3 has no AA of its own: optional FXAA on
+      the finished frame (launcher Video > Anti-aliasing)
+- [ ] Point sizes (no point sprites seen drawn)
 - [ ] Batch draws better (one render pass per render target change today)
 - [x] EDRAM render targets and resolves (Halo 3 renders 1152x640 in four
       predicated tiles, deferred: G-buffer, shadow maps, post-processing)

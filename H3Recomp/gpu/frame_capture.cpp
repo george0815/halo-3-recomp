@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <vector>
 
 namespace h3::gpu::capture
 {
@@ -130,9 +131,9 @@ namespace h3::gpu::capture
             uint32_t destInfo = ReadRegister(kRegRbCopyDestInfo);
             uint32_t destPitch = ReadRegister(kRegRbCopyDestPitch);
             fprintf(out,
-                "  resolve src %u (color info %08X depth info %08X) clear color %u depth %u command %u -> %08X pitch %u "
+                "  resolve src %u sample select %u (color info %08X depth info %08X) clear color %u depth %u command %u -> %08X pitch %u "
                 "height %u format %u endian %u | clear %08X%08X depth clear %08X\n",
-                control & 7, ReadRegister(kRegRbColorInfo), ReadRegister(kRegRbDepthInfo), (control >> 8) & 1,
+                control & 7, (control >> 4) & 7, ReadRegister(kRegRbColorInfo), ReadRegister(kRegRbDepthInfo), (control >> 8) & 1,
                 (control >> 9) & 1, (control >> 20) & 3, ReadRegister(kRegRbCopyDestBase), destPitch & 0x3FFF,
                 (destPitch >> 16) & 0x3FFF, (destInfo >> 7) & 0x3F, destInfo & 7, ReadRegister(kRegRbColorClear),
                 ReadRegister(kRegRbColorClearLo), ReadRegister(kRegRbDepthClear));
@@ -233,9 +234,22 @@ namespace h3::gpu::capture
             g_out = nullptr;
             fprintf(stderr, "[gpu] wrote %s (frame %u)\n", CapturePath("gpu_capture.txt").c_str(), TargetFrame());
         }
-        // H3_CAPTURE_AT=<frame>: the same capture from a script.
-        static const uint32_t captureAt = EnvNumber("H3_CAPTURE_AT");
-        if (captureAt && frame + 1 == captureAt)
+        // H3_CAPTURE_AT=<frame>[,<frame>...]: the same capture from a
+        // script (each frame its own capture folder).
+        static const std::vector<uint32_t> captureAt = [] {
+            std::vector<uint32_t> frames;
+            const char* text = EnvString("H3_CAPTURE_AT");
+            for (char* p = const_cast<char*>(text); p && *p;)
+            {
+                frames.push_back(uint32_t(strtoul(p, &p, 0)));
+                if (*p == ',')
+                    p++;
+                else
+                    break;
+            }
+            return frames;
+        }();
+        if (std::find(captureAt.begin(), captureAt.end(), frame + 1) != captureAt.end())
         {
             static const bool deep = EnvFlag("H3_CAPTURE_DEEP");  // as F10
             g_requestedDeep = deep;

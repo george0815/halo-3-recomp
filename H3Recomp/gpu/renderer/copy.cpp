@@ -31,6 +31,7 @@ layout(set = 3, binding = 0) uniform XeCopy
     ivec4 offset;  // xy: destination origin, zw: source origin (samples)
     ivec4 mode;    // x: copy mode, y: depth is 20e4 float, zw: source samples per pixel
     vec4 scale;    // x: 2^RB_COPY_DEST_INFO exp bias, for color; y: 0 = gamma 2 (H3_APPROX_GAMMA); fill color for mode 5
+    ivec4 select;  // x: mask of the samples to average (0: every texel of the pixel's block), y: render scale
 };
 layout(location = 0) out vec4 xe_out;
 
@@ -73,12 +74,35 @@ void main()
         return;
     }
     // Average the pixel's samples (one texel each for 1x sources).
-    ivec2 origin = (ivec2(gl_FragCoord.xy) - offset.xy) * mode.zw + offset.zw;
     vec4 v = vec4(0.0);
-    for (int y = 0; y < mode.w; y++)
-        for (int x = 0; x < mode.z; x++)
-            v += texelFetch(xe_source, origin + ivec2(x, y), 0);
-    v /= float(mode.z * mode.w);
+    if (select.x == 0)
+    {
+        ivec2 origin = (ivec2(gl_FragCoord.xy) - offset.xy) * mode.zw + offset.zw;
+        for (int y = 0; y < mode.w; y++)
+            for (int x = 0; x < mode.z; x++)
+                v += texelFetch(xe_source, origin + ivec2(x, y), 0);
+        v /= float(mode.z * mode.w);
+    }
+    else
+    {
+        // Only the selected samples (RB_COPY_CONTROL sample select): each
+        // is a render-scale-sized block within the pixel's block (4x: 2x2
+        // samples, 0 1 / 2 3; 2x: 1x2, 0 above 1), and this texel takes its
+        // own position inside each.
+        int k = select.y;
+        ivec2 destination = ivec2(gl_FragCoord.xy) - offset.xy;
+        ivec2 pixel = destination / k, inside = destination - pixel * k;
+        ivec2 base = offset.zw + pixel * mode.zw * k + inside;
+        int count = 0;
+        for (int s = 0; s < 4; s++)
+            if ((select.x & (1 << s)) != 0)
+            {
+                ivec2 position = mode.z == 2 ? ivec2(s & 1, s >> 1) : ivec2(0, s);
+                v += texelFetch(xe_source, base + position * k, 0);
+                count++;
+            }
+        v /= float(count);
+    }
     if (mode.x != 1)
         v.rgb *= scale.x;
     if (mode.x == 1)  // DepthBytes: the 24_8 word's bytes, stencil (0) low
@@ -227,6 +251,7 @@ void main()
             int32_t offset[4];
             int32_t mode[4];
             float scale[4];
+            int32_t select[4];  // sample mask (0: the whole block), render scale
         };
 
         std::unordered_map<uint32_t, SDL_GPUGraphicsPipeline*> g_copyPipelines;  // target format -> pipeline
@@ -310,10 +335,10 @@ void main()
 
     void ConvertCopy(SDL_GPUTexture* source, SDL_GPUTexture* destination, SDL_GPUTextureFormat destinationFormat,
         uint32_t destinationWidth, uint32_t destinationHeight, int32_t sx, int32_t sy, int32_t dx, int32_t dy, uint32_t w,
-        uint32_t h, CopyMode mode, bool depthFloat, float scale, int32_t samplesX, int32_t samplesY)
+        uint32_t h, CopyMode mode, bool depthFloat, float scale, int32_t samplesX, int32_t samplesY, uint32_t sampleMask)
     {
         CopyConstants constants = { { dx, dy, sx, sy }, { int32_t(mode), depthFloat ? 1 : 0, samplesX, samplesY },
-            { scale, ApproxGamma() ? 0.0f : 1.0f, 1.0f, 1.0f } };
+            { scale, ApproxGamma() ? 0.0f : 1.0f, 1.0f, 1.0f }, { int32_t(sampleMask), int32_t(g_renderScale), 0, 0 } };
         RunCopyPass(source, destination, destinationFormat, destinationWidth, destinationHeight, SDL_Rect{ dx, dy, int(w), int(h) },
             constants);
     }

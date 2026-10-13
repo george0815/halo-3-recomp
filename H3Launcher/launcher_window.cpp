@@ -381,6 +381,16 @@ namespace h3::launcher
         };
         page.items.push_back(frameRate);
 
+        MenuItem antiAliasing{ MenuItem::Kind::Choice, QStringLiteral("Anti-aliasing"),
+            QStringLiteral("Smooth jagged edges with FXAA on the finished picture (Halo 3 has no anti-aliasing of its "
+                           "own). Cheap; a higher render resolution smooths further.") };
+        antiAliasing.value = [&video] { return video.antiAliasing == config::AntiAliasing::Off ? QStringLiteral("Off") : QStringLiteral("FXAA"); };
+        antiAliasing.step = [&video](int)
+        {
+            video.antiAliasing = video.antiAliasing == config::AntiAliasing::Off ? config::AntiAliasing::Fxaa : config::AntiAliasing::Off;
+        };
+        page.items.push_back(antiAliasing);
+
         MenuItem precompile{ MenuItem::Kind::Choice, QStringLiteral("Precompile shaders"),
             QStringLiteral("At start, rebuild every shader and pipeline this PC has used before, in the background, "
                            "so areas you've played don't stutter. The list grows as you play.") };

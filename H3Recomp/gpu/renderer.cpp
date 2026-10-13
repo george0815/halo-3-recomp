@@ -63,7 +63,7 @@ namespace h3::gpu::renderer
             }
         }
 
-        // Creates the 1x1 gray placeholder textures (2D, 3D, cube) and
+        // Creates the 1x1 gray placeholder textures (2D, 3D, cube, array) and
         // uploads their texels.
         void CreatePlaceholders(SDL_GPUDevice* device)
         {
@@ -81,6 +81,7 @@ namespace h3::gpu::renderer
             g_placeholder2D = placeholder(SDL_GPU_TEXTURETYPE_2D, 1);
             g_placeholder3D = placeholder(SDL_GPU_TEXTURETYPE_3D, 1);
             g_placeholderCube = placeholder(SDL_GPU_TEXTURETYPE_CUBE, kCubeFaces);
+            g_placeholderArray = placeholder(SDL_GPU_TEXTURETYPE_2D_ARRAY, 1);
 
             // One gray texel per layer (the cube's six faces at most).
             SDL_GPUTransferBufferCreateInfo transferInfo{ SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, kCubeFaces * 4, 0 };
@@ -91,7 +92,8 @@ namespace h3::gpu::renderer
             SDL_UnmapGPUTransferBuffer(device, transfer);
             SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(device);
             SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commands);
-            for (auto [texture, layers] : { std::pair{ g_placeholder2D, 1u }, { g_placeholder3D, 1u }, { g_placeholderCube, kCubeFaces } })
+            for (auto [texture, layers] : { std::pair{ g_placeholder2D, 1u }, { g_placeholder3D, 1u }, { g_placeholderCube, kCubeFaces },
+                     { g_placeholderArray, 1u } })
             {
                 for (uint32_t layer = 0; layer < layers; layer++)
                 {
@@ -281,6 +283,7 @@ namespace h3::gpu::renderer
             frame.height = std::min(height ? height : texture->height, texture->height) * g_renderScale;
             frameFormat = texture->hostFormat;
             ApplyDisplayGamma(frame, frameFormat);
+            ApplyAntiAliasing(frame, frameFormat);
         }
 
         g_swaps++;

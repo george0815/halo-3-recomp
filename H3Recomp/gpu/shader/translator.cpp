@@ -376,6 +376,14 @@ void main()
     vec4 position;
     vec4 outputs[16];
     xe_vertex_shader(index, vec3(0.0), position, outputs);
+    // Debugging (renderer's DebugVertexPositions): the vertex's position
+    // and first interpolator instead of records, 8 dwords per vertex.
+    if (xe_export_debug != 0u && i * 4u < xe_export_capacity)
+        for (uint c = 0u; c < 4u; c++)
+        {
+            xe_export[2u + i * 8u + c] = floatBitsToUint(position[c]);
+            xe_export[6u + i * 8u + c] = floatBitsToUint(outputs[0][c]);
+        }
 }
 )";
 
@@ -559,13 +567,13 @@ void main()
 
             // The sampler binding for a texture fetch constant used with a dimension (one binding
             // per distinct pair, in first-use order).
-            uint32_t TextureBindingFor(uint32_t fetchConstant, TextureDimension dimension)
+            uint32_t TextureBindingFor(uint32_t fetchConstant, TextureDimension dimension, bool array = false)
             {
                 for (const TextureBinding& binding : m_info.textures)
-                    if (binding.fetchConstant == fetchConstant && binding.dimension == dimension)
+                    if (binding.fetchConstant == fetchConstant && binding.dimension == dimension && binding.array == array)
                         return binding.binding;
                 uint32_t binding = uint32_t(m_info.textures.size());
-                m_info.textures.push_back({ fetchConstant, dimension, binding });
+                m_info.textures.push_back({ fetchConstant, dimension, binding, array });
                 return binding;
             }
 
@@ -1333,37 +1341,38 @@ void main()
                 {
                     uint32_t binding = TextureBindingFor(f.TextureConstIndex(), f.TextureDim());
                     std::string sampler = Format("xe_texture%u", binding);
-                    std::string coords;
-                    switch (f.TextureDim())
-                    {
-                    case TextureDimension::D1:
-                        coords = Format("vec2(%s, 0.5)", coordinate(0).c_str());
-                        break;
-                    case TextureDimension::D2:
-                        coords = Format("vec2(%s, %s)", coordinate(0).c_str(), coordinate(1).c_str());
-                        break;
-                    case TextureDimension::D3OrStacked:
-                        coords = Format("vec3(%s, %s, %s)", coordinate(0).c_str(), coordinate(1).c_str(), coordinate(2).c_str());
-                        break;
-                    case TextureDimension::Cube:
-                        // Xenos cube coordinates: SC/TC in [1, 2) and the face
-                        // ID; turn them back into a direction.
-                        coords = Format("xe_cube_direction(vec3(%s, %s, %s))", coordinate(0).c_str(), coordinate(1).c_str(),
-                            coordinate(2).c_str());
-                        break;
-                    }
-                    // Fetch offsets (half-texel steps), as multi-tap filters
-                    // use them: in texels before normalizing.
-                    if (f.TextureDim() != TextureDimension::Cube)
-                    {
-                        bool volume = f.TextureDim() == TextureDimension::D3OrStacked;
+                    bool volume = f.TextureDim() == TextureDimension::D3OrStacked;
+                    // The sample coordinates for one of the fetch's samplers
+                    // (3D-or-stacked fetches have two).
+                    auto buildCoords = [&](const std::string& sampler) {
+                        std::string coords;
+                        switch (f.TextureDim())
+                        {
+                        case TextureDimension::D1:
+                            coords = Format("vec2(%s, 0.5)", coordinate(0).c_str());
+                            break;
+                        case TextureDimension::D2:
+                            coords = Format("vec2(%s, %s)", coordinate(0).c_str(), coordinate(1).c_str());
+                            break;
+                        case TextureDimension::D3OrStacked:
+                            coords = Format("vec3(%s, %s, %s)", coordinate(0).c_str(), coordinate(1).c_str(), coordinate(2).c_str());
+                            break;
+                        case TextureDimension::Cube:
+                            // Xenos cube coordinates: SC/TC in [1, 2) and the
+                            // face ID; turn them back into a direction.
+                            return Format("xe_cube_direction(vec3(%s, %s, %s))", coordinate(0).c_str(), coordinate(1).c_str(),
+                                coordinate(2).c_str());
+                        }
+                        // Fetch offsets (half-texel steps), as multi-tap
+                        // filters use them: in texels before normalizing.
                         const char* sizeType = volume ? "vec3" : "vec2";
                         float ox = f.TextureOffset(0), oy = f.TextureDim() == TextureDimension::D1 ? 0.0f : f.TextureOffset(1),
                               oz = volume ? f.TextureOffset(2) : 0.0f;
                         bool offset = ox != 0.0f || oy != 0.0f || oz != 0.0f;
                         std::string offsetVector = volume ? Format("vec3(%.9g, %.9g, %.9g)", ox, oy, oz) : Format("vec2(%.9g, %.9g)", ox, oy);
                         // The guest's texture size: the host texture can be
-                        // larger (resolves at a render scale).
+                        // larger (resolves at a render scale). For a 2D
+                        // array, z is the layer count.
                         std::string size = Format("(%s(textureSize(%s, 0)) / xe_texture_scale(%uu))", sizeType, sampler.c_str(),
                             f.TextureConstIndex());
                         if (f.TextureUnnormalized())
@@ -1389,21 +1398,50 @@ void main()
                         std::string snapped = Format("xe_snap_texcoord(%s, %s)", xy.c_str(), hostSize.c_str());
                         if (f.TextureMagFilter() == kTextureFilterPoint && f.TextureMinFilter() == kTextureFilterPoint)
                             snapped = Format("((floor(%s * %s) + 0.5) / %s)", snapped.c_str(), hostSize.c_str(), hostSize.c_str());
-                        coords = volume ? Format("vec3(%s, %s.z)", snapped.c_str(), coords.c_str()) : snapped;
-                    }
-                    std::string sample;
+                        return volume ? Format("vec3(%s, %s.z)", snapped.c_str(), coords.c_str()) : snapped;
+                    };
                     float bias = f.TextureLodBias();
-                    if (m_vertex)
-                        sample = Format("textureLod(%s, %s, 0.0)", sampler.c_str(), coords.c_str());
-                    else if (bias != 0.0f)
-                        sample = Format("texture(%s, %s, %.9g)", sampler.c_str(), coords.c_str(), bias);
-                    else
-                        sample = Format("texture(%s, %s)", sampler.c_str(), coords.c_str());
-                    sample = Format("xe_texture_result(%s, %uu)", sample.c_str(), f.TextureConstIndex());
+                    auto sampleOf = [&](const std::string& sampler, const std::string& coords) {
+                        if (m_vertex)
+                            return Format("textureLod(%s, %s, 0.0)", sampler.c_str(), coords.c_str());
+                        if (bias != 0.0f)
+                            return Format("texture(%s, %s, %.9g)", sampler.c_str(), coords.c_str(), bias);
+                        return Format("texture(%s, %s)", sampler.c_str(), coords.c_str());
+                    };
                     std::string writes = DestinationWrites(f, "fetched");
-                    if (!writes.empty())
-                        Line(Format("vec4 fetched = %s; vec4 dst = %s; %s %s = dst;", sample.c_str(), dst.c_str(),
+                    if (writes.empty())
+                        return;
+                    if (volume)
+                    {
+                        // Stacked textures (2D arrays) or true 3D textures,
+                        // by the layer count the renderer put in tfetch.w
+                        // (bits 16-26; 0: 3D). Stacked: z selects the layer
+                        // (normalized like a 3D coordinate), blending the two
+                        // nearest when the fetch constant filters between
+                        // layers (bit 27), as a 3D texture would.
+                        std::string arraySampler = Format("xe_texture%u", TextureBindingFor(f.TextureConstIndex(), f.TextureDim(), true));
+                        uint32_t fc = f.TextureConstIndex();
+                        Line("vec4 fetched;");
+                        Line(Format("uint layers = (xe_sys.tfetch[%u].w >> 16) & 0x7FFu;", fc));
+                        Line("if (layers != 0u)");
+                        Line("{");
+                        Line(Format("    vec3 sc = %s;", buildCoords(arraySampler).c_str()));
+                        Line(Format("    float lp = (xe_sys.tfetch[%u].w & 0x8000000u) != 0u ? sc.z * float(layers) - 0.5 : floor(sc.z * float(layers));",
+                            fc));
+                        Line("    float l0 = clamp(floor(lp), 0.0, float(layers) - 1.0), l1 = min(l0 + 1.0, float(layers) - 1.0);");
+                        Line(Format("    fetched = mix(%s, %s, clamp(lp - floor(lp), 0.0, 1.0));",
+                            sampleOf(arraySampler, "vec3(sc.xy, l0)").c_str(), sampleOf(arraySampler, "vec3(sc.xy, l1)").c_str()));
+                        Line("}");
+                        Line("else");
+                        Line(Format("    fetched = %s;", sampleOf(sampler, buildCoords(sampler)).c_str()));
+                        Line(Format("fetched = xe_texture_result(fetched, %uu); vec4 dst = %s; %s %s = dst;", fc, dst.c_str(),
                             writes.c_str(), dst.c_str()));
+                        return;
+                    }
+                    std::string sample = Format("xe_texture_result(%s, %uu)", sampleOf(sampler, buildCoords(sampler)).c_str(),
+                        f.TextureConstIndex());
+                    Line(Format("vec4 fetched = %s; vec4 dst = %s; %s %s = dst;", sample.c_str(), dst.c_str(), writes.c_str(),
+                        dst.c_str()));
                     return;
                 }
                 case FetchOpcode::GetTextureWeights:
@@ -1485,7 +1523,7 @@ void main()
                     uniformSet);
                 for (const TextureBinding& texture : m_info.textures)
                     out += Format("layout(set = %u, binding = %u) uniform %s xe_texture%u;\n", textureSet, texture.binding,
-                        SamplerType(texture.dimension).c_str(), texture.binding);
+                        texture.array ? "sampler2DArray" : SamplerType(texture.dimension).c_str(), texture.binding);
                 if (m_vertex)
                 {
                     out += Format("layout(std430, set = 0, binding = %u) readonly buffer XeVertexMemory { uint xe_memory[]; };\n",
@@ -1495,7 +1533,8 @@ void main()
                         out += "layout(std430, set = 1, binding = 0) buffer XeExport { uint xe_export[]; };\n";
                         out += Format("layout(std140, set = %u, binding = 2) uniform XeExportInfo\n{\n"
                                       "    uvec4 xe_export_streams[4];\n    uint xe_export_vertex_count;\n    uint xe_export_indexed;\n"
-                                      "    uint xe_export_index_offset;\n    uint xe_export_index_base;\n    uint xe_export_capacity;\n};\n",
+                                      "    uint xe_export_index_offset;\n    uint xe_export_index_base;\n    uint xe_export_capacity;\n"
+                                      "    uint xe_export_debug;\n};\n",
                             uniformSet);
                     }
                     else

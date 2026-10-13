@@ -79,8 +79,8 @@ path as its argument). Its menus use Halo 3's own font, read from the game's
 `maps/fonts/font_package.bin`.
 
 - **Video**: window size, fullscreen (F11 or Alt+Enter toggles it in game),
-  vsync, the render resolution (1x native 1280x720, 2x or 3x), precompiling
-  shaders at start, and background shader compilation (no stutter the first
+  vsync, the render resolution (1x native 1280x720, 2x or 3x), anti-aliasing
+  (FXAA; Halo 3 itself has none), precompiling shaders at start, and background shader compilation (no stutter the first
   time something new appears, but it can be missing for a few frames).
 - **Controls**: up to three keys or mouse buttons per action, mouse
   sensitivity and inversion. Gamepads always use the standard layout.
@@ -146,6 +146,7 @@ Environment variables:
 | `H3_LOG_GPU=1` | Log ring buffer setup, the first use of each PM4 opcode, and frame counts |
 | `H3_RENDER=0` | Turn host rendering off (the GPU command stream is still processed) |
 | `H3_RENDER_SCALE=<1-3>` | Override the launcher's render resolution |
+| `H3_AA=off\|fxaa` | Override the launcher's anti-aliasing (FXAA on the finished frame) |
 | `H3_ASYNC_SHADERS=1\|0` | Override background shader compilation |
 | `H3_NO_WARMUP=1` | Don't rebuild the shader cache's pipelines at start |
 | `H3_LAUNCHER_SCREENSHOT=out.png` | (H3Launcher) render the launcher window to a PNG and exit; `H3_LAUNCHER_KEYS="Down,Return"` sends keys first. Works with `QT_QPA_PLATFORM=offscreen` |
@@ -156,7 +157,7 @@ Environment variables:
 | `H3_LOG_RESOLVES=1` | Log every resolve (source, rectangle, destination, format) |
 | `H3_LOG_USER=1`, `H3_LOG_CONTENT=1`, `H3_LOG_NOTIFY=1` | Log profile, content and notification calls |
 | F10 (key) | Like F9, plus what each draw of the frame changed in color target 0: a crop of the changed rectangle per draw (`draw_<frame>_<n>_<x>_<y>.png`), listed in `deep_capture.txt`. The game freezes until it finishes (up to a minute or so); let it finish |
-| F9 (key) / `H3_CAPTURE_AT=<frame>` | Capture the next frame (or that frame) into `captures/capture_<n>/`: `gpu_capture.txt`, the shaders, the presented frame and every resolve |
+| F9 (key) / `H3_CAPTURE_AT=<frame>[,<frame>...]` | Capture the next frame (or those frames, one folder each) into `captures/capture_<n>/`: `gpu_capture.txt`, the shaders, the presented frame and every resolve |
 | `H3_GPU_CAPTURE=<frame>` | Write `gpu_capture.txt`: every draw, resolve and shader load in that frame (counted in swaps) with the render state |
 | `H3_DUMP_DRAWS=<first>-<last>` | With `H3_DUMP_FRAME`: save color target 0 after each of those draws (numbered like the capture's `draw #n`), 2304x1280 (render targets are in sample space: a 4x surface's pixel is 2x2 texels) |
 | `H3_SKIP_DRAWS=<first>-<last>[,...]` | Drop those draws (numbered like the capture's `draw #n`) in every frame, to find which draw causes an artifact |
@@ -174,6 +175,14 @@ Environment variables:
 | `H3_MEMEXPORT_ASYNC=1` | Don't wait for earlier frames' memory exports before reading their data (the old behaviour) |
 | `H3_NO_EXPORT_SCATTER=1` | Don't copy a memory export's results into the data later dispatches in the same frame read (GPU particles spawned and updated in one frame: muzzle flashes, splashes) |
 | `H3_HIGHLIGHT_VS=<hash>` | Draw that vertex shader's draws (hash prefix of a captured `gpu_shaders/vs_<hash>.bin`; `list` prints them) in magenta with depth test off, and log their vertex fetch data |
+| `H3_LOG_VS_DATA=<hash>[:<dwords>]` | Log each draw of that vertex shader (hash prefix as for `H3_HIGHLIGHT_VS`): primitive, clip control, some VS constants, its vertex fetch ranges, which of this frame's memory exports write them, and their records (record size in dwords, default 16; contrail draws log exactly the points they read); `H3_LOG_VS_DATA_FRAMES=<first>-<last>` limits it to those frames |
+| `H3_VERIFY_VS_DATA=1` | With `H3_LOG_VS_DATA`: also read those records back from the GPU after the export scatter (all-zero records, `JUMP` for a stray point) |
+| `H3_DEBUG_VS_POSITIONS=1` | With `H3_LOG_VS_DATA`: run the draw's vertex shader as compute and log every vertex's clip-space position (`ODD`: behind the eye or far off screen). Auto-indexed draws; slow |
+| `H3_TRACE_EXPORTS=<a>-<b>` | Log every memory export record applied in that physical range (frame, address, value, shader); `H3_TRACE_EXPORTS_VS=<8 hex>[,...]` only those shaders, `H3_TRACE_EXPORTS_AT=<modulus>:<remainder>` only those offsets. Output can be gigabytes |
+| `H3_LOG_STREAMS=<8 hex>` | Log that memexport shader's stream constants (base, format, endian) |
+| `H3_CHECK_EXPORT_DUPES=1` | Report dispatches that export one address twice with different values |
+| `H3_LOG_VOLUMES=1` | Log each 3D or stacked texture once (size, layers, mips) |
+| `H3_DUMP_TEXTURE=<physical address>` | Save that texture's decoded levels and layers (RGBA8 formats) as `tex_<address>_l<level>_<layer>.png` |
 | `H3_NO_CULL=1` | Don't cull faces (PA_SU_SC_MODE_CNTL), to compare |
 | `H3_NO_POLY_OFFSET=1` | Ignore polygon offset (depth bias: Halo's decals and shadow maps) |
 | `H3_NO_STENCIL_RESTORE=1` | Don't turn stencil drawn through a color view (Halo's dither pattern) into stencil |

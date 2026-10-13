@@ -28,6 +28,7 @@
 #include "config/env.h"
 
 #include <bit>
+#include <cmath>
 #include <cstdio>
 #include <unordered_map>
 
@@ -112,6 +113,7 @@ namespace h3::gpu::renderer::internal
             uint32_t indexOffset;  // dword in the vertex memory buffer
             uint32_t indexBase;    // added to auto-generated indices
             uint32_t capacity;     // records that fit
+            uint32_t debug;        // DebugVertexPositions: positions instead of records
         };
 
         // GPU and transfer buffers of one dispatch, reused once its results
@@ -123,6 +125,7 @@ namespace h3::gpu::renderer::internal
             SDL_GPUTransferBuffer* download = nullptr;
             uint32_t records = 0;  // record capacity of this dispatch
             std::vector<Stream> streams;  // physical ranges it writes
+            uint64_t shader = 0;          // the vertex shader's capture hash (debugging)
         };
         std::vector<Slot> g_freeSlots;
 
@@ -234,6 +237,7 @@ void main()
             SDL_GPUBuffer* records;
             uint32_t capacity;
             std::vector<Stream> streams;
+            uint64_t shader = 0;  // capture hash (debugging)
         };
         std::vector<FrameExport> g_frameExports;
         uint32_t g_frameExportsFrame = ~0u;
@@ -495,12 +499,25 @@ void main()
                 static const char* trace = EnvString("H3_TRACE_EXPORTS");
                 static uint32_t traceBegin = trace ? uint32_t(strtoul(trace, nullptr, 16)) : 0;
                 static uint32_t traceEnd = trace && strchr(trace, '-') ? uint32_t(strtoul(strchr(trace, '-') + 1, nullptr, 16)) : 0;
-                if (address >= traceBegin && address < traceEnd)
+                // H3_TRACE_EXPORTS_VS=<8 hex digits>[,...]: only those
+                // shaders' records.
+                static const char* traceShader = EnvString("H3_TRACE_EXPORTS_VS");
+                char shaderText[9];
+                if (traceShader)
+                    snprintf(shaderText, sizeof(shaderText), "%08llx", (unsigned long long)(slot.shader >> 32));
+                // H3_TRACE_EXPORTS_AT=<modulus>:<remainder>: only addresses
+                // at that offset (one field of a record array).
+                static const char* traceAt = EnvString("H3_TRACE_EXPORTS_AT");
+                static const uint32_t traceModulus = traceAt ? uint32_t(strtoul(traceAt, nullptr, 0)) : 0;
+                static const uint32_t traceRemainder = traceAt && strchr(traceAt, ':') ? uint32_t(strtoul(strchr(traceAt, ':') + 1, nullptr, 0)) : 0;
+                if (address >= traceBegin && address < traceEnd && (!traceShader || strstr(traceShader, shaderText)) &&
+                    (!traceModulus || address % traceModulus == traceRemainder))
                 {
                     uint32_t bits = __builtin_bswap32(record[1]);
                     float value;
                     memcpy(&value, &bits, 4);
-                    fprintf(stderr, "[trace] f%u %08X %g\n", g_swaps, address, value);
+                    fprintf(stderr, "[trace] f%u %08X %g (%08X) vs_%016llx record %u\n", g_swaps, address, value, bits,
+                        (unsigned long long)slot.shader, i);
                 }
                 uint32_t page = address >> kPageShift;
                 if (page != lastPage)
@@ -608,6 +625,13 @@ void main()
                 uint32_t d[4];
                 for (uint32_t i = 0; i < 4; i++)
                     d[i] = __builtin_bswap32(alu[constant * 4 + i]);  // vertex constants come first
+                // H3_LOG_STREAMS=<8 hex digits of a capture hash>: that
+                // shader's stream constants (base, index, format word, count).
+                static const char* logStreams = EnvString("H3_LOG_STREAMS");
+                static uint32_t loggedStreams = 0;
+                if (logStreams && uint32_t(vs.captureHash >> 32) == uint32_t(strtoul(logStreams, nullptr, 16)) && loggedStreams++ < 64)
+                    fprintf(stderr, "[streams] f%u c%u: %08X %08X %08X %08X (format %u, endian %u, number %u)\n", g_swaps, constant, d[0], d[1], d[2],
+                        d[3], (d[2] >> 8) & 63, d[2] & 7, (d[2] >> 16) & 7);
                 if ((d[0] >> 30) != kStreamSignature0 || d[1] != kStreamSignature1 || (d[2] >> 20) != kStreamSignature2 ||
                     (d[3] >> 23) != kStreamSignature3)
                     continue;
@@ -725,6 +749,7 @@ void main()
         }
         slot.records = info.capacity;
         slot.streams = streams;
+        slot.shader = vs.captureHash;
         SDL_GPUCommandBuffer* commands = Commands();
         SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commands);
         SDL_GPUBufferLocation zero{ g_zeroBuffer, 0 }, header{ slot.exports, 0 };
@@ -748,7 +773,7 @@ void main()
             g_frameExports.clear();
             g_frameExportsFrame = g_swaps;
         }
-        g_frameExports.push_back({ slot.exports, info.capacity, streams });
+        g_frameExports.push_back({ slot.exports, info.capacity, streams, vs.captureHash });
 
         copy = SDL_BeginGPUCopyPass(commands);
         SDL_GPUBufferRegion results{ slot.exports, 0, exportBytes };
@@ -756,6 +781,89 @@ void main()
         SDL_DownloadFromGPUBuffer(copy, &results, &download);
         SDL_EndGPUCopyPass(copy);
         g_unfenced.push_back(std::move(slot));
+    }
+
+    void DebugVertexPositions(const Shader& vs, uint32_t initiator)
+    {
+        if (vs.microcode.empty())
+            return;
+        SDL_GPUComputePipeline* pipeline = ComputePipeline(vs);
+        if (!pipeline)
+            return;
+        static std::vector<uint32_t> constants(kStageFloats);
+        const uint32_t* alu = GuestPtr<uint32_t>(kGpuRegisterBase + kRegShaderConstantAlu * 4);
+        uint32_t constantFloats = std::max(std::min(vs.info.floatConstantCount * 4, kStageFloats), 4u);
+        for (uint32_t i = 0; i < constantFloats; i++)
+            constants[i] = __builtin_bswap32(alu[i]);
+        static SystemConstants system;
+        memset(&system, 0, sizeof(system));
+        SetControlConstants(system);
+        std::vector<InputPiece> pieces;
+        for (uint32_t index : vs.info.vertexFetchConstants)
+        {
+            VertexFetch fetch = ReadVertexFetch(index);
+            uint32_t* entry = system.vfetch[index];
+            if (!fetch.valid || fetch.dwords == 0)
+                continue;
+            entry[1] = fetch.dwords;
+            entry[2] = fetch.endian;
+            pieces.push_back({ GuestPtr<uint8_t>(PhysicalToGuest(fetch.address)), fetch.dwords,
+                (uint64_t(fetch.address) << 32) | fetch.dwords, &entry[0] });
+        }
+        static const uint32_t kPadding[4] = {};
+        uint32_t paddingOffset = 0;
+        if (pieces.empty())
+            pieces.push_back({ kPadding, 4, 0, &paddingOffset });
+        ExportInfo info{};
+        info.vertexCount = std::min(initiator >> 16, 4096u);
+        if (info.vertexCount == 0 || ((initiator >> 6) & 3) != 2)  // auto-indexed draws only
+            return;
+        info.indexBase = ReadRegister(kRegVgtIndxOffset);
+        info.capacity = info.vertexCount * 4;  // records of 2 dwords: 8 dwords per vertex
+        info.debug = 1;
+        std::vector<SDL_GPUTextureSamplerBinding> textures = BindTextures(vs, system);
+        if (!EnsureZeroBuffer())
+            return;
+        SDL_GPUBuffer* input = StageInput(pieces);
+        if (!input)
+            return;
+        uint32_t bytes = (kRecordHeaderDwords + info.capacity * kRecordDwords) * 4;
+        SDL_GPUBufferCreateInfo bufferInfo{ SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ | SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_WRITE, bytes, 0 };
+        SDL_GPUBuffer* output = SDL_CreateGPUBuffer(g_device, &bufferInfo);
+        SDL_GPUTransferBufferCreateInfo transferInfo{ SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, bytes, 0 };
+        SDL_GPUTransferBuffer* download = SDL_CreateGPUTransferBuffer(g_device, &transferInfo);
+        SDL_GPUCommandBuffer* commands = Commands();
+        SDL_GPUStorageBufferReadWriteBinding writable{ output, false };
+        SDL_GPUComputePass* pass = SDL_BeginGPUComputePass(commands, nullptr, 0, &writable, 1);
+        SDL_BindGPUComputePipeline(pass, pipeline);
+        if (!textures.empty())
+            SDL_BindGPUComputeSamplers(pass, 0, textures.data(), uint32_t(textures.size()));
+        SDL_BindGPUComputeStorageBuffers(pass, 0, &input, 1);
+        SDL_PushGPUComputeUniformData(commands, 0, constants.data(), constantFloats * 4);
+        SDL_PushGPUComputeUniformData(commands, 1, &system, sizeof(system));
+        SDL_PushGPUComputeUniformData(commands, 2, &info, sizeof(info));
+        SDL_DispatchGPUCompute(pass, (info.vertexCount + kThreadsPerGroup - 1) / kThreadsPerGroup, 1, 1);
+        SDL_EndGPUComputePass(pass);
+        SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commands);
+        SDL_GPUBufferRegion region{ output, 0, bytes };
+        SDL_GPUTransferBufferLocation location{ download, 0 };
+        SDL_DownloadFromGPUBuffer(copy, &region, &location);
+        SDL_EndGPUCopyPass(copy);
+        SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(g_commands);
+        g_commands = nullptr;
+        SDL_WaitForGPUFences(g_device, true, &fence, 1);
+        SDL_ReleaseGPUFence(g_device, fence);
+        const float* data = static_cast<const float*>(SDL_MapGPUTransferBuffer(g_device, download, false));
+        for (uint32_t v = 0; v < info.vertexCount; v++)
+        {
+            const float* p = data + kRecordHeaderDwords + v * 8;
+            bool odd = !(p[3] > 0) || std::fabs(p[0]) > 1.5f * std::fabs(p[3]) || std::fabs(p[1]) > 1.5f * std::fabs(p[3]) || p[0] != p[0];
+            fprintf(stderr, "[vspos] f%u draw %u v%u: pos %g %g %g %g ndc %g %g | o0 %g %g %g %g%s\n", g_swaps, g_frameDraws, v, p[0], p[1], p[2],
+                p[3], p[0] / p[3], p[1] / p[3], p[4], p[5], p[6], p[7], odd ? " ODD" : "");
+        }
+        SDL_UnmapGPUTransferBuffer(g_device, download);
+        SDL_ReleaseGPUTransferBuffer(g_device, download);
+        SDL_ReleaseGPUBuffer(g_device, output);
     }
 
     void ScatterFrameExports(SDL_GPUBuffer* target, const std::vector<std::pair<uint64_t, uint32_t>>& ranges)
@@ -772,12 +880,13 @@ void main()
         std::string text;
         if (g_frameExportsFrame != g_swaps)
             return text;
-        char item[48];
+        char item[64];
         for (size_t i = 0; i < g_frameExports.size(); i++)
             for (const Stream& stream : g_frameExports[i].streams)
                 if (begin < stream.base + stream.bytes && end > stream.base)
                 {
-                    snprintf(item, sizeof(item), " #%zu:%08X+%u", i, stream.base, stream.bytes);
+                    snprintf(item, sizeof(item), " #%zu:%08X+%u:vs_%08llx", i, stream.base, stream.bytes,
+                        (unsigned long long)(g_frameExports[i].shader >> 32));
                     text += item;
                 }
         return text;

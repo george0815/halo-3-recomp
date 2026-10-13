@@ -40,6 +40,7 @@ namespace h3::gpu::texture
         uint32_t dimension = 0;    // 0 1D, 1 2D, 2 3D/stacked, 3 cube
         uint32_t clampX = 0, clampY = 0, clampZ = 0;
         uint32_t magFilter = 0, minFilter = 0;
+        bool volumeLinear = false;  // filter between a stacked texture's layers (vol mag filter)
         uint32_t swizzle = 0;      // 3 bits per component: 0-3 = XYZW, 4 = 0, 5 = 1
         uint32_t signs = 0;        // 2 bits per component: 0 unsigned, 1 signed, 2 biased, 3 gamma
         int32_t expAdjust = 0;
@@ -49,8 +50,8 @@ namespace h3::gpu::texture
         // tail's tile (set by MipLevels; otherwise Layout derives it).
         bool explicitOffset = false;
         uint32_t offsetX = 0, offsetY = 0;
-        // Bytes from one cube face to the next within this level (set by
-        // MipLevels for cube map mips; 0: FaceStride).
+        // Bytes from one cube face (or stacked layer) to the next within
+        // this level (set by MipLevels for mips; 0: FaceStride).
         uint32_t sliceStride = 0;
     };
 
