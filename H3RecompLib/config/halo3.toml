@@ -239,3 +239,24 @@ invalid_instructions = [
 # name = "ExampleMidAsmHook"
 # address = 0x82000000
 # registers = ["r3"]
+
+# The second thread's uses of the local random seed (lis rX,0x827E, then
+# 13896(rX)): under H3_RANDOM_SEED they get a seed of their own instead of
+# racing the main thread for the shared one (H3Recomp/hooks/random_seed.cpp).
+[[midasm_hook]]
+name = "LocalRandomSeedBase"
+address = 0x8214425C  # sub_821440C8
+registers = ["r9"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "LocalRandomSeedBase"
+address = 0x821453B0  # sub_82145358
+registers = ["r11"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "LocalRandomSeedBase"
+address = 0x822302A0  # sub_82230150
+registers = ["r11"]
+after_instruction = true

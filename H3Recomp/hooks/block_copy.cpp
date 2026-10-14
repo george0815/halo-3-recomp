@@ -16,6 +16,8 @@
 
 #include <ppc_recomp_shared.h>
 
+#include "debug/state_hash.h"
+
 #include <cstring>
 
 namespace
@@ -27,6 +29,8 @@ namespace
     // The original's main loop moves 1024 bytes per pass; smaller copies
     // take its tail path, which is left alone.
     constexpr uint32_t kMinNativeBytes = 1024;
+    // Copies this large are the per-tick game state copy.
+    constexpr uint32_t kGameStateMinBytes = 1024 * 1024;
 }
 
 // r3 = destination, r4 = source, r5 = bytes.
@@ -39,6 +43,8 @@ PPC_FUNC(sub_825A18C0)
         __imp__sub_825A18C0(ctx, base);
         return;
     }
+    if (bytes >= kGameStateMinBytes)
+        h3::debug::OnGameStateCopy(base + source, bytes, source);
     memmove(base + destination, base + source, bytes);
     // Leave the pointer registers as the original does: both advanced past
     // the copy, no bytes left.

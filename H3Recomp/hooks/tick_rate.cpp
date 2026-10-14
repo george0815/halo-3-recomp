@@ -21,6 +21,7 @@
 #include <ppc_recomp_shared.h>
 
 #include "hooks/tick_rate.h"
+#include "hooks/random_seed.h"
 #include "config/env.h"
 #include "config/settings.h"
 #include "memory.h"
@@ -101,11 +102,12 @@ namespace
     }
 }
 
-// game_time_initialize.
+// game_time_initialize (a level or the menu starts).
 PPC_FUNC_IMPL(__imp__sub_821D6F30);
 PPC_FUNC(sub_821D6F30)
 {
     WithTickRate(ctx, base, __imp__sub_821D6F30);
+    hooks::ResetLocalRandomSeed();
 }
 
 // Game time speed change (f1 = speed).
@@ -113,6 +115,26 @@ PPC_FUNC_IMPL(__imp__sub_821D7098);
 PPC_FUNC(sub_821D7098)
 {
     WithTickRate(ctx, base, __imp__sub_821D7098);
+}
+
+// game_time_update (f1 = real seconds since the last frame; once per main
+// loop iteration): adds the time to the leftover at +0x14 and runs as many
+// whole ticks as fit, so frames and ticks drift apart with real timing
+// (103 ticks in 100 frames at 60/60). Per-frame work (the local random
+// seed, HUD histories) then differs between two replays of a film.
+// H3_LOCKSTEP=1 (testing) passes exactly one tick's time instead: one tick
+// per frame, the game running as fast as frames finish (vsync permitting).
+PPC_FUNC_IMPL(__imp__sub_820983E0);
+PPC_FUNC(sub_820983E0)
+{
+    static const bool lockstep = EnvFlag("H3_LOCKSTEP");
+    if (lockstep)
+    {
+        uint32_t gameTime = GuestRef<uint32_t>(uint32_t(GuestRef<uint32_t>(ctx.r13.u32)) + kGameTimeSlot);
+        if (gameTime)
+            ctx.f1.f64 = float(GuestRef<float>(gameTime + 8));  // seconds per tick
+    }
+    __imp__sub_820983E0(ctx, base);
 }
 
 // D3D's swap interrupt (the GPU reached a Swap): r3 = the swap's flags,

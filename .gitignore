@@ -16,6 +16,8 @@ private/*
 # Recompiler output is derived from the game's code, so it stays local too.
 H3RecompLib/ppc/
 H3RecompLib/modules/
+# Tag layouts generated from the user's H3EK (tools/tagdefs).
+H3Native/tags/generated/
 
 # Build output
 build/

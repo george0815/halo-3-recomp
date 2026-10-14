@@ -4,6 +4,7 @@
 
 #include <ppc_recomp_shared.h>
 
+#include "../config/env.h"
 #include "../memory.h"
 
 #include <cstring>
@@ -12,10 +13,13 @@
 using namespace h3;
 
 // INT NetDll_XNetRandom(DWORD caller, BYTE* buffer, UINT length)
-// Halo makes its session and game ids with this; zeros don't do.
+// Halo makes its session and game ids with this; zeros don't do. It also
+// places the game state at a random offset (up to 64 KB) in its memory.
+// H3_RANDOM_SEED=<n> seeds the generator with n instead, so runs place
+// memory alike (film replays compared word by word, docs/ROADMAP.md 6.1).
 PPC_FUNC(__imp__NetDll_XNetRandom)
 {
-    static std::mt19937_64 generator{ std::random_device{}() };
+    static std::mt19937_64 generator{ EnvString("H3_RANDOM_SEED") ? EnvNumber("H3_RANDOM_SEED") : std::random_device{}() };
     uint8_t* buffer = GuestPtr<uint8_t>(ctx.r4.u32);
     for (uint32_t i = 0; i < ctx.r5.u32; i++)
         buffer[i] = uint8_t(generator());

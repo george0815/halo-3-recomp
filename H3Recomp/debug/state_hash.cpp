@@ -1,0 +1,294 @@
+// Game state checksums, one per game tick: the oracle for "this film
+// replays the same game" (docs/ROADMAP.md 6.1; tools/films/README.md).
+//
+// H3_STATE_HASH=<file>   appends "<copy number> <game tick> <hash>" per copy
+// H3_STATE_MASK=<file>   leaves cosmetic state out of the hash (below)
+// H3_STATE_DUMP=<t>,...  also saves the raw state at those ticks as
+//                        state_<tick>.bin in the working directory
+// H3_STATE_RECORD=<file> records every tick's raw state compactly: per
+//                        copy "u32 tick, u32 n, n x (u32 word index, u32
+//                        word as stored)" with the words that changed since
+//                        the previous copy (the first copy: all of them).
+//                        learn_mask.py --record rebuilds every tick from it
+//
+// The game copies its whole 4 MB game state once per tick (checkpoints and
+// revert), which is where this hooks in. Runs only replay alike with
+// H3_RANDOM_SEED (hooks/random_seed.cpp) and H3_LOCKSTEP
+// (hooks/tick_rate.cpp). Even then cosmetic state differs from run to run:
+// effects and a few object fields depend on when asynchronous loads finish.
+// The mask file (tools/films/learn_mask.py learns it from a few replays of
+// a film) names what to leave out, one rule per line:
+//
+//   array <name>           a data array, header and elements
+//   after <name>           the memory between that array and the next one
+//   after <name> @ <off>   just the 64-byte block <off> bytes after its end
+//                          (for big gaps holding other subsystems' state)
+//   object <tag> <offset>  a 32-bit field of every object whose definition
+//                          tag (the object's first word) is <tag>
+//   word <offset>          one 32-bit word of the state (its globals)
+//
+// Tags and offsets are hex. Data arrays are found by their "d@t@"
+// signature (header layout below); objects through the "object" array's
+// handles.
+
+#include "debug/state_hash.h"
+#include "config/env.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#define XXH_INLINE_ALL
+#include <xxhash.h>
+
+namespace
+{
+    // Offset of the game's tick counter in the game state (big-endian;
+    // ticks since the level started: game_time_globals' elapsed ticks).
+    constexpr uint32_t kTickOffset = 0x220;
+
+    // Data array header (0x54 bytes, the elements follow it):
+    //   +0x00 char[32] name     +0x20 s32 maximum count  +0x24 s32 element size
+    //   +0x2C 'd@t@' signature  +0x44 elements' guest address
+    //   +0x50 u32 total bytes (header, elements and in-use bit vector)
+    constexpr uint32_t kArrayNameBytes = 32;
+    constexpr uint32_t kArrayMaxCount = 0x20;
+    constexpr uint32_t kArraySignature = 0x2C;
+    constexpr uint32_t kArrayElements = 0x44;
+    constexpr uint32_t kArrayTotalBytes = 0x50;
+    constexpr uint32_t kArrayHeaderBytes = 0x54;
+    constexpr uint32_t kSignature = 0x64407440;  // "d@t@"
+
+    // The "object" array's elements are 16-byte handles; +12 is the guest
+    // address of the object's data (0 = free slot).
+    constexpr uint32_t kObjectHandleBytes = 16;
+    constexpr uint32_t kObjectHandleData = 12;
+    // Objects are at most this big (bipeds ~0x26D0): bounds a field rule.
+    constexpr uint32_t kMaxObjectBytes = 0x4000;
+
+    uint32_t Load32(const uint8_t* p)
+    {
+        uint32_t value;
+        memcpy(&value, p, 4);
+        return __builtin_bswap32(value);
+    }
+
+    struct DataArray
+    {
+        uint32_t start, end;  // offsets in the state
+        std::string name;
+    };
+
+    // Every data array in the state, by offset.
+    std::vector<DataArray> FindArrays(const uint8_t* state, uint32_t bytes)
+    {
+        std::vector<DataArray> arrays;
+        for (uint32_t at = kArraySignature; at + kArrayHeaderBytes <= bytes; at += 4)
+        {
+            if (Load32(state + at) != kSignature)
+                continue;
+            uint32_t start = at - kArraySignature;
+            const char* name = reinterpret_cast<const char*>(state + start);
+            uint32_t total = Load32(state + start + kArrayTotalBytes);
+            arrays.push_back({ start, std::min(bytes, start + total), std::string(name, strnlen(name, kArrayNameBytes)) });
+        }
+        return arrays;
+    }
+
+    constexpr uint32_t kGapBlockBytes = 64;
+
+    struct Mask
+    {
+        std::vector<std::string> arrays, after;
+        std::vector<std::pair<std::string, uint32_t>> afterBlocks;  // array, offset past its end
+        std::unordered_map<uint32_t, std::vector<uint32_t>> objectFields;  // tag -> offsets
+        std::vector<uint32_t> words;
+        bool Empty() const
+        {
+            return arrays.empty() && after.empty() && afterBlocks.empty() && objectFields.empty() && words.empty();
+        }
+    };
+
+    Mask ReadMask(const char* path)
+    {
+        Mask mask;
+        FILE* file = fopen(path, "r");
+        if (!file)
+        {
+            fprintf(stderr, "[state] can't read mask %s\n", path);
+            return mask;
+        }
+        char line[256];
+        while (fgets(line, sizeof(line), file))
+        {
+            std::string text(line);
+            while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' '))
+                text.pop_back();
+            if (text.empty() || text[0] == '#')
+                continue;
+            size_t space = text.find(' ');
+            std::string kind = text.substr(0, space), rest = space == std::string::npos ? "" : text.substr(space + 1);
+            unsigned tag, offset;
+            if (kind == "array")
+                mask.arrays.push_back(rest);
+            else if (kind == "after" && rest.find(" @ ") != std::string::npos)
+                mask.afterBlocks.push_back({ rest.substr(0, rest.find(" @ ")), uint32_t(strtoul(rest.c_str() + rest.find(" @ ") + 3, nullptr, 16)) });
+            else if (kind == "after")
+                mask.after.push_back(rest);
+            else if (kind == "object" && sscanf(rest.c_str(), "%x %x", &tag, &offset) == 2)
+                mask.objectFields[tag].push_back(offset & ~3u);
+            else if (kind == "word" && sscanf(rest.c_str(), "%x", &offset) == 1)
+                mask.words.push_back(offset & ~3u);
+            else
+                fprintf(stderr, "[state] mask: can't parse \"%s\"\n", text.c_str());
+        }
+        fclose(file);
+        return mask;
+    }
+
+    bool Contains(const std::vector<std::string>& names, const std::string& name)
+    {
+        for (const std::string& n : names)
+            if (n == name)
+                return true;
+        return false;
+    }
+
+    // Zeroes what the mask names in out (a copy of the state at address).
+    void ApplyMask(const Mask& mask, uint8_t* out, uint32_t bytes, uint32_t address)
+    {
+        // PERF: rescans 4 MB for array headers every tick (~1 ms); the
+        // layout only changes when a level loads.
+        std::vector<DataArray> arrays = FindArrays(out, bytes);
+        for (size_t i = 0; i < arrays.size(); i++)
+        {
+            const DataArray& array = arrays[i];
+            if (array.name == "object")
+            {
+                // Object fields first: the handles live in this array.
+                int32_t count = int32_t(Load32(out + array.start + kArrayMaxCount));
+                for (int32_t slot = 0; slot < count && !mask.objectFields.empty(); slot++)
+                {
+                    uint32_t handle = array.start + kArrayHeaderBytes + uint32_t(slot) * kObjectHandleBytes;
+                    if (handle + kObjectHandleBytes > array.end)
+                        break;
+                    uint32_t object = Load32(out + handle + kObjectHandleData) - address;
+                    if (!Load32(out + handle + kObjectHandleData) || object + 4 > bytes)
+                        continue;
+                    auto fields = mask.objectFields.find(Load32(out + object));
+                    if (fields == mask.objectFields.end())
+                        continue;
+                    for (uint32_t field : fields->second)
+                        if (field < kMaxObjectBytes && object + field + 4 <= bytes)
+                            memset(out + object + field, 0, 4);
+                }
+            }
+            if (Contains(mask.arrays, array.name))
+                memset(out + array.start, 0, array.end - array.start);
+            for (const auto& [name, offset] : mask.afterBlocks)
+                if (name == array.name && array.end + offset + kGapBlockBytes <= bytes)
+                    memset(out + array.end + offset, 0, kGapBlockBytes);
+            if (Contains(mask.after, array.name))
+            {
+                uint32_t next = bytes;
+                for (const DataArray& other : arrays)
+                    if (other.start >= array.end && other.start < next)
+                        next = other.start;
+                memset(out + array.end, 0, next - array.end);
+            }
+        }
+        for (uint32_t word : mask.words)
+            if (word + 4 <= bytes)
+                memset(out + word, 0, 4);
+    }
+
+    // H3_STATE_RECORD: appends the words of state that changed since the
+    // last call (all of them the first time).
+    void Record(FILE* file, const uint8_t* state, uint32_t bytes, uint32_t tick)
+    {
+        static std::vector<uint32_t> previous;
+        static std::vector<uint32_t> changes;  // index, value pairs
+        const uint32_t* words = reinterpret_cast<const uint32_t*>(state);
+        uint32_t count = bytes / 4;
+        bool full = previous.size() != count;
+        if (full)
+            previous.assign(count, 0);
+        changes.clear();
+        // PERF: compares all 1M words per tick (~1 ms); testing only.
+        for (uint32_t i = 0; i < count; i++)
+            if (full || words[i] != previous[i])
+            {
+                changes.push_back(i);
+                changes.push_back(words[i]);
+                previous[i] = words[i];
+            }
+        uint32_t header[2] = { tick, uint32_t(changes.size() / 2) };
+        fwrite(header, sizeof(header), 1, file);
+        fwrite(changes.data(), sizeof(uint32_t), changes.size(), file);
+    }
+
+    // H3_STATE_DUMP: whether tick is in the list.
+    bool DumpRequested(const char* list, uint32_t tick)
+    {
+        char key[24];
+        snprintf(key, sizeof(key), ",%u,", tick);
+        return strstr((std::string(",") + list + ",").c_str(), key) != nullptr;
+    }
+}
+
+void h3::debug::OnGameStateCopy(const uint8_t* state, uint32_t bytes, uint32_t address)
+{
+    static FILE* out = [] {
+        const char* path = EnvString("H3_STATE_HASH");
+        return path ? fopen(path, "w") : nullptr;
+    }();
+    if (!out)
+        return;
+    // Where the state lives: pointers inside it only compare between runs
+    // when this matches (it does with H3_RANDOM_SEED).
+    static bool logged = [&] {
+        fprintf(stderr, "[state] game state at 0x%08X (%u bytes)\n", address, bytes);
+        return true;
+    }();
+    (void)logged;
+    static const Mask mask = [] {
+        const char* path = EnvString("H3_STATE_MASK");
+        return path ? ReadMask(path) : Mask{};
+    }();
+
+    uint32_t tick = Load32(state + kTickOffset);
+    static std::vector<uint8_t> masked;
+    const uint8_t* hashed = state;
+    if (!mask.Empty())
+    {
+        masked.assign(state, state + bytes);
+        ApplyMask(mask, masked.data(), bytes, address);
+        hashed = masked.data();
+    }
+    static uint64_t copies = 0;
+    fprintf(out, "%llu %u %016llx\n", (unsigned long long)copies++, tick, (unsigned long long)XXH3_64bits(hashed, bytes));
+    fflush(out);
+
+    static FILE* record = [] {
+        const char* path = EnvString("H3_STATE_RECORD");
+        return path ? fopen(path, "wb") : nullptr;
+    }();
+    if (record)
+        Record(record, state, bytes, tick);
+
+    static const char* dumps = EnvString("H3_STATE_DUMP");
+    if (dumps && DumpRequested(dumps, tick))
+    {
+        char name[40];
+        snprintf(name, sizeof(name), "state_%u.bin", tick);
+        if (FILE* file = fopen(name, "wb"))
+        {
+            fwrite(state, 1, bytes, file);
+            fclose(file);
+        }
+    }
+}

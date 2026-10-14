@@ -3,7 +3,9 @@
 #   H3RecompLib             the recompiled game code (generated; see tools/recompile.sh)
 #   H3Recomp                the runtime executable
 #   H3Launcher              the Qt launcher (settings, profile, controls); optional
-#   tools/                  h3xexinfo (XEX inspector), h3shader (shader translator test)
+#   H3Native                native game code (cache file reader, decompiled functions)
+#   tools/                  h3xexinfo (XEX inspector), h3shader (shader translator test),
+#                           h3tags (cache file / tag index lister)
 
 cmake_minimum_required(VERSION 3.20)
 
@@ -30,9 +32,13 @@ target_include_directories(H3Shader PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/H3Recomp)
 add_library(H3Config STATIC H3Recomp/config/settings.cpp)
 target_include_directories(H3Config PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/H3Recomp)
 
+# Native game code that builds without the recompiled code.
+add_subdirectory(H3Native)
+
 # Our own tooling.
 add_subdirectory(tools/h3xexinfo)
 add_subdirectory(tools/h3shader)
+add_subdirectory(tools/h3tags)
 
 # The launcher, when Qt 6 is available.
 find_package(Qt6 COMPONENTS Widgets QUIET)

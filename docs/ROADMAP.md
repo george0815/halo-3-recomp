@@ -197,10 +197,13 @@ subsystems with the best references first.
       `__FILE__` paths)
 
 ### 6.1 Verification harness (the oracle)
-- [ ] First check that the recompiled build replays a film identically
-      run after run (same per-tick checksums twice; thread timing, the
-      60 Hz tick hook and uninitialized memory can all break that), and
-      fix what doesn't
+- [x] First check that the recompiled build replays a film identically
+      run after run, and fix what doesn't (`tools/films/`): the game state
+      is placed at a clock-seeded random offset and cosmetic randomness
+      depends on frame timing and a second thread; `H3_RANDOM_SEED` and
+      `H3_LOCKSTEP` fix those, and a mask learned from a few replays
+      leaves out what depends on asynchronous load timing (effects, HUD,
+      a few object fields). Sierra 117: fresh replays match on every tick
 - [ ] Deterministic replays: saved films replay the same game from the
       same inputs. A per-tick checksum of the game state (the 4 MB game
       state block and the object/AI data arrays) from the recompiled
@@ -208,7 +211,8 @@ subsystems with the best references first.
       changes any tick's checksum fails, at that tick
 - [ ] Film library: a few films per mission covering combat, vehicles,
       cutscenes and multiplayer variants, played headless at maximum
-      speed in CI-style batch runs (`tools/re/run_films`)
+      speed in CI-style batch runs (`tools/films/run_film.sh`; masks and
+      reference checksums per film)
 - [ ] Function-level traces: record a function's calls in a real run
       (arguments, the guest memory it reads, its writes and result) and
       replay them against the replacement, so a mismatch points at the
@@ -237,10 +241,21 @@ the first real decompilation and where the conventions get settled.
 ### 6.3 Content: cache files, tags and resources
 Best references (H3EK tag definitions, ElDorito's cache structures,
 `halo3_tag_test.exe`), self-contained, and everything else reads tags.
-- [ ] Cache file header, section and partition layout; map loading and
-      the tag index (`tag_get`, group tags)
-- [ ] Tag layouts as typed C++ structures for every group the game reads
-      (generated from the tag definitions where possible)
+- [~] Cache file header, section and partition layout; map loading and
+      the tag index (`tag_get`, group tags). Native reader
+      `H3Native/cache/cache_file.h` (header, sections, partitions, string
+      ids, tag names, groups, tags, global tags; `tools/h3tags`
+      lists them); it matches the game's loaded index slot for slot
+      (`H3_CHECK_TAGS=1`). `tag_get` (sub_82087AF0) decompiled in place
+      (`H3Native/tags/tags.cpp`; `H3_CHECK_NATIVE=1` runs both, Sierra
+      film identical). Left: map loading itself
+- [~] Tag layouts as typed C++ structures for every group the game reads
+      (generated from the tag definitions where possible): `tools/tagdefs`
+      extracts H3EK's definitions (175 groups, 1,364 structs) and
+      generates packed big-endian structs; validated against the retail
+      maps and Assembly's 360 plugins (106 of 127 groups the same size).
+      Left: reconcile the ~70 structs MCC changed (sounds, compiled
+      shaders, physics shapes, resource gestalt, ...)
 - [ ] Resource system (sound, bitmap, geometry, animation resources);
       streaming and the I/O paths (DVD/HDD cache partitions)
 - [ ] Strings (unicode string lists, localization), fonts

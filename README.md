@@ -214,6 +214,12 @@ Environment variables:
 | `H3_GPU_TIMING_LABELS=<label>[,...]` | With `H3_GPU_TIMING`: wait around those labels only (e.g. `memexport,resolve`) |
 | `H3_WATCH_READS=<first>-<last>:<address>:<bytes>` | Like `H3_WATCH_WRITES`, but every access (reads too); writes `read_watch.txt` |
 | `H3_TRAP_ON_STUCK=1` | Raise SIGTRAP when a thread is stuck on a critical section (for an attached debugger) |
+| `H3_RANDOM_SEED=<n>` | Fixed random seeds (XNetRandom, the game's clock-based seeds, the local random seed at level start, a seed of its own for the particle thread): the game state lands at the same address and replays compare word for word (`tools/films/`) |
+| `H3_LOCKSTEP=1` | Exactly one game tick per frame (the game runs as fast as frames finish), so per-frame state replays alike |
+| `H3_STATE_HASH=<file>` | Append `<copy> <tick> <hash>` for every per-tick game state copy: a checksum of the 4 MB game state per tick (`tools/films/`) |
+| `H3_STATE_MASK=<file>` | Leave the cosmetic state that file names (data arrays, object fields, words; learned by `tools/films/learn_mask.py`) out of `H3_STATE_HASH` |
+| `H3_STATE_DUMP=<tick>[,...]` | With `H3_STATE_HASH`: save the raw game state at those ticks as `state_<tick>.bin` |
+| `H3_STATE_RECORD=<file>` | With `H3_STATE_HASH`: record every tick's game state compactly (words changed since the previous tick; ~90 KB a tick) |
 
 CMake option `-DH3_TRACE_D3D=ON` counts and samples calls into the game's
 statically linked D3D library and writes `d3d_trace.txt` at frame 150 (or

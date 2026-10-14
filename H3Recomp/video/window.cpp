@@ -39,6 +39,11 @@ namespace h3::kernel
     void DumpWaitTotals();
 }
 
+namespace h3::native::tags
+{
+    void CheckTagIndex();  // H3_CHECK_TAGS (H3Native/tags/tags.cpp)
+}
+
 namespace h3::video
 {
     namespace
@@ -323,5 +328,6 @@ namespace h3::video
         debug::UpdateWriteWatch(frame);
         hooks::UpdateCampaignUnlock();
         hooks::LogTickRate();
+        native::tags::CheckTagIndex();
     }
 }
