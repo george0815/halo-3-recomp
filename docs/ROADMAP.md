@@ -263,18 +263,21 @@ Best references (H3EK tag definitions, ElDorito's cache structures,
 - [ ] Resource system (sound, bitmap, geometry, animation resources);
       streaming and the I/O paths (DVD/HDD cache partitions)
 - [ ] Strings (unicode string lists, localization), fonts
-- [~] **Native milestone A**: tags loaded into host-layout structures,
-      converted from the big-endian cache file once at load; decompiled
-      code reads those; recompiled readers get the guest copy until
-      they're gone. Done: generated host structs and converters
-      (`tag_host.h`, `tag_convert.cpp`; lossless: every map round-trips
-      byte for byte, `h3tags <map> convert`), the tag cache
-      (`H3Native/tags/tag_cache.h`: the whole map converted when its tags
-      load, ~25 ms for Sierra 117, dropped at unload; no tag bytes changed
-      by the game 10 s in), and the first readers
-      (`H3Native/ai/character_definitions.cpp`: four character property
-      getters; film identical). Left: the other ~1,600 functions that read
-      tags inline
+- [x] **Native milestone A** (2026-10-15): tags loaded into host-layout
+      structures, converted once at load (`H3Native/tags/tag_cache.h`:
+      whole map after the decompiled tag load, ~25 ms, lock-free reads,
+      dropped at unload); generated host structs and converters
+      (`tag_host.h`, `tag_convert.cpp`; every map round-trips byte for
+      byte, `h3tags <map> convert`); decompiled code reads them
+      (`H3Native/replace.h`: `H3_REPLACE_INT/FLOAT`, `H3_ORIGINAL`,
+      `H3_CHECK_NATIVE`); recompiled readers keep the guest copy (no tag
+      bytes changed by the game in mainmenu/Sierra 117)
+- [ ] Port the ~1,590 functions that read tags inline (13 done: character,
+      BSP/pathfinding, sound class, unit seat, player weapon, multiplayer
+      globals readers). Leaf, result-only ones first (167;
+      `tools/re/tag_readers.py --list --leaf-pure`), then by subsystem
+      with 6.4+
+- [ ] The tag load's helpers: header read/verify, cache file I/O, SHA-1/RSA
 
 ### 6.4 Simulation
 The core gameplay; the largest share of the code. Films keep it honest.
