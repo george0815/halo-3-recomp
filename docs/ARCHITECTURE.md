@@ -50,7 +50,7 @@ shader caches) stays local.
 | `H3Recomp/debug/` | Optional debugging tools (profiler, write watch, tracing) |
 | `H3Recomp/config/` | Runtime settings: `settings.h` (the launcher's `settings.ini`, shared with the launcher as the `H3Config` library) and `env.h` (the `H3_*` environment switches) |
 | `H3Launcher/` | The Qt launcher: edits `settings.ini`, starts the game; draws its menus with the game's own font (`halo_font.h` decodes `font_package.bin`) |
-| `H3Native/` | Native game code replacing the recompiled code (docs/ROADMAP.md phase 6): `cache/` reads cache files in host layout, `tags/` has decompiled tag functions and the tag layout types (`generated/`, from `tools/tagdefs`, stays local) |
+| `H3Native/` | Native game code replacing the recompiled code (docs/ROADMAP.md phase 6): `cache/` reads cache files in host layout, `tags/` has decompiled tag functions, the host tag cache and the tag layout types (`generated/`, from `tools/tagdefs`, stays local), `ai/` the first decompiled readers of host tags; `native.h` has the switches every replacement honors (`H3_ORIGINAL`, `H3_CHECK_NATIVE`) |
 | `H3RecompLib/` | Build glue for the recompiled code: recompiler configs, generated sources (ignored) |
 | `tools/` | Pipeline scripts (recompile, FFmpeg build), XEX inspector, shader test tool, `h3tags` (cache file lister), `films/` (film replay tests), `tagdefs/` (tag layouts from H3EK) |
 | `thirdparty/XenonRecomp/` | The recompiler (submodule, with local patches; see `private/`) |

@@ -248,21 +248,33 @@ Best references (H3EK tag definitions, ElDorito's cache structures,
       lists them); it matches the game's loaded index slot for slot
       (`H3_CHECK_TAGS=1`). `tag_get` (sub_82087AF0) decompiled in place
       (`H3Native/tags/tags.cpp`; `H3_CHECK_NATIVE=1` runs both, Sierra
-      film identical). Left: map loading itself
-- [~] Tag layouts as typed C++ structures for every group the game reads
-      (generated from the tag definitions where possible): `tools/tagdefs`
-      extracts H3EK's definitions (175 groups, 1,364 structs) and
-      generates packed big-endian structs; validated against the retail
-      maps and Assembly's 360 plugins (106 of 127 groups the same size).
-      Left: reconcile the ~70 structs MCC changed (sounds, compiled
-      shaders, physics shapes, resource gestalt, ...)
+      film identical). Tag load and unload decompiled in place
+      (`H3Native/cache/cache_file_tags.cpp`; header read and checks, I/O,
+      SHA-1/RSA still recompiled, called through `H3Native/guest_call.h`):
+      everything they publish is byte-identical to the originals'. Left:
+      the header read/verify and cache file I/O underneath
+- [x] Tag layouts as typed C++ structures for every group the game reads
+      (`tools/tagdefs`): H3EK's definitions (MCC layout) merged with
+      Assembly's 360 plugins where MCC changed them (314 structs);
+      packed big-endian structs with size checks
+      (`H3Native/tags/generated/tag_layouts.h`, generated locally).
+      Validated on 12 retail maps: everything reads back consistently
+      (block counts and addresses, tag references, string ids)
 - [ ] Resource system (sound, bitmap, geometry, animation resources);
       streaming and the I/O paths (DVD/HDD cache partitions)
 - [ ] Strings (unicode string lists, localization), fonts
-- [ ] **Native milestone A**: tags loaded into host-layout structures,
+- [~] **Native milestone A**: tags loaded into host-layout structures,
       converted from the big-endian cache file once at load; decompiled
       code reads those; recompiled readers get the guest copy until
-      they're gone
+      they're gone. Done: generated host structs and converters
+      (`tag_host.h`, `tag_convert.cpp`; lossless: every map round-trips
+      byte for byte, `h3tags <map> convert`), the tag cache
+      (`H3Native/tags/tag_cache.h`: the whole map converted when its tags
+      load, ~25 ms for Sierra 117, dropped at unload; no tag bytes changed
+      by the game 10 s in), and the first readers
+      (`H3Native/ai/character_definitions.cpp`: four character property
+      getters; film identical). Left: the other ~1,600 functions that read
+      tags inline
 
 ### 6.4 Simulation
 The core gameplay; the largest share of the code. Films keep it honest.

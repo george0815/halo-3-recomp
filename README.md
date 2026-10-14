@@ -219,6 +219,9 @@ Environment variables:
 | `H3_STATE_HASH=<file>` | Append `<copy> <tick> <hash>` for every per-tick game state copy: a checksum of the 4 MB game state per tick (`tools/films/`) |
 | `H3_STATE_MASK=<file>` | Leave the cosmetic state that file names (data arrays, object fields, words; learned by `tools/films/learn_mask.py`) out of `H3_STATE_HASH` |
 | `H3_STATE_DUMP=<tick>[,...]` | With `H3_STATE_HASH`: save the raw game state at those ticks as `state_<tick>.bin` |
+| `H3_ORIGINAL=<name>[,...]` | Run the recompiled originals instead of those decompiled replacements (`tag_get`, `character_get_general_properties`, ...; `H3Native/`) |
+| `H3_CHECK_NATIVE=1` | Run each decompiled replacement and its original, log differences (`[native]`); the game gets the original's result |
+| `H3_CHECK_TAGS=1` | Compare the loaded tag index with the native cache file reader's, log the tag cache, and ~10 s after a map loads report tag bytes the game changed at runtime (`[tags]`) |
 | `H3_STATE_RECORD=<file>` | With `H3_STATE_HASH`: record every tick's game state compactly (words changed since the previous tick; ~90 KB a tick) |
 
 CMake option `-DH3_TRACE_D3D=ON` counts and samples calls into the game's

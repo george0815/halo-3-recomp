@@ -7,11 +7,14 @@ header to `H3Native/tags/generated/` (git-ignored).
 
 ```sh
 W=/tmp/h3ek-work            # scratch: copies of tool.exe and its DLLs, a Wine prefix, ~450 MB of dumps
-tools/tagdefs/dump_tool_memory.sh "<H3EK folder>" $W                         # needs wine and gdb
-tools/tagdefs/tagdefs.py extract $W private/game/maps/010_jungle.map private/tagdefs/halo3.json
-tools/tagdefs/tagdefs.py validate private/tagdefs/halo3.json private/game/maps/010_jungle.map
-tools/tagdefs/tagdefs.py compare private/tagdefs/halo3.json <Assembly>/src/Assembly/Plugins/Halo3   # optional
-tools/tagdefs/tagdefs.py header private/tagdefs/halo3.json H3Native/tags/generated/tag_layouts.h
+A=<Assembly checkout>/src/Assembly/Plugins/Halo3   # github.com/XboxChaos/Assembly (360 layouts)
+D=private/tagdefs
+tools/tagdefs/dump_tool_memory.sh "<H3EK folder>" $W                     # needs wine and gdb
+tools/tagdefs/tagdefs.py extract $W private/game/maps/010_jungle.map $D/halo3.json
+tools/tagdefs/tagdefs.py merge $D/halo3.json $A $D/halo3_360.json        # MCC -> 360 layouts
+tools/tagdefs/tagdefs.py validate $D/halo3_360.json private/game/maps/010_jungle.map
+tools/tagdefs/tagdefs.py compare $D/halo3_360.json $A
+tools/tagdefs/tagdefs.py header $D/halo3_360.json H3Native/tags/generated/tag_layouts.h
 ```
 
 - `dump_tool_memory.sh` runs a copy of `tool.exe` under Wine (it prints its
@@ -23,27 +26,35 @@ tools/tagdefs/tagdefs.py header private/tagdefs/halo3.json H3Native/tags/generat
   ancestors' structs, base first (biped = object + unit + biped).
 - `validate` walks every tag of a retail map with the layouts and checks
   block counts and addresses, tag references and string ids.
-- `compare` checks struct sizes against Assembly's community-made 360
-  plugins (reference only: just the verdict reaches the header).
+- `merge` rebuilds, from Assembly's community 360 plugins, every struct
+  whose size or layout (where its tag references and blocks sit) differs,
+  keeping H3EK's names and enum options everywhere else. Ancestor structs
+  are split out of a group's flat plugin at its section comments (UNIT,
+  BIPED, MACHINE...); nested blocks are paired by name, then offset, then
+  order.
+- `compare` checks struct sizes against the plugins.
 - `header` writes packed big-endian structs (`H3Native/tags/tag_types.h`
   has `tag_block<T>`, `tag_reference`, ...), each with a size
-  `static_assert`, and a comment per struct: 360 size confirmed, DIFFERS on
-  360, or UNVERIFIED (validation failures).
+  `static_assert` (and one per member offset), and a comment per struct:
+  360 size confirmed, DIFFERS on 360, or UNVERIFIED (validation failures).
+  Next to it, `tag_host.h` (the same structs in host layout, native
+  endian, `Block<T>` with host pointers; a `<name>_tag` struct per group)
+  and `tag_convert.cpp` (conversion both ways, by group tag). `h3tags <map>
+  convert` converts every tag and checks the round trip gives back the
+  file's bytes.
 
-## What's known (2026-10-14, 010_jungle)
+## What's known (2026-10-14)
 
-- 175 groups (all but `itmc`, `vehc`), 1,364 structs. H3EK's stored sizes
-  equal the sizes computed with 360 field sizes for every struct, so H3EK
-  is laid out like the 360 cache file except where MCC changed the content.
-- Against the plugins: 106 of 127 groups have the same total size; 409 of
-  the 480 structs that could be paired are the same size (71 differ).
-- Where they differ, MCC both added fields (scenario: `future_more_flags`)
-  and removed some (biped is 0x4E0 on 360, 0x490 in H3EK). Known
-  cache-only or platform layouts: `snd!` is a 32-byte cache struct pointing
-  into `ugh!`; compiled shaders (`glps`, `glvs`, rasterizer constant
-  tables); physics shapes (`phmo`); the resource gestalt (`zone`, `play`).
-- Validation: 383,186 checks, 12% fail, nearly all in those structs.
-
-Reconciling the differing structs (by hand, from the plugins and the 360
-code that reads them) is the next step before decompiled code relies on
-them.
+- 175 groups (all but `itmc`, `vehc`: not found in tool.exe; 010_jungle has no tags of them), 1,588 structs.
+  H3EK alone is MCC's layout: 106 of 127 groups had the 360 size, and 12%
+  of the checks on retail maps failed (sounds, compiled shaders, physics
+  shapes, the resource gestalt, AI pathfinding, objects/units...).
+- After `merge` (314 structs rebuilt from the plugins): all 127 groups and
+  all 1,020 paired structs have the plugins' sizes; validation on 12 maps
+  (campaign, multiplayer, main menu, ~0.3-0.65 M checks each) fails exactly
+  one check per map: the zone manifest's attachment hierarchy, a block with
+  a count and no address (filled in at runtime).
+- `h3tags <map> bsps` reads the scenario's BSP list through the generated
+  structs (a first consumer).
+- Field names in rebuilt structs are the plugins' (and their guesses for
+  unknown fields: "Unknown", unnamed padding).

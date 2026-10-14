@@ -71,3 +71,21 @@ void H3SwitchUnreachable(uint32_t address, uint32_t value)
     fflush(stderr);
     abort();
 }
+
+// See H3RecompLib/debug/switch_check.h.
+void H3IndirectCallToNull(uint32_t target)
+{
+    // How much of the lookup table around the entry is zero: a wiped range
+    // points at whatever overwrote it.
+    auto entry = [](uint64_t address) { return *reinterpret_cast<uint64_t*>(h3::g_base + PPC_IMAGE_BASE + PPC_IMAGE_SIZE + (address - PPC_CODE_BASE) * 2); };
+    uint64_t low = target & ~3u, high = target & ~3u;
+    while (low > PPC_CODE_BASE && entry(low - 4) == 0)
+        low -= 4;
+    while (high + 4 < PPC_CODE_BASE + PPC_CODE_SIZE && entry(high + 4) == 0)
+        high += 4;
+    fprintf(stderr, "[recomp] indirect call to 0x%08X: its function lookup entry is null; entries for 0x%08llX-0x%08llX are zero "
+        "(the table, at guest 0x%08llX-, was overwritten)\n", target, (unsigned long long)low, (unsigned long long)high,
+        (unsigned long long)(PPC_IMAGE_BASE + PPC_IMAGE_SIZE));
+    fflush(stderr);
+    abort();
+}

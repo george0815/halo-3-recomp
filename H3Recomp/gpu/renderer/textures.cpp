@@ -36,6 +36,13 @@ namespace h3::gpu::renderer::internal
         // while it holds the previous frame must not count as settled (stale
         // frames flickered in the splash videos).
         constexpr uint32_t kRecentFrames = 60;
+        // Textures whose contents changed this many times are dynamic (Bink
+        // planes, not memory a texture was streamed over once) and are
+        // checked every frame for good: a video can hold a frame longer than
+        // kRecentFrames (the Halo 3 logo stands ~100 frames before fading
+        // out), and the 8-frame interval then showed the other Bink buffer
+        // stale on alternate frames through the first part of the fade.
+        constexpr uint32_t kDynamicChanges = 2;
         // checkedFrame/changedFrame value for "never".
         constexpr uint32_t kNever = ~0u;
         // Fetch constant swizzle for X, Y, Z, W in order (3 bits each).
@@ -78,10 +85,19 @@ namespace h3::gpu::renderer::internal
             uint32_t fullCheckedFrame = kNever;  // last frame its memory was hashed in full
             uint32_t checkedFrame = kNever;  // last frame its memory was hashed
             uint32_t changedFrame = kNever;  // last frame its contents changed (videos, render-to-memory)
+            uint32_t changes = 0;            // times its contents changed after the first decode
             uint32_t usedFrame = 0;          // last frame it was bound
             uint64_t bytes = 0;              // host memory it holds (approximate: the decoded data)
         };
         std::unordered_map<uint64_t, CachedTexture> g_textures;  // fetch constant layout -> texture
+
+        // Whether a texture is checked on every use rather than every
+        // kCheckInterval frames: it changed recently, or keeps changing.
+        bool CheckEveryUse(const CachedTexture& cached)
+        {
+            return cached.changes >= kDynamicChanges ||
+                (cached.changedFrame != kNever && g_swaps - cached.changedFrame < kRecentFrames);
+        }
         // The entry a fetch constant's raw dwords (and the layers flag)
         // lead to, so a bind skips working out its layout: the largest
         // usable level, mip chain and sizes took ~8% of the command
@@ -224,7 +240,7 @@ namespace h3::gpu::renderer::internal
             {
                 CachedTexture& cached = *front->second;
                 cached.usedFrame = g_swaps;
-                bool recentlyChanged = cached.changedFrame != kNever && g_swaps - cached.changedFrame < kRecentFrames;
+                bool recentlyChanged = CheckEveryUse(cached);
                 if (cached.texture && (cached.checkedFrame == g_swaps || (!recentlyChanged && g_swaps - cached.checkedFrame < kCheckInterval)))
                     return cached.texture;
             }
@@ -266,7 +282,7 @@ namespace h3::gpu::renderer::internal
             g_frontTextures[frontKey] = &cached;
             cached.usedFrame = g_swaps;
 
-            bool recentlyChanged = cached.changedFrame != kNever && g_swaps - cached.changedFrame < kRecentFrames;
+            bool recentlyChanged = CheckEveryUse(cached);
             if (cached.texture && (cached.checkedFrame == g_swaps ||
                                       (!recentlyChanged && g_swaps - cached.checkedFrame < kCheckInterval)))
                 return cached.texture;
@@ -282,7 +298,10 @@ namespace h3::gpu::renderer::internal
             uint64_t contentHash = ContentHash(guest, size);
             cached.sampleHash = sampleHash;
             if (cached.texture && contentHash != cached.contentHash)
+            {
                 cached.changedFrame = g_swaps;
+                cached.changes++;
+            }
             if (cached.texture && contentHash == cached.contentHash)
                 return cached.texture;
 

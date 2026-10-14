@@ -41,7 +41,8 @@ namespace h3::kernel
 
 namespace h3::native::tags
 {
-    void CheckTagIndex();  // H3_CHECK_TAGS (H3Native/tags/tags.cpp)
+    void CheckTagIndex();        // H3_CHECK_TAGS (H3Native/tags/tags.cpp)
+    void RuntimeChangeReport();  // H3_CHECK_TAGS (H3Native/tags/tag_cache.cpp)
 }
 
 namespace h3::video
@@ -329,5 +330,6 @@ namespace h3::video
         hooks::UpdateCampaignUnlock();
         hooks::LogTickRate();
         native::tags::CheckTagIndex();
+        native::tags::RuntimeChangeReport();
     }
 }

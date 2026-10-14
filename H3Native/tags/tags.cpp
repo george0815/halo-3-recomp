@@ -24,8 +24,10 @@
 //   H3_CHECK_TAGS=1       when a map's tag index is loaded, compare it
 //                         with the native cache file reader's (CheckTagIndex)
 
+#include "tags/tags.h"
 #include "cache/cache_file.h"
 #include "config/env.h"
+#include "native.h"
 #include "kernel/vfs.h"
 #include "memory.h"
 
@@ -56,16 +58,36 @@ namespace h3::native::tags
         constexpr uint32_t kInstanceAddress = 4;
         constexpr uint32_t kGroupBytes = 16;     // tag, parent, grandparent, name
         constexpr uint32_t kSlotMask = 0xFFFF;
+    }
 
-        // H3_ORIGINAL: comma-separated names of replacements to turn off.
-        bool UseOriginal(const char* name)
-        {
-            static const std::string list = [] {
-                const char* value = EnvString("H3_ORIGINAL");
-                return value ? "," + std::string(value) + "," : std::string();
-            }();
-            return list.find("," + std::string(name) + ",") != std::string::npos;
-        }
+    uint32_t LoadedIndexHeader() { return GuestRef<uint32_t>(kTagIndexHeader); }
+
+    uint32_t LoadedIndexChecksum()
+    {
+        uint32_t header = LoadedIndexHeader();
+        return header ? uint32_t(GuestRef<uint32_t>(header + kHeaderChecksum)) : 0;
+    }
+
+    const cache::CacheFile* LoadedCacheFile()
+    {
+        // Every map with a tag index, opened once (headers and tables only).
+        static const std::vector<std::unique_ptr<cache::CacheFile>> maps = [] {
+            std::vector<std::unique_ptr<cache::CacheFile>> files;
+            std::optional<std::filesystem::path> folder = kernel::ResolveGuestPath("game:\\maps");
+            if (!folder)
+                return files;
+            for (const auto& entry : std::filesystem::directory_iterator(*folder))
+                if (entry.path().extension() == ".map")
+                    if (auto file = cache::CacheFile::Open(entry.path().string()))
+                        if (file->GetHeader().tagIndexAddress)
+                            files.push_back(std::move(file));
+            return files;
+        }();
+        uint32_t header = LoadedIndexHeader(), checksum = LoadedIndexChecksum();
+        for (const auto& map : maps)
+            if (header && map->Index().checksum == checksum && map->GetHeader().tagIndexAddress == header)
+                return map.get();
+        return nullptr;
     }
 
     // tag_get, as the original computes it: the slot and salt are compared
@@ -108,22 +130,7 @@ namespace h3::native::tags
         checkedHeader = header;
         checkedChecksum = checksum;
 
-        static std::vector<std::unique_ptr<cache::CacheFile>> maps = [] {
-            std::vector<std::unique_ptr<cache::CacheFile>> files;
-            std::optional<std::filesystem::path> folder = kernel::ResolveGuestPath("game:\\maps");
-            if (!folder)
-                return files;
-            for (const auto& entry : std::filesystem::directory_iterator(*folder))
-                if (entry.path().extension() == ".map")
-                    if (auto file = cache::CacheFile::Open(entry.path().string()))
-                        if (file->GetHeader().tagIndexAddress)
-                            files.push_back(std::move(file));
-            return files;
-        }();
-        const cache::CacheFile* file = nullptr;
-        for (const auto& map : maps)
-            if (map->Index().checksum == checksum && map->GetHeader().tagIndexAddress == header)
-                file = map.get();
+        const cache::CacheFile* file = LoadedCacheFile();
         if (!file)
         {
             fprintf(stderr, "[tags] no map in game:\\maps has a tag index at %08X with checksum %08X\n", header, checksum);
@@ -165,8 +172,9 @@ PPC_FUNC_IMPL(__imp__sub_82087AF0);
 PPC_FUNC(sub_82087AF0)
 {
     using namespace h3::native::tags;
-    static const bool original = UseOriginal("tag_get");
-    static const bool check = h3::EnvFlag("H3_CHECK_NATIVE");
+    static const bool original = h3::native::UseOriginal("tag_get");
+    static const bool check = h3::native::CheckNative();
+    static h3::native::NativeCheck checker("tag_get");
     if (original)
     {
         __imp__sub_82087AF0(ctx, base);
@@ -178,13 +186,12 @@ PPC_FUNC(sub_82087AF0)
     {
         PPCContext copy = ctx;
         __imp__sub_82087AF0(copy, base);
-        static std::atomic<uint32_t> reports{ 0 }, calls{ 0 };
-        if (copy.r3.u32 != result && reports++ < 20)
-            fprintf(stderr, "[native] tag_get(%08X, %08X): native %08X, original %08X\n", group, datum, result, copy.r3.u32);
-        // A sign of life: checked calls so far, at powers of ten.
-        uint32_t n = ++calls;
-        if (n == 1 || n == 10 || n == 100 || n == 1000 || n == 10000 || n == 100000 || n == 1000000)
-            fprintf(stderr, "[native] tag_get: %u calls checked, %u differed\n", n, reports.load());
+        checker.Compare(copy.r3.u32 == result, [&] {
+            char text[96];
+            snprintf(text, sizeof(text), "tag_get(%08X, %08X): native %08X, original %08X", group, datum, result, copy.r3.u32);
+            return std::string(text);
+        });
+        result = copy.r3.u32;  // the game gets the original's
     }
     // The original leaves r3 = the result and clobbers only volatile
     // registers, which callers don't rely on.
