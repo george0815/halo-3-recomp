@@ -140,10 +140,214 @@ Rough phases. Each one is a large amount of work; that's fine.
       write anything skipped): the Sierra, Tsavo and Storm starts hold 60
       fps. Heavier scenes untested
 - [ ] Replace hot recompiled functions with hand-written source (started:
-      the 4 MB per-tick game state copy, `hooks/block_copy.cpp`)
+      the 4 MB per-tick game state copy, `hooks/block_copy.cpp`); this
+      continues as phase 6
 
-## 6. Decompilation (optional, long-term)
-- [ ] Identify subsystems (tags, cache files, scenario, AI, physics) and
-      name functions in Ghidra
-- [ ] Replace recompiled subsystems with readable C++ one at a time,
-      using the recompiled original as an oracle for testing
+## 6. Decompilation and native port
+
+Goal: every function of the game as readable C++, running on host data
+structures, with no recompiled code, no guest memory and no console
+emulation left. The recompiled game stays the reference (the *oracle*)
+until the very end: each piece is replaced only when it behaves the same.
+
+Scale: ~22,400 functions in the recompiled image (H3RecompLib/ppc), about
+6.9 MB of code; third-party libraries (Havok, Direct3D 9, XAPI/CRT, Bink,
+XAudio) included. Progress is counted by functions and by code bytes,
+per subsystem (6.0).
+
+The work goes in two stages per subsystem:
+
+- **Decompiled in place**: readable C++ that still uses the guest's data
+  layout (big-endian `be<T>` fields, 32-bit guest pointers, guest
+  memory) and the recompiler's calling convention at its edges, so it
+  drops in for the recompiled functions one at a time and calls whatever
+  is still recompiled.
+- **Native**: once a subsystem and everything that touches its data is
+  C++, its data becomes host layout (native endian, host pointers,
+  64-bit clean), converted at the remaining boundaries (cache file loading
+  above all).
+
+Order: leaves before callers, data owners before data users, and the
+subsystems with the best references first.
+
+### 6.0 Infrastructure (before replacing anything)
+- [~] Symbol database: `private/re/symbols.csv` built by
+      `private/re/build_symbols.py` (HaloScript table alignment against
+      H3EK's `halo3_tag_test.exe`, handler callees, hand-identified
+      functions; 1,305 names), applied to the Ghidra project
+- [~] Subsystem map: which address ranges are which source files
+      (`private/re/README.md`; from `__FILE__` strings and named functions)
+- [ ] Bring the tools into the repo (`tools/re/`): symbol pipeline, call
+      graph, string references, Ghidra scripts; data stays in `private/`
+- [ ] Type database: structures as C++ headers (`H3Native/types/`), from
+      `halo3_tag_test.exe` (tag field definitions, asserts naming fields)
+      and the retail code; one source of truth, exported to Ghidra
+- [ ] Replacement registry: each decompiled function declares the guest
+      address it replaces (`H3_REPLACES(0x8250AFA8)`); a generated table
+      overrides the recompiled symbol (as `hooks/` do today). Each one
+      can be switched back to the recompiled version at runtime
+      (`H3_ORIGINAL=<name|address|subsystem>`) for A/B runs
+- [ ] Progress report: functions and bytes replaced per subsystem, and
+      what's left (from the registry, the call graph and the symbol
+      database); shown in the README
+- [ ] Naming, round 2: callers and callees of named functions, RTTI
+      vtables (217 classes), tag group constants (4-character group tags
+      in code), string references; matching against `halo3_tag_test.exe`
+      by strings, constants and call shape (it keeps asserts and
+      `__FILE__` paths)
+
+### 6.1 Verification harness (the oracle)
+- [ ] First check that the recompiled build replays a film identically
+      run after run (same per-tick checksums twice; thread timing, the
+      60 Hz tick hook and uninitialized memory can all break that), and
+      fix what doesn't
+- [ ] Deterministic replays: saved films replay the same game from the
+      same inputs. A per-tick checksum of the game state (the 4 MB game
+      state block and the object/AI data arrays) from the recompiled
+      build, recorded once per film, is the reference; a replacement that
+      changes any tick's checksum fails, at that tick
+- [ ] Film library: a few films per mission covering combat, vehicles,
+      cutscenes and multiplayer variants, played headless at maximum
+      speed in CI-style batch runs (`tools/re/run_films`)
+- [ ] Function-level traces: record a function's calls in a real run
+      (arguments, the guest memory it reads, its writes and result) and
+      replay them against the replacement, so a mismatch points at the
+      exact call rather than a tick
+- [ ] Differential mode: run both versions of a function on copies of
+      the state and compare (for pure and nearly pure functions)
+- [ ] Rendering checks: frame captures (`H3_GPU_CAPTURE`, snapshots)
+      compared image by image against the oracle for render-side work
+
+### 6.2 Foundations (cseries and engine core)
+The library layer everything else uses; small, well-specified functions,
+the first real decompilation and where the conventions get settled.
+- [ ] cseries: memory (heaps, pools), strings, `csprintf`-style
+      formatting, math and vector helpers, real/int conversions, bit
+      vectors, CRC/hashes, random numbers (deterministic: films depend on
+      them)
+- [ ] Data structures: data arrays (datum handles: index + salt), linked
+      lists, hash tables, bitstreams (also used by networking and films)
+- [ ] Engine core: game time (`game_time_*`), the main loop
+      (`main_loop`, already mapped), game state allocation and the
+      per-tick state copy (`hooks/block_copy.cpp` folds into this),
+      threads and synchronization wrappers
+- [ ] CRT and XAPI pieces the game calls (memset/memcpy/strings, fibers):
+      host equivalents
+
+### 6.3 Content: cache files, tags and resources
+Best references (H3EK tag definitions, ElDorito's cache structures,
+`halo3_tag_test.exe`), self-contained, and everything else reads tags.
+- [ ] Cache file header, section and partition layout; map loading and
+      the tag index (`tag_get`, group tags)
+- [ ] Tag layouts as typed C++ structures for every group the game reads
+      (generated from the tag definitions where possible)
+- [ ] Resource system (sound, bitmap, geometry, animation resources);
+      streaming and the I/O paths (DVD/HDD cache partitions)
+- [ ] Strings (unicode string lists, localization), fonts
+- [ ] **Native milestone A**: tags loaded into host-layout structures,
+      converted from the big-endian cache file once at load; decompiled
+      code reads those; recompiled readers get the guest copy until
+      they're gone
+
+### 6.4 Simulation
+The core gameplay; the largest share of the code. Films keep it honest.
+- [ ] Scenario and zone sets, BSP and structure data, PVS
+- [ ] Objects: object types, creation/deletion, attachments, the object
+      update loop; then items, weapons, projectiles, equipment, units,
+      bipeds, vehicles, devices, scenery, crates
+- [ ] Damage, effects (gameplay side), impacts
+- [ ] Physics glue: collision queries, the game's use of Havok (see 6.8)
+- [ ] Animation: animation graphs, playback, interpolation
+- [ ] AI: actors, squads, behaviors, perception, pathfinding, flocks,
+      command scripts (`cs_*`)
+- [ ] HaloScript: the compiler-free runtime (threads, evaluation, the
+      ~1,470 functions' handlers, already named), recordings
+- [ ] Game engines and campaign: game_engine (variants, scoring,
+      respawns), campaign progress, checkpoints and revert, saved films
+- [ ] Players, cameras, controls (the input side of units), cinematics
+      (game side)
+- [ ] Simulation for networking (prediction, entity replication: needed
+      for films and splitscreen even offline)
+- [ ] **Native milestone B**: game state in host layout (the 4 MB game
+      state block, data arrays, object memory); checkpoints/films save
+      and load it through explicit serialization (keeps old saves and
+      films readable)
+
+### 6.5 Presentation: rendering
+Today rendering is emulated at the GPU level (PM4 commands, Xenos
+shaders, EDRAM). A native renderer replaces that from the top down.
+- [ ] Decompile the rasterizer layer (`rasterizer_*`, render methods,
+      lights, water, particles, decorators, screen effects, the frame's
+      pass structure: G-buffer, lighting, transparents, post-processing)
+      in place, still issuing D3D calls to the emulated device
+- [ ] Shaders: Halo's shader tags hold compiled Xenos microcode; keep the
+      translator (gpu/shader) as the shader source, then move to the
+      HLSL-equivalent sources reconstructed from it per render method
+- [ ] Native render backend: the rasterizer calls a host renderer
+      (SDL_GPU or Vulkan) directly with typed state, instead of D3D 9 ->
+      PM4 -> command processor; textures and geometry from tag resources
+      without guest memory or EDRAM emulation
+- [ ] **Native milestone C**: the PM4 command processor, EDRAM emulation,
+      memexport compute variants and texture detiling are gone (kept
+      behind a switch until the native path matches the captures)
+- [ ] Then real improvements: native resolution without sample-space
+      targets, proper MSAA, high refresh rates, widescreen FOV, ultrawide
+
+### 6.6 Presentation: interface, audio, input
+- [ ] UI: the GUI screen system, widgets, CHUD (HUD), menus, the main
+      menu scene; text and fonts
+- [ ] Audio: the sound system (mixer, classes, environments, dialogue,
+      music state); decode XMA (and Bink audio) natively through FFmpeg
+      without the emulated XMA hardware contexts and XAudio driver
+- [ ] Video: Bink playback (FFmpeg's Bink decoder, or a decompiled
+      player) without the recompiled Bink library
+- [ ] Input: controller/keyboard/mouse straight into the game's input
+      layer (no emulated XInput)
+
+### 6.7 Platform layer
+The emulated Xbox 360 goes away as its callers become native.
+- [ ] Saves, profiles and content: host files (no emulated XContent,
+      cache partitions or NT file APIs)
+- [ ] Networking: LAN/online sessions over host sockets, or offline only
+      (Xbox Live services can't come back; system link could)
+- [ ] Threads, synchronization, timing: host primitives (no emulated
+      kernel objects, IRQL, interrupts, fibers)
+- [ ] Remove the HLE kernel/XAM layers piece by piece as their last
+      callers disappear (track imports still called)
+
+### 6.8 Third-party libraries
+Statically linked into the executable; each needs its own answer.
+- [ ] Direct3D 9 (static): disappears with the native renderer (6.5)
+- [ ] CRT / XAPI: host standard library (6.2, 6.7)
+- [ ] XAudio / XMA: FFmpeg (6.6)
+- [ ] Bink: FFmpeg or decompiled (6.6)
+- [ ] Havok (physics, collision; ~8% of the code; Havok 4.x, before the
+      2007 `hkp` renaming, as is the MCC PC build): **decided: stays the
+      last recompiled island.** The recompiled translation units are
+      already native x64 code; game code calls them through a thin
+      interface. To replace it last: decompile with the x64 Havok in
+      `halo3_tag_test.exe` as the readable reference (same 4.x generation:
+      34 of ~40 reflected class names match, no `hkp` names in either)
+      and the PowerPC code as the authority on exact arithmetic (fused
+      multiply-adds, rounding), checked against films like the rest. Off-the-shelf PC Havok SDKs don't
+      fit: commercial license, newer versions, and Halo's tags hold data
+      baked by this exact version (MOPP codes, shapes)
+
+### 6.9 Nativization and the end of the recompiled game
+- [ ] Data layout: host endianness and pointers everywhere (milestones A,
+      B, C done; the rest of the guest structures converted), 64-bit
+      clean
+- [ ] Remove the guest memory reservation (4 GB) once no code uses
+      guest addresses; remove `be<T>` from game code
+- [ ] **Native milestone D**: no recompiled game function linked; only
+      the Havok island (6.8) remains recompiled, behind its interface
+- [ ] Havok last: decompiled (from the x64 reference) or otherwise
+      replaced; then H3RecompLib, XenonRecomp and the PPC context are
+      dropped from the build
+- [ ] The game still needs the user's own disc data (maps, sounds,
+      videos): an asset loader reads them from the user's copy; no game
+      content in the repository
+- [ ] Portability: Windows and macOS builds (SDL already abstracts the
+      window, input and GPU), ARM64 (no x86 intrinsics left in game code)
+- [ ] Afterwards (the point of a native port): mod support (tags from
+      H3EK), new features, fixes the console version couldn't have
