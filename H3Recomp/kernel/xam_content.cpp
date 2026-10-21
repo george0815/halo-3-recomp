@@ -155,6 +155,8 @@ PPC_FUNC(__imp__XamShowDeviceSelectorUI)
 {
     if (ctx.r7.u32 != 0)
         GuestRef<uint32_t>(ctx.r7.u32) = kHardDriveId;
+    if (LogContent())
+        fprintf(stderr, "[xam] XamShowDeviceSelectorUI user %u type %08X flags %08X -> hard drive\n", ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     ctx.r3.u64 = CompleteOverlapped(ctx.r8.u32, kErrorSuccess);
 }
 
@@ -164,6 +166,8 @@ PPC_FUNC(__imp__XamShowDeviceSelectorUI)
 PPC_FUNC(__imp__XamContentGetDeviceData)
 {
     uint32_t data = ctx.r4.u32;
+    if (LogContent())
+        fprintf(stderr, "[xam] XamContentGetDeviceData device %u\n", ctx.r3.u32);
     if (ctx.r3.u32 != kHardDriveId || data == 0)
     {
         ctx.r3.u64 = kErrorFileNotFound;
@@ -314,7 +318,18 @@ PPC_FUNC(__imp__XamEnumerate)
             enumerator->itemSize);
     if (itemsOut != 0)
         GuestRef<uint32_t>(itemsOut) = count;
-    ctx.r3.u64 = CompleteOverlapped(overlapped, count != 0 ? kErrorSuccess : kErrorNoMoreFiles, count);
+    // Nothing (left) to return: a plain call gets ERROR_NO_MORE_FILES; an
+    // async one fails the XAM way, ERROR_FUNCTION_FAILED with the cause as
+    // an HRESULT. The content catalogue only accepts an empty enumeration
+    // in that form (sub_82580B30); anything else counts as a failed scan,
+    // the catalogue is thrown away, and saving a film fails with "Failed to
+    // save the film to your saved game storage".
+    if (count == 0)
+        ctx.r3.u64 = overlapped != 0
+            ? CompleteOverlappedEx(overlapped, kErrorFunctionFailed, HresultFromWin32(kErrorNoMoreFiles))
+            : kErrorNoMoreFiles;
+    else
+        ctx.r3.u64 = CompleteOverlapped(overlapped, kErrorSuccess, count);
 }
 
 // DWORD XamUserCreateAchievementEnumerator(DWORD titleId, DWORD userIndex, XUID xuid, DWORD flags,

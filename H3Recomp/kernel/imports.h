@@ -37,6 +37,16 @@ namespace h3::kernel
     // or `result` itself when there's no XOVERLAPPED.
     uint32_t CompleteOverlapped(uint32_t overlapped, uint32_t result, uint32_t length = 0);
 
+    // CompleteOverlapped with a separate extended error, for calls that
+    // report failure XAM's way: result ERROR_FUNCTION_FAILED and the cause
+    // as an HRESULT in dwExtendedError (XGetOverlappedExtendedError). The
+    // game checks for exactly that pair (e.g. an empty XamEnumerate:
+    // 1627 + 0x80070012, sub_82580B30).
+    uint32_t CompleteOverlappedEx(uint32_t overlapped, uint32_t result, uint32_t extendedError, uint32_t length = 0);
+
+    // HRESULT_FROM_WIN32: a Win32 error code as a failure HRESULT.
+    constexpr uint32_t HresultFromWin32(uint32_t error) { return error == 0 ? 0 : 0x80070000 | (error & 0xFFFF); }
+
     // The local profile signed in on user 0 (xam_user.cpp); offline XUIDs
     // start with 0xE.
     constexpr uint64_t kLocalUserXuid = 0xE000000048330001ull;

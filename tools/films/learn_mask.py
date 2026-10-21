@@ -8,15 +8,19 @@ The records come from run_film.sh --record (H3_STATE_RECORD): every game
 tick's raw state as the words that changed since the previous tick. Both
 replays are rebuilt tick by tick over the film's level (from the last tick
 counter reset), each one against the first, and every word that differs at
-any tick becomes a rule (format: debug/state_hash.cpp):
+any tick becomes a rule (format: debug/state_hash.cpp). A windowed record
+(H3_STATE_RECORD_TICKS, as learn_film.sh makes) holds only level copies and
+numbers them by level time, so its "ticks" are level times:
 
     array <name>             in a data array other than "object"
     object <tag> <offset>    in an object: that field of every object with
                              the same definition tag
     after <name>             in the memory between an array and the next one
-    after <name> @ <offset>  the same in a gap over 128 KB: just that 64-byte
+    after <name> @ <offset>  the same in a gap over 16 KB: just that 64-byte
                              block (big gaps hold other subsystems' state)
     word <offset>            before the first array (the game globals)
+    free object memory       object memory no live object uses (past each
+                             object's size: deleted objects' stale bytes)
 
 "learn" writes the --known rules plus the new ones; "check" lists the words
 a mask leaves differing (none means the replays hash alike). One pair of
@@ -29,6 +33,7 @@ rules before trusting a mask (tools/films/README.md).
 """
 import array
 import bisect
+import concurrent.futures
 import re
 import struct
 import sys
@@ -41,8 +46,10 @@ ARRAY_TOTAL_BYTES = 0x50
 ARRAY_HEADER_BYTES = 0x54
 OBJECT_HANDLE_BYTES = 16      # "object" array element: +12 the object's address
 OBJECT_HANDLE_DATA = 12
-MAX_OBJECT_BYTES = 0x4000
-GAP_BLOCK, GAP_BLOCK_LIMIT = 64, 0x20000
+OBJECT_HANDLE_SIZE = 6        # u16: the object's size in bytes
+# Gaps over GAP_BLOCK_LIMIT get 64-byte block rules: a whole-gap rule
+# there hides too much (the 126 KB after "players" holds other globals).
+GAP_BLOCK, GAP_BLOCK_LIMIT = 64, 0x4000
 
 
 def records(path):
@@ -53,15 +60,30 @@ def records(path):
             if len(header) < 8:
                 return
             tick, count = struct.unpack('<2I', header)
+            body = f.read(count * 8)
+            if len(body) < count * 8:
+                return  # cut off when the run was stopped: not a whole copy
             pairs = array.array('I')
-            pairs.frombytes(f.read(count * 8))
+            pairs.frombytes(body)
             yield tick, pairs[0::2], pairs[1::2]
+
+
+def ticks(path):
+    """Yields each copy's tick, seeking past the words (records are GBs)."""
+    with open(path, 'rb') as f:
+        while True:
+            header = f.read(8)
+            if len(header) < 8:
+                return
+            tick, count = struct.unpack('<2I', header)
+            f.seek(count * 8, 1)
+            yield tick
 
 
 def level_start(path):
     """Index of the copy where the tick counter last reset (the level)."""
     last, start = None, 0
-    for i, (tick, _, _) in enumerate(records(path)):
+    for i, tick in enumerate(ticks(path)):
         if last is not None and tick < last:
             start = i
         last = tick
@@ -82,7 +104,7 @@ def find_arrays(state):
 
 
 def find_objects(state, words, arrays):
-    """(offset, definition tag) of every live object, by offset."""
+    """(offset, definition tag, size) of every live object, by offset."""
     pool = [a for a in arrays if a[2] == 'object']
     if not pool:
         return []
@@ -96,8 +118,15 @@ def find_objects(state, words, arrays):
         pointer = words[handle // 4]
         if pointer and 0 < pointer - address < len(state):
             offset = pointer - address
-            out.append((offset, words[offset // 4]))
+            size_at = start + lm_handle_size(slot)
+            size = struct.unpack('>H', state[size_at:size_at + 2])[0]
+            out.append((offset, words[offset // 4], size))
     return sorted(out)
+
+
+def lm_handle_size(slot):
+    """Offset of an object handle's size field from the array's start."""
+    return ARRAY_HEADER_BYTES + slot * OBJECT_HANDLE_BYTES + OBJECT_HANDLE_SIZE
 
 
 def classify(state, arrays, objects, offset):
@@ -107,8 +136,14 @@ def classify(state, arrays, objects, offset):
             return ('array', name)
     pool = [a for a in arrays if a[2] == 'object']
     k = bisect.bisect_right([o[0] for o in objects], offset) - 1
-    if pool and k >= 0 and offset >= pool[0][1] and offset - objects[k][0] < MAX_OBJECT_BYTES:
-        return ('object', f'{objects[k][1]:08x}', f'{offset - objects[k][0]:x}')
+    if pool and k >= 0 and offset >= pool[0][1]:
+        start, tag, size = objects[k]
+        if offset - start < size:
+            return ('object', f'{tag:08x}', f'{offset - start:x}')
+        # Past the object's end, before the next array: object memory no
+        # live object uses (stale bytes of deleted ones).
+        if offset < min([a[0] for a in arrays if a[0] >= pool[0][1]] + [len(state)]):
+            return ('free', 'object', 'memory')
     before = [a for a in arrays if a[1] <= offset]
     if before:
         prev = max(before, key=lambda a: a[1])
@@ -194,11 +229,25 @@ def differences(paths, known):
                 differ.discard(k)
 
 
+def pair_differences(pair, known):
+    """differences() for a worker process: its exit message as a result."""
+    try:
+        return differences(pair, known)
+    except SystemExit as error:
+        return str(error)
+
+
 def against_first(paths, known):
-    """differences() of each record against the first, merged."""
+    """differences() of each record against the first, merged. The pairs
+    run in parallel (each is a long pure-Python pass over GBs of records)."""
+    pairs = [[paths[0], path] for path in paths[1:]]
+    with concurrent.futures.ProcessPoolExecutor(len(pairs)) as pool:
+        results = list(pool.map(pair_differences, pairs, [known] * len(pairs)))
     found = {}
-    for path in paths[1:]:
-        for rule, tick in differences([paths[0], path], known).items():
+    for result in results:
+        if isinstance(result, str):
+            sys.exit(result)
+        for rule, tick in result.items():
             found[rule] = min(tick, found.get(rule, tick))
     return found
 

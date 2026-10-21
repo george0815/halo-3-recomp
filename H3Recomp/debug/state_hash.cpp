@@ -10,6 +10,22 @@
 //                        word as stored)" with the words that changed since
 //                        the previous copy (the first copy: all of them).
 //                        learn_mask.py --record rebuilds every tick from it
+// H3_STATE_RECORD_TICKS=<first>-<last>[,<first>-<last>...]
+//                        records only those spans of level time (below; the
+//                        first copy recorded is complete; after a gap the
+//                        next copy holds every word changed since the last
+//                        one recorded), so a long film can be recorded
+//                        around its divergences (~160 KB per tick). The record's tick field is then the level
+//                        time. Copy numbers don't line up between runs;
+//                        level times do.
+//
+// Level time counts the copies of the level (from the first drop of the
+// tick counter to below kLevelStartTicks: the menus count from 0 too) whose
+// tick differs from the previous copy's: game ticks played. Unlike the game
+// tick it keeps going up when a checkpoint revert (the player died in the
+// film) sends the tick counter back. Copies repeating the previous tick
+// (Theater holding at the film's end) don't count and aren't recorded.
+// tools/films/compare_hashes.py works out the same from H3_STATE_HASH.
 //
 // The game copies its whole 4 MB game state once per tick (checkpoints and
 // revert), which is where this hooks in. Runs only replay alike with
@@ -26,6 +42,9 @@
 //   object <tag> <offset>  a 32-bit field of every object whose definition
 //                          tag (the object's first word) is <tag>
 //   word <offset>          one 32-bit word of the state (its globals)
+//   free object memory     object memory that no live object uses (after
+//                          the "object" array, past each object's size):
+//                          deleted objects' stale bytes, not game state
 //
 // Tags and offsets are hex. Data arrays are found by their "d@t@"
 // signature (header layout below); objects through the "object" array's
@@ -35,6 +54,7 @@
 #include "config/env.h"
 
 #include <algorithm>
+#include <utility>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -50,6 +70,9 @@ namespace
     // Offset of the game's tick counter in the game state (big-endian;
     // ticks since the level started: game_time_globals' elapsed ticks).
     constexpr uint32_t kTickOffset = 0x220;
+    // A tick counter drop to below this starts the level (compare_hashes.py
+    // LEVEL_START_TICKS); a revert goes back to its checkpoint's tick.
+    constexpr uint32_t kLevelStartTicks = 100;
 
     // Data array header (0x54 bytes, the elements follow it):
     //   +0x00 char[32] name     +0x20 s32 maximum count  +0x24 s32 element size
@@ -67,8 +90,7 @@ namespace
     // address of the object's data (0 = free slot).
     constexpr uint32_t kObjectHandleBytes = 16;
     constexpr uint32_t kObjectHandleData = 12;
-    // Objects are at most this big (bipeds ~0x26D0): bounds a field rule.
-    constexpr uint32_t kMaxObjectBytes = 0x4000;
+    constexpr uint32_t kObjectHandleSize = 6;  // u16: the object's size in bytes
 
     uint32_t Load32(const uint8_t* p)
     {
@@ -107,9 +129,11 @@ namespace
         std::vector<std::pair<std::string, uint32_t>> afterBlocks;  // array, offset past its end
         std::unordered_map<uint32_t, std::vector<uint32_t>> objectFields;  // tag -> offsets
         std::vector<uint32_t> words;
+        bool freeObjectMemory = false;
         bool Empty() const
         {
-            return arrays.empty() && after.empty() && afterBlocks.empty() && objectFields.empty() && words.empty();
+            return arrays.empty() && after.empty() && afterBlocks.empty() && objectFields.empty() && words.empty() &&
+                !freeObjectMemory;
         }
     };
 
@@ -126,6 +150,10 @@ namespace
         while (fgets(line, sizeof(line), file))
         {
             std::string text(line);
+            // A line longer than the buffer (learn_mask.py's header comment
+            // lists the records): read the rest so it isn't taken for rules.
+            while (!text.empty() && text.back() != '\n' && fgets(line, sizeof(line), file))
+                text += line;
             while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' '))
                 text.pop_back();
             if (text.empty() || text[0] == '#')
@@ -133,7 +161,9 @@ namespace
             size_t space = text.find(' ');
             std::string kind = text.substr(0, space), rest = space == std::string::npos ? "" : text.substr(space + 1);
             unsigned tag, offset;
-            if (kind == "array")
+            if (text == "free object memory")
+                mask.freeObjectMemory = true;
+            else if (kind == "array")
                 mask.arrays.push_back(rest);
             else if (kind == "after" && rest.find(" @ ") != std::string::npos)
                 mask.afterBlocks.push_back({ rest.substr(0, rest.find(" @ ")), uint32_t(strtoul(rest.c_str() + rest.find(" @ ") + 3, nullptr, 16)) });
@@ -159,6 +189,45 @@ namespace
     }
 
     // Zeroes what the mask names in out (a copy of the state at address).
+    // "free object memory": zeroes the object memory after the "object"
+    // array (up to the next array) that no live object covers, from the
+    // first live object on (what comes before is the pool's own header).
+    void ClearFreeObjectMemory(const std::vector<DataArray>& arrays, const DataArray& objects, uint8_t* out,
+        uint32_t bytes, uint32_t address)
+    {
+        uint32_t gapEnd = bytes;
+        for (const DataArray& other : arrays)
+            if (other.start >= objects.end && other.start < gapEnd)
+                gapEnd = other.start;
+        static std::vector<std::pair<uint32_t, uint32_t>> live;  // start, end
+        live.clear();
+        int32_t count = int32_t(Load32(out + objects.start + kArrayMaxCount));
+        for (int32_t slot = 0; slot < count; slot++)
+        {
+            uint32_t handle = objects.start + kArrayHeaderBytes + uint32_t(slot) * kObjectHandleBytes;
+            if (handle + kObjectHandleBytes > objects.end)
+                break;
+            uint32_t pointer = Load32(out + handle + kObjectHandleData);
+            uint32_t object = pointer - address;
+            if (!pointer || object < objects.end || object >= gapEnd)
+                continue;
+            uint32_t size = uint32_t(out[handle + kObjectHandleSize]) << 8 | out[handle + kObjectHandleSize + 1];
+            live.push_back({ object, std::min(object + size, gapEnd) });
+        }
+        if (live.empty())
+            return;
+        std::sort(live.begin(), live.end());
+        uint32_t cursor = live.front().first;
+        for (const auto& [start, end] : live)
+        {
+            if (start > cursor)
+                memset(out + cursor, 0, start - cursor);
+            cursor = std::max(cursor, end);
+        }
+        if (gapEnd > cursor)
+            memset(out + cursor, 0, gapEnd - cursor);
+    }
+
     void ApplyMask(const Mask& mask, uint8_t* out, uint32_t bytes, uint32_t address)
     {
         // PERF: rescans 4 MB for array headers every tick (~1 ms); the
@@ -167,6 +236,8 @@ namespace
         for (size_t i = 0; i < arrays.size(); i++)
         {
             const DataArray& array = arrays[i];
+            if (array.name == "object" && mask.freeObjectMemory)
+                ClearFreeObjectMemory(arrays, array, out, bytes, address);
             if (array.name == "object")
             {
                 // Object fields first: the handles live in this array.
@@ -182,8 +253,12 @@ namespace
                     auto fields = mask.objectFields.find(Load32(out + object));
                     if (fields == mask.objectFields.end())
                         continue;
+                    // Bounded by the object's own size (as learn_mask.py
+                    // classifies fields): some objects are over 0x4000
+                    // bytes (Tsavo has fields to mask at 0x4980).
+                    uint32_t size = uint32_t(out[handle + kObjectHandleSize]) << 8 | out[handle + kObjectHandleSize + 1];
                     for (uint32_t field : fields->second)
-                        if (field < kMaxObjectBytes && object + field + 4 <= bytes)
+                        if (field + 4 <= size && object + field + 4 <= bytes)
                             memset(out + object + field, 0, 4);
                 }
             }
@@ -229,6 +304,10 @@ namespace
         uint32_t header[2] = { tick, uint32_t(changes.size() / 2) };
         fwrite(header, sizeof(header), 1, file);
         fwrite(changes.data(), sizeof(uint32_t), changes.size(), file);
+        // Complete copies only: the run is usually stopped by a signal,
+        // which would drop whatever stdio still buffers (learn_mask.py then
+        // saw a half-applied copy as whole objects differing).
+        fflush(file);
     }
 
     // H3_STATE_DUMP: whether tick is in the list.
@@ -270,6 +349,7 @@ void h3::debug::OnGameStateCopy(const uint8_t* state, uint32_t bytes, uint32_t a
         hashed = masked.data();
     }
     static uint64_t copies = 0;
+    uint64_t copy = copies;
     fprintf(out, "%llu %u %016llx\n", (unsigned long long)copies++, tick, (unsigned long long)XXH3_64bits(hashed, bytes));
     fflush(out);
 
@@ -277,8 +357,36 @@ void h3::debug::OnGameStateCopy(const uint8_t* state, uint32_t bytes, uint32_t a
         const char* path = EnvString("H3_STATE_RECORD");
         return path ? fopen(path, "wb") : nullptr;
     }();
-    if (record)
-        Record(record, state, bytes, tick);
+    // Level time (top of the file); held: this copy repeats the last tick.
+    static uint32_t lastTick = 0;
+    static bool inLevel = false;
+    static uint32_t levelTime = 0;
+    bool held = copy != 0 && tick == lastTick;
+    if (!inLevel && copy != 0 && tick < lastTick && tick < kLevelStartTicks)
+        inLevel = true;
+    else if (inLevel && !held)
+        levelTime++;
+    lastTick = tick;
+    static const std::vector<std::pair<uint32_t, uint32_t>> recordSpans = [] {
+        std::vector<std::pair<uint32_t, uint32_t>> spans;
+        const char* spec = EnvString("H3_STATE_RECORD_TICKS");
+        while (spec && *spec)
+        {
+            char* end;
+            uint32_t first = uint32_t(strtoul(spec, &end, 10));
+            uint32_t last = *end == '-' ? uint32_t(strtoul(end + 1, &end, 10)) : first;
+            spans.push_back({ first, last });
+            spec = *end == ',' ? end + 1 : "";
+        }
+        return spans;
+    }();
+    static const bool windowed = EnvString("H3_STATE_RECORD_TICKS") != nullptr;
+    bool inWindow = !windowed;
+    if (windowed && inLevel && !held)
+        for (const auto& [first, last] : recordSpans)
+            inWindow = inWindow || (levelTime >= first && levelTime <= last);
+    if (record && inWindow)
+        Record(record, state, bytes, windowed ? levelTime : tick);
 
     static const char* dumps = EnvString("H3_STATE_DUMP");
     if (dumps && DumpRequested(dumps, tick))

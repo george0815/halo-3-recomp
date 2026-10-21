@@ -14,6 +14,19 @@ fails at that tick.
   film's level; exits 1 and prints the first differing tick if any differs.
 - `learn_mask.py learn|check`: learns which cosmetic state to leave out of
   the checksum from recorded replays (below).
+- `learn_film.sh <name> <index> <film seconds>`: "Adding a film" below,
+  automated for full-length films: two full replays, then records just the
+  ticks around the first difference (`H3_STATE_RECORD_TICKS`), learns, and
+  repeats until the replays match; keeps `private/films/<name>.mask`,
+  `<name>.hash.txt` (the reference) and `<name>.rules.log` (what each round
+  added, to read).
+- `run_library.sh <out dir> [--native]`: every film in
+  `private/films/library.txt` against its reference (and with
+  `H3_CHECK_NATIVE`): the regression test for a changed build.
+
+Test runs use `H3_FILM_DATA` (`private/films_data`: links to the game files
+plus a copy of `hdd/`), so they never write to the real save data. A run
+stops by itself when the film is over (the tick stops advancing).
 
 ## Why replays need help to match
 
@@ -41,7 +54,9 @@ state's million words on every tick, without the game itself diverging
 ## Adding a film
 
 Save the film to the library in Theater (Recent Films only keeps the last
-few). Then, per film:
+few), copy `hdd/` into `private/films_data/`, add the film to
+`private/films/library.txt` (indexes are newest first: saving a film moves
+the others down) and run `learn_film.sh`. By hand, per film:
 
 ```sh
 F=private/films/run          # any scratch directory
@@ -69,8 +84,8 @@ that's what a changed build is compared against.
 
 - Navigation is scripted by frame number from the main menu with the
   cursor on THEATER (`H3_FILM_PREFS`: a `preferences.dat` that leaves it
-  there). Only Recent Films (category 0) has been tried; the other
-  categories should work the same way but haven't been checked.
+  there). Recent Films (category 0) and Campaign (category 3, films saved
+  to the library) have been checked; the others should work the same way.
 - Learned on Sierra 117 only. Data array names and object tags come from
   the level, so each film needs its own mask.
 - Physics (Havok) keeps its own state outside the game state; it shows up

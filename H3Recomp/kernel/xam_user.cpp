@@ -206,11 +206,16 @@ namespace
 // Shared by the xam exports that take an XOVERLAPPED.
 uint32_t h3::kernel::CompleteOverlapped(uint32_t overlapped, uint32_t result, uint32_t length)
 {
+    return CompleteOverlappedEx(overlapped, result, result, length);
+}
+
+uint32_t h3::kernel::CompleteOverlappedEx(uint32_t overlapped, uint32_t result, uint32_t extendedError, uint32_t length)
+{
     if (overlapped == 0)
         return result;
-    GuestRef<uint32_t>(overlapped) = result;         // InternalLow
-    GuestRef<uint32_t>(overlapped + 4) = length;     // InternalHigh
-    GuestRef<uint32_t>(overlapped + 0x18) = result;  // dwExtendedError
+    GuestRef<uint32_t>(overlapped) = result;                // InternalLow
+    GuestRef<uint32_t>(overlapped + 4) = length;            // InternalHigh
+    GuestRef<uint32_t>(overlapped + 0x18) = extendedError;  // dwExtendedError
     uint32_t eventHandle = GuestRef<uint32_t>(overlapped + 0xC);
     if (eventHandle != 0)
         if (auto event = LookupHandleAs<Event>(eventHandle))
