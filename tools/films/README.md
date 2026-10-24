@@ -12,14 +12,23 @@ fails at that tick.
   for the details.
 - `compare_hashes.py <reference> <run>`: compares two `hash.txt` over the
   film's level; exits 1 and prints the first differing tick if any differs.
-- `learn_mask.py learn|check`: learns which cosmetic state to leave out of
-  the checksum from recorded replays (below).
+- `learn_mask.py learn|check|dumps`: learns which cosmetic state to leave
+  out of the checksum from recorded replays (below), or from raw state
+  dumps (`run_film.sh --dump`).
 - `learn_film.sh <name> <index> <film seconds>`: "Adding a film" below,
   automated for full-length films: two full replays, then records just the
   ticks around the first difference (`H3_STATE_RECORD_TICKS`), learns, and
-  repeats until the replays match; keeps `private/films/<name>.mask`,
+  repeats until the replays match. When the records all agree (recording
+  slows a replay, and some races only go both ways at full speed), it
+  dumps raw states in those stretches from unrecorded replays and learns
+  from the dumps instead. Keeps `private/films/<name>.mask`,
   `<name>.hash.txt` (the reference) and `<name>.rules.log` (what each round
-  added, to read).
+  added, to read). `--jobs 2` runs the full pair and the records two at a
+  time, each in its own data directory (`H3_FILM_DATA_SLOTS`, default
+  `private/films_data:private/films_data2`; the game writes to `hdd/` and
+  `shadercache/`, so they can't be shared). A parallel pair that matches is
+  confirmed by one more replay run alone at full speed; dumps always run
+  alone.
 - `run_library.sh <out dir> [--native]`: every film in
   `private/films/library.txt` against its reference (and with
   `H3_CHECK_NATIVE`): the regression test for a changed build.

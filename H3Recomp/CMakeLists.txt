@@ -33,7 +33,9 @@ add_executable(H3Recomp
     debug/write_watch.cpp
     hooks/block_copy.cpp
     hooks/campaign.cpp
+    hooks/damage_log.cpp
     hooks/fibers.cpp
+    hooks/player_effects.cpp
     hooks/random_seed.cpp
     hooks/tick_rate.cpp
     hooks/xma.cpp

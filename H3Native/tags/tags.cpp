@@ -112,6 +112,11 @@ namespace h3::native::tags
         return 0;
     }
 
+    uint32_t TagDataBySlot(uint32_t slot)
+    {
+        return GuestRef<uint32_t>(GuestRef<uint32_t>(kTagInstances) + slot * kInstanceBytes + kInstanceAddress);
+    }
+
     // H3_CHECK_TAGS: compares the loaded tag index (once per map load) with
     // the native reader's parse of the same cache file, found among
     // game:\maps by its tag index checksum. Called once per presented frame.

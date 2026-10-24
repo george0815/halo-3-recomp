@@ -3,8 +3,11 @@
 //
 // H3_STATE_HASH=<file>   appends "<copy number> <game tick> <hash>" per copy
 // H3_STATE_MASK=<file>   leaves cosmetic state out of the hash (below)
-// H3_STATE_DUMP=<t>,...  also saves the raw state at those ticks as
-//                        state_<tick>.bin in the working directory
+// H3_STATE_DUMP=<t>,...  also saves the raw state at those level times
+//                        (below; what compare_hashes.py reports) as
+//                        state_<level time>.bin in the working directory.
+//                        Not game ticks: a checkpoint revert replays ticks,
+//                        which overwrote the first copy's dump
 // H3_STATE_RECORD=<file> records every tick's raw state compactly: per
 //                        copy "u32 tick, u32 n, n x (u32 word index, u32
 //                        word as stored)" with the words that changed since
@@ -19,8 +22,10 @@
 //                        time. Copy numbers don't line up between runs;
 //                        level times do.
 //
-// Level time counts the copies of the level (from the first drop of the
-// tick counter to below kLevelStartTicks: the menus count from 0 too) whose
+// Level time counts the copies of the level (from the last drop of the
+// tick counter to below kLevelStartTicks: the menus count from 0 too, and
+// Ark and Crow's Nest reset it again ~6000 ticks in; compare_hashes.py
+// counts from the last drop as well) whose
 // tick differs from the previous copy's: game ticks played. Unlike the game
 // tick it keeps going up when a checkpoint revert (the player died in the
 // film) sends the tick counter back. Copies repeating the previous tick
@@ -310,11 +315,11 @@ namespace
         fflush(file);
     }
 
-    // H3_STATE_DUMP: whether tick is in the list.
-    bool DumpRequested(const char* list, uint32_t tick)
+    // H3_STATE_DUMP: whether this level time is in the list.
+    bool DumpRequested(const char* list, uint32_t levelTime)
     {
         char key[24];
-        snprintf(key, sizeof(key), ",%u,", tick);
+        snprintf(key, sizeof(key), ",%u,", levelTime);
         return strstr((std::string(",") + list + ",").c_str(), key) != nullptr;
     }
 }
@@ -362,8 +367,11 @@ void h3::debug::OnGameStateCopy(const uint8_t* state, uint32_t bytes, uint32_t a
     static bool inLevel = false;
     static uint32_t levelTime = 0;
     bool held = copy != 0 && tick == lastTick;
-    if (!inLevel && copy != 0 && tick < lastTick && tick < kLevelStartTicks)
+    if (copy != 0 && tick < lastTick && tick < kLevelStartTicks)
+    {
         inLevel = true;
+        levelTime = 0;
+    }
     else if (inLevel && !held)
         levelTime++;
     lastTick = tick;
@@ -389,10 +397,10 @@ void h3::debug::OnGameStateCopy(const uint8_t* state, uint32_t bytes, uint32_t a
         Record(record, state, bytes, windowed ? levelTime : tick);
 
     static const char* dumps = EnvString("H3_STATE_DUMP");
-    if (dumps && DumpRequested(dumps, tick))
+    if (dumps && inLevel && !held && DumpRequested(dumps, levelTime))
     {
         char name[40];
-        snprintf(name, sizeof(name), "state_%u.bin", tick);
+        snprintf(name, sizeof(name), "state_%u.bin", levelTime);
         if (FILE* file = fopen(name, "wb"))
         {
             fwrite(state, 1, bytes, file);

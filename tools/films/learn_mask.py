@@ -26,6 +26,16 @@ numbers them by level time, so its "ticks" are level times:
 a mask leaves differing (none means the replays hash alike). One pair of
 replays doesn't show every cosmetic field: learn from five or six.
 
+    learn_mask.py dumps <out mask> <run dir> <run dir>... [--known <mask>]
+
+learns the same way from raw states (run_film.sh --dump: state_<level
+time>.bin in each run dir) instead of records: each dump against the first
+run's at the same level time, each differing word classified in both
+states' layouts. For races records can't catch: recording slows a replay
+down, and some differences only show at full speed (Floodgate: five
+records of a stretch always agreed while every full pair differed there).
+Dumps only compare what differs at those level times, not between them.
+
 What differs between replays with H3_RANDOM_SEED and H3_LOCKSTEP is
 cosmetic (effects, HUD, a few object fields that depend on when
 asynchronous loads finish), but a learned rule can't tell: read the new
@@ -34,6 +44,7 @@ rules before trusting a mask (tools/films/README.md).
 import array
 import bisect
 import concurrent.futures
+import os
 import re
 import struct
 import sys
@@ -103,24 +114,24 @@ def find_arrays(state):
     return sorted(out)
 
 
-def find_objects(state, words, arrays):
-    """(offset, definition tag, size) of every live object, by offset."""
+def find_objects(state, arrays):
+    """(offset, definition tag, size) of every live object, by offset. The
+    state is any bytes-like view (big-endian words, as in guest memory)."""
     pool = [a for a in arrays if a[2] == 'object']
     if not pool:
         return []
     start = pool[0][0]
-    count = struct.unpack('>i', state[start + ARRAY_MAX_COUNT:start + ARRAY_MAX_COUNT + 4])[0]
-    elements = struct.unpack('>I', state[start + ARRAY_ELEMENTS:start + ARRAY_ELEMENTS + 4])[0]
+    count = struct.unpack_from('>i', state, start + ARRAY_MAX_COUNT)[0]
+    elements = struct.unpack_from('>I', state, start + ARRAY_ELEMENTS)[0]
     address = elements - (start + ARRAY_HEADER_BYTES)  # guest address of the state
     out = []
     for slot in range(count):
         handle = start + ARRAY_HEADER_BYTES + slot * OBJECT_HANDLE_BYTES + OBJECT_HANDLE_DATA
-        pointer = words[handle // 4]
+        pointer = struct.unpack_from('>I', state, handle & ~3)[0]
         if pointer and 0 < pointer - address < len(state):
             offset = pointer - address
-            size_at = start + lm_handle_size(slot)
-            size = struct.unpack('>H', state[size_at:size_at + 2])[0]
-            out.append((offset, words[offset // 4], size))
+            size = struct.unpack_from('>H', state, start + lm_handle_size(slot))[0]
+            out.append((offset, struct.unpack_from('>I', state, offset & ~3)[0], size))
     return sorted(out)
 
 
@@ -129,29 +140,60 @@ def lm_handle_size(slot):
     return ARRAY_HEADER_BYTES + slot * OBJECT_HANDLE_BYTES + OBJECT_HANDLE_SIZE
 
 
-def classify(state, arrays, objects, offset):
-    """The rule that masks the word at offset."""
-    for start, end, name in arrays:
-        if start <= offset < end and name != 'object':
-            return ('array', name)
-    pool = [a for a in arrays if a[2] == 'object']
-    k = bisect.bisect_right([o[0] for o in objects], offset) - 1
-    if pool and k >= 0 and offset >= pool[0][1]:
-        start, tag, size = objects[k]
-        if offset - start < size:
-            return ('object', f'{tag:08x}', f'{offset - start:x}')
-        # Past the object's end, before the next array: object memory no
-        # live object uses (stale bytes of deleted ones).
-        if offset < min([a[0] for a in arrays if a[0] >= pool[0][1]] + [len(state)]):
-            return ('free', 'object', 'memory')
-    before = [a for a in arrays if a[1] <= offset]
-    if before:
-        prev = max(before, key=lambda a: a[1])
-        following = min([a[0] for a in arrays if a[0] >= prev[1]] + [len(state)])
-        if following - prev[1] > GAP_BLOCK_LIMIT:
-            return ('after', prev[2], f'{(offset - prev[1]) & ~(GAP_BLOCK - 1):x}')
-        return ('after', prev[2])
-    return ('word', f'{offset:x}')
+class Layout:
+    """Where everything is in one state (its arrays and live objects), with
+    the lookups rule() needs built once: a learn pass classifies
+    thousands of words per tick against the same layout.
+
+    rule(offset) is the rule that masks the word at offset:
+      - in a data array other than "object": that array
+      - in a live object: that field of its definition tag
+      - past a live object's end, before the next array: free object memory
+      - between arrays: the gap after the array that ends last before it
+        (a 64-byte block of it in gaps over GAP_BLOCK_LIMIT)
+      - before every array: the global word itself
+    """
+
+    def __init__(self, arrays, objects, size):
+        self.objects = objects
+        self.others = [a for a in arrays if a[2] != 'object']  # first match wins
+        self.object_starts = [o[0] for o in objects]
+        pool = [a for a in arrays if a[2] == 'object']
+        self.pool_end = pool[0][1] if pool else None
+        if pool:
+            # Free object memory runs up to the next array after the pool.
+            self.free_end = min([a[0] for a in arrays if a[0] >= self.pool_end] + [size])
+        # The gap an offset is in: the array with the latest end at or
+        # before it (the first such array on a tie), and the next array's
+        # start after that end.
+        self.ends, self.gaps = sorted({a[1] for a in arrays}), []
+        first_by_end = {}
+        for a in arrays:
+            first_by_end.setdefault(a[1], a)
+        for end in self.ends:
+            following = min([a[0] for a in arrays if a[0] >= end] + [size])
+            self.gaps.append((first_by_end[end][2], end, following))
+
+    def rule(self, offset):
+        for start, end, name in self.others:
+            if start <= offset < end:
+                return ('array', name)
+        k = bisect.bisect_right(self.object_starts, offset) - 1
+        if self.pool_end is not None and k >= 0 and offset >= self.pool_end:
+            start, tag, size = self.objects[k]
+            if offset - start < size:
+                return ('object', f'{tag:08x}', f'{offset - start:x}')
+            # Past the object's end, before the next array: object memory no
+            # live object uses (stale bytes of deleted ones).
+            if offset < self.free_end:
+                return ('free', 'object', 'memory')
+        g = bisect.bisect_right(self.ends, offset) - 1
+        if g >= 0:
+            name, end, following = self.gaps[g]
+            if following - end > GAP_BLOCK_LIMIT:
+                return ('after', name, f'{(offset - end) & ~(GAP_BLOCK - 1):x}')
+            return ('after', name)
+        return ('word', f'{offset:x}')
 
 
 def covered(rule, mask):
@@ -198,19 +240,26 @@ def differences(paths, known):
     if tick != tick_b:
         sys.exit(f'the records start their level at different ticks ({tick}, {tick_b})')
     differ = {i for i in range(len(a)) if a[i] != b[i]}
-    found, arrays = {}, None
+    # The recorded words are the state's bytes as stored: a byte view of
+    # them is the state, without copying 4 MB a tick.
+    state = memoryview(a).cast('B')
+    found, arrays, layout, rules = {}, None, None, {}
     while True:
         if differ:
-            state = a.tobytes()  # the recorded words are the state's bytes as stored
-            words = array.array('I', a)
-            words.byteswap()
             if arrays is None:
-                arrays = find_arrays(state)  # fixed within a level
-            objects = find_objects(state, words, arrays)
+                arrays = find_arrays(bytes(state))  # fixed within a level
+            objects = find_objects(state, arrays)
+            # A word's rule depends only on the layout: while the objects
+            # stay put, only words that just started differing need one
+            # (PERF: re-classifying every differing word every tick was
+            # most of a learn pass).
+            if layout is None or objects != layout.objects:
+                layout, rules = Layout(arrays, objects, len(state)), {}
             for i in differ:
-                rule = classify(state, arrays, objects, i * 4)
-                if not covered(rule, known):
-                    found.setdefault(rule, tick)
+                if i not in rules:
+                    rule = rules[i] = layout.rule(i * 4)
+                    if not covered(rule, known):
+                        found.setdefault(rule, tick)
         try:
             tick, ia, va = next(it_a)
             tick_b, ib, vb = next(it_b)
@@ -252,6 +301,64 @@ def against_first(paths, known):
     return found
 
 
+# Bytes compared at once when looking for the words two dumps differ in
+# (most of a 4 MB state matches: skip it a chunk at a time).
+DUMP_CHUNK = 4096
+
+
+def dump_layout(state):
+    """The Layout of a raw state (big-endian, as in guest memory)."""
+    arrays = find_arrays(state)
+    return Layout(arrays, find_objects(state, arrays), len(state))
+
+
+def dump_differences(dirs, known):
+    """{rule: first level time} for the words each run's dumps differ in from
+    the first run's, the known rules aside."""
+    pattern = re.compile(r'state_(\d+)\.bin$')
+    times = sorted(int(m.group(1)) for name in os.listdir(dirs[0])
+                   if (m := pattern.match(name)))
+    found = {}
+    for time in times:
+        name = f'state_{time}.bin'
+        a = open(os.path.join(dirs[0], name), 'rb').read()
+        layout_a = None
+        for other in dirs[1:]:
+            path = os.path.join(other, name)
+            if not os.path.exists(path):
+                continue
+            b = open(path, 'rb').read()
+            if len(b) != len(a):
+                sys.exit(f'{path}: {len(b)} bytes, {dirs[0]}/{name} {len(a)}')
+            if a == b:
+                continue
+            differ = [i for c in range(0, len(a), DUMP_CHUNK) if a[c:c + DUMP_CHUNK] != b[c:c + DUMP_CHUNK]
+                      for i in range(c, min(c + DUMP_CHUNK, len(a)), 4) if a[i:i + 4] != b[i:i + 4]]
+            layout_a = layout_a or dump_layout(a)
+            layout_b = dump_layout(b)
+            for i in differ:
+                for layout in (layout_a, layout_b):
+                    rule = layout.rule(i)
+                    if not covered(rule, known):
+                        found.setdefault(rule, time)
+    return found
+
+
+def write_mask(out, known, new, sources):
+    """The known rules plus the new ones, sorted, in mask format."""
+    with open(out, 'w') as f:
+        f.write(f'# H3_STATE_MASK learned by learn_mask.py from {" ".join(sources)}\n')
+        for rule in sorted(known | set(new)):
+            f.write(format_rule(rule) + '\n')
+
+
+def print_new(new):
+    """The new rules as learn_film.sh reads them: "<first tick> <rule>"."""
+    print(f'{len(new)} new rules (first tick each):')
+    for rule, tick in sorted(new.items(), key=lambda r: r[1]):
+        print(f'  {tick:6d}  {format_rule(rule)}')
+
+
 def main():
     args = sys.argv[1:]
     known = set()
@@ -262,13 +369,13 @@ def main():
     if len(args) >= 4 and args[0] == 'learn':
         out, paths = args[1], args[2:]
         new = against_first(paths, known)
-        with open(out, 'w') as f:
-            f.write(f'# H3_STATE_MASK learned by learn_mask.py from {" ".join(paths)}\n')
-            for rule in sorted(known | set(new)):
-                f.write(format_rule(rule) + '\n')
-        print(f'{len(new)} new rules (first tick each):')
-        for rule, tick in sorted(new.items(), key=lambda r: r[1]):
-            print(f'  {tick:6d}  {format_rule(rule)}')
+        write_mask(out, known, new, paths)
+        print_new(new)
+    elif len(args) >= 4 and args[0] == 'dumps':
+        out, dirs = args[1], args[2:]
+        new = dump_differences(dirs, known)
+        write_mask(out, known, new, dirs)
+        print_new(new)
     elif len(args) >= 4 and args[0] == 'check':
         left = against_first(args[2:], read_mask(args[1]))
         print('the mask covers every difference' if not left else f'{len(left)} differences left:')

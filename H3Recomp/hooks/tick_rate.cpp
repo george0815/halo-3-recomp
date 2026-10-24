@@ -171,6 +171,22 @@ namespace h3::hooks
         return rate ? rate : config::kOriginalTickRate;
     }
 
+    int TicksPerOriginalTick()
+    {
+        return std::max(1, GameTickRate() / config::kOriginalTickRate);
+    }
+
+    bool ContentFixes()
+    {
+        static const bool enabled = [] {
+            bool on = ConfiguredTickRate() != 0 && !EnvFlag("H3_NO_60HZ_FIXES");
+            if (ConfiguredTickRate())
+                fprintf(stderr, "[hooks] 60 Hz content fixes %s\n", on ? "on" : "off (H3_NO_60HZ_FIXES)");
+            return on;
+        }();
+        return enabled;
+    }
+
     // H3_LOG_TICK_RATE=1: log game_time_globals every few seconds (called
     // once per presented frame).
     void LogTickRate()
@@ -211,7 +227,7 @@ PPC_FUNC(sub_822D7BB0)
     uint32_t gameTime = GuestRef<uint32_t>(uint32_t(GuestRef<uint32_t>(ctx.r13.u32)) + kGameTimeSlot);
     uint32_t tick = GuestRef<uint32_t>(gameTime + 12);
     uint32_t revertTick = GuestRef<uint32_t>(kRevertTickAddress);
-    uint32_t window = uint32_t(std::max(1, h3::hooks::GameTickRate() / config::kOriginalTickRate));
+    uint32_t window = uint32_t(h3::hooks::TicksPerOriginalTick());
     bool reverted = tick - revertTick < window;  // unsigned: ticks before the revert don't count
     static const bool log = EnvFlag("H3_LOG_TICK_RATE");
     if (log)

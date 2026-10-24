@@ -16,6 +16,11 @@ namespace h3::native::tags
     // groupTag (or of a group whose parent or grandparent it is), else 0.
     uint32_t TagGet(uint32_t groupTag, uint32_t datum);
 
+    // The guest address of the data of the tag in a tag table slot, read
+    // straight from the table as most of the game does inline (no salt,
+    // group or range check: the caller knows the datum is good).
+    uint32_t TagDataBySlot(uint32_t slot);
+
     // The loaded tag index: its header's guest address (0: none yet) and
     // checksum. A change means another map was loaded.
     uint32_t LoadedIndexHeader();

@@ -13,7 +13,8 @@
 #   --mask <file>    H3_STATE_MASK (cosmetic state left out of the hash)
 #   --record         also write record.bin (H3_STATE_RECORD, ~90 KB per
 #                    tick) for learn_mask.py --record
-#   --dump <ticks>   also save raw states at these ticks (H3_STATE_DUMP)
+#   --dump <times>   also save raw states at these level times, comma-
+#                    separated (H3_STATE_DUMP; compare_hashes.py's ticks)
 #   --snapshots      also save a screenshot every 600 frames (to check the
 #                    menu navigation reached the film)
 #   --start-wait <n> extra frames before pressing START FILM (default 0;
@@ -28,7 +29,11 @@
 #
 # The runs are deterministic only with the switches this sets:
 # H3_RANDOM_SEED (fixed random seeds, the game state at one address) and
-# H3_LOCKSTEP (one game tick per frame).
+# H3_LOCKSTEP (one game tick per frame). It also sets H3_NO_60HZ_FIXES: the
+# library's films were recorded without the 60 Hz content fixes
+# (hooks/tick_rate.h), and a film replays its inputs only, so changed game
+# behavior would take it somewhere else (H3_FILM_WITH_60HZ_FIXES=1 leaves
+# them on, to see what they change).
 #
 # Expects (paths overridable by environment):
 #   H3_FILM_BINARY  the game (build/release/H3Recomp/H3Recomp)
@@ -60,7 +65,7 @@ MENU_FRAME=1300
 LOBBY_FRAME=1650
 STEP=60
 
-usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 [[ $# -ge 1 ]] || usage
 OUT="$1"; shift
 CATEGORY=0 INDEX=0 SECONDS_TO_RUN=120 MASK="" RECORD=0 DUMP="" SNAPSHOTS=0 START_WAIT=""
@@ -130,6 +135,7 @@ else
 fi
 
 env=(H3_RANDOM_SEED=1 H3_LOCKSTEP=1 H3_NO_WARMUP=1 H3_STATE_HASH="$OUT/hash.txt" H3_INPUT_SCRIPT="$script")
+[[ -n "${H3_FILM_WITH_60HZ_FIXES:-}" ]] || env+=(H3_NO_60HZ_FIXES=1)
 [[ -n "$MASK" ]] && env+=(H3_STATE_MASK="$MASK")
 [[ $RECORD == 1 ]] && env+=(H3_STATE_RECORD="$OUT/record.bin")
 [[ -n "$DUMP" ]] && env+=(H3_STATE_DUMP="$DUMP")
