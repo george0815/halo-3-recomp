@@ -33,6 +33,8 @@ fails at that tick.
   `private/films/library.txt` against its reference (and with
   `H3_CHECK_NATIVE`): the regression test for a changed build.
 
+A snapshot of the references and masks is kept in `references/`.
+
 Test runs use `H3_FILM_DATA` (`private/films_data`: links to the game files
 plus a copy of `hdd/`), so they never write to the real save data. A run
 stops by itself when the film is over (the tick stops advancing).

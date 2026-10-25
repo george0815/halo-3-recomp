@@ -1,0 +1,18 @@
+# generic rules (array/after/word) from sierra117_recent0.mask; object rules are per map
+after breakable surface set broken ev
+after chud widgets
+after effect geometry sample
+after recorded animations @ 32c40
+after screen_effect
+array chud widgets
+array device groups
+array effect
+array effect event
+word 228
+word 230
+word 238
+word 240
+word 248
+word 250
+word 258
+free object memory

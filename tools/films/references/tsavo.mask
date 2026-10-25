@@ -1,0 +1,253 @@
+# H3_STATE_MASK learned by learn_mask.py from /home/Hunter/Documents/Github/halo-3-recomp/private/films_work/tsavo/rec1/record.bin /home/Hunter/Documents/Github/halo-3-recomp/private/films_work/tsavo/rec2/record.bin /home/Hunter/Documents/Github/halo-3-recomp/private/films_work/tsavo/rec3/record.bin
+after breakable surface set broken ev
+after chud widgets
+after effect
+after effect event
+after effect geometry sample
+after effect location
+after object @ 58a40
+after object @ 6d140
+after object @ 6eac0
+after object @ 6ffc0
+after object @ 70480
+after object @ 71c00
+after object @ 71e00
+after object @ 74400
+after object @ 75280
+after recorded animations @ 32c40
+after screen_effect
+array chud widgets
+array device groups
+array effect
+array effect event
+array effect geometry sample
+array effect location
+array leaf system
+free object memory
+object 80f51f7e 24c
+object 8c272a96 1d38
+object 8c272a96 1d3c
+object 8c272a96 1d40
+object 8c272a96 1d50
+object 8c272a96 1fcc
+object 8c272a96 21d4
+object 8c272a96 250
+object 8c902aff 23e0
+object 8c902aff 23e4
+object 8c902aff 23e8
+object 8c902aff 23ec
+object 8c902aff 23f8
+object 8c902aff 250
+object 8c902aff 2678
+object 91913000 1194
+object 91913000 119c
+object 91913000 21e0
+object 91913000 21e4
+object 91913000 21e8
+object 91913000 21ec
+object 91913000 21f8
+object 91913000 2474
+object 91913000 250
+object 91913000 6b8
+object 91913000 6c0
+object 91a13010 21d0
+object 91a13010 21d4
+object 91a13010 21d8
+object 91a13010 21dc
+object 91a13010 21e8
+object 91a13010 2464
+object 91a13010 250
+object 923930a8 1920
+object 923930a8 1924
+object 923930a8 1928
+object 923930a8 1938
+object 923930a8 1bb8
+object 923930a8 250
+object 92b10ac7 1fc
+object 92b10ac7 204
+object 92c00ce6 1fc
+object 92c00ce6 20c
+object 930622ed 1fc
+object e2c0014a 17c
+object e4a0032a 174
+object e53803c2 174
+object e5a3042d 174
+object e5a60430 2420
+object e5a60430 2424
+object e5a60430 2428
+object e5a60430 242c
+object e5a60430 2438
+object e5a60430 250
+object e5a60430 268c
+object e5a60430 2690
+object e5a60430 2694
+object e5a60430 2698
+object e5a60430 269c
+object e5a60430 26b8
+object e7b1063b 21d0
+object e7b1063b 21d4
+object e7b1063b 21d8
+object e7b1063b 21dc
+object e7b1063b 21e8
+object e7b1063b 2464
+object e7b1063b 250
+object e7b1063b 6b8
+object e8b3073d 6b8
+object e97e0808 1328
+object e97e0808 132c
+object e97e0808 1330
+object e97e0808 1340
+object e97e0808 15c0
+object e97e0808 250
+object ec040a8e 250
+object ec040a8e 46e8
+object ec040a8e 46ec
+object ec040a8e 46f0
+object ec040a8e 46f4
+object ec040a8e 4700
+object ec040a8e 4980
+object ec050a8f 1540
+object ec050a8f 1544
+object ec050a8f 154c
+object ec050a8f 1758
+object ec050a8f 175c
+object ec050a8f 1838
+object ec050a8f 183c
+object ec050a8f 788
+object ec050a8f 7a0
+object ec050a8f 7a8
+object ec050a8f 7b0
+object ec050a8f b70
+object ec6c0af6 1f8
+object ec6c0af6 1fc
+object ecbf0b49 788
+object ed090b93 1e4
+object ed090b93 298
+object ed100b9a 1fc
+object ee980d22 290
+object eea70d31 788
+object eea70d31 790
+object eea70d31 798
+object eea70d31 7a0
+object eea70d31 7b8
+object eea70d31 7c0
+object eea70d31 7c8
+object eea70d31 7d0
+object ef7b0e05 1fc
+object ef7b0e05 204
+object efaa0e34 788
+object efbb0e45 1e4
+object efbb0e45 298
+object f0350ebf 1fc
+object f1680ff2 194
+object f1680ff2 19c
+object f1d91063 19c
+object f1d91063 1a4
+object f25610e0 19c
+object f26e10f8 194
+object f26e10f8 1a4
+object f28a1114 1e4
+object f28c1116 1fc
+object f29f1129 788
+object f2c2114c 1e4
+object f2ce1158 1fc
+object f2ce1158 244
+object f2de1168 1e4
+object f33411be 1fc
+object f33b11c5 1e4
+object f33b11c5 290
+object f33b11c5 2a0
+object f35211dc 788
+object f35211dc 790
+object f35211dc 798
+object f35211dc 7b0
+object f35211dc 7b8
+object f35211dc 7c0
+object f35211dc 7c8
+object f3c5124f 1fc
+object f3db1265 788
+object f40c1296 1fc
+object f4dd1367 1e4
+object f4dd1367 b6c
+object f50f1399 180
+object f50f1399 1dd4
+object f50f1399 1e80
+object f50f1399 1fc
+object f50f1399 2054
+object f50f1399 2100
+object f52913b3 1e4
+object f52913b3 284
+object f54d13d7 204
+object f56313ed 1e4
+object f5cf1459 180
+object f5cf1459 1fc
+object f65214dc 1e4
+object f65214dc 290
+object f6d81562 180
+object f6d81562 1fc
+object f6d81562 2054
+object f6d81562 2100
+object f71c15a6 1e4
+object f71c15a6 3f8
+object f73b15c5 1fc
+object f73b15c5 204
+object f75c15e6 1e4
+object f782160c 180
+object f782160c 1fc
+object f7f2167c 1e4
+object f80a1694 180
+object f80a1694 1fc
+object f80a1694 204
+object f80a1694 20c
+object f82a16b4 1e4
+object f82a16b4 264
+object f8781702 1e4
+object f8781702 284
+object f8c3174d 1e4
+object f8ff1789 180
+object f8ff1789 1fc
+object f8ff1789 204
+object f96817f2 23c
+object f96817f2 244
+object f99f1829 180
+object f9a2182c 180
+object f9a5182f 180
+object f9a91833 180
+object f9af1839 180
+object f9b2183c 180
+object f9ba1844 168
+object f9bf1849 168
+object f9d4185e 168
+object f9f4187e 168
+object f9f4187e 22d4
+object f9f4187e 2380
+object f9f61880 168
+object fb5b19e5 16c
+object fbeb1a75 16c
+object fc811b0b 16c
+object fc811b0b 174
+object fdee1c78 16c
+object fe171ca1 250
+object fe171ca1 3f88
+object fe171ca1 3f8c
+object fe171ca1 3f98
+object fe171ca1 4214
+object fe3b1cc5 250
+object fe3b1cc5 4768
+object fe3b1cc5 476c
+object fe3b1cc5 4778
+object fe3b1cc5 49f0
+object ff751dff 174
+object ff751dff 17c
+object ff751dff 184
+object ff751dff 18c
+object ff751dff 194
+object ff751dff 19c
+object ff751dff 1a4
+word 228
+word 230
+word 238
+word 240
+word 248
+word 250
+word 258

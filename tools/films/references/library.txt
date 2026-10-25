@@ -1,0 +1,14 @@
+# Campaign films (Theater CAMPAIGN category; index = position in its list,
+# newest first). <name> <index> <film seconds> [<start wait frames>: for a
+# map the lobby loads slowly]. Recorded 2026-10-18/19 at 60 fps, render
+# scale 1. Halo and Cortana
+# recorded 2026-10-22.
+halo 0 1435
+cortana 1 1152
+sierra117 8 927 240
+crows_nest 7 1264
+tsavo 6 593 240
+storm 5 1309
+floodgate 4 663 3000
+ark 3 1974
+covenant 2 2067
