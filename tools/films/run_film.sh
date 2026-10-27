@@ -151,8 +151,10 @@ cd "$OUT"
 # again, up to ATTEMPTS times.
 # Not shorter: a shader compile can hold the tick 20 s or more mid-film
 # (Floodgate, tick 1376, the watchdog's "stuck entering critical section"
-# with the render thread in rasterizer_wait_for_fence).
-STALL_SECONDS=60
+# with the render thread in rasterizer_wait_for_fence). A deep frame
+# capture (H3_CAPTURE_DEEP) holds it for minutes: raise it with
+# H3_FILM_STALL_SECONDS.
+STALL_SECONDS=${H3_FILM_STALL_SECONDS:-60}
 # Menus run at ~60 frames per second: a longer --start-wait moves the press
 # (and the level) later.
 LEVEL_DEADLINE=$(( 150 + START_WAIT / 60 ))

@@ -33,6 +33,7 @@ add_executable(H3Recomp
     debug/write_watch.cpp
     hooks/block_copy.cpp
     hooks/campaign.cpp
+    hooks/cinematic_camera.cpp
     hooks/damage_log.cpp
     hooks/fibers.cpp
     hooks/player_effects.cpp

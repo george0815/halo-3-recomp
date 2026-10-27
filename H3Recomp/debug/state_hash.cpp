@@ -8,6 +8,14 @@
 //                        state_<level time>.bin in the working directory.
 //                        Not game ticks: a checkpoint revert replays ticks,
 //                        which overwrote the first copy's dump
+// H3_CAPTURE_LEVEL=<t>,... requests a GPU frame capture (as F9, or F10 with
+//                        H3_CAPTURE_DEEP; gpu/frame_capture.h) at those
+//                        level times: H3_CAPTURE_AT counts presented frames,
+//                        which land on different moments from run to run
+// H3_SNAPSHOT_LEVEL=<first>-<last>[/<every>] saves the frame presented
+//                        after those level times as level_<t>.png (every
+//                        level tick, or every <every>-th): screenshots at
+//                        the same moments each run, unlike H3_SNAPSHOT_*
 // H3_STATE_RECORD=<file> records every tick's raw state compactly: per
 //                        copy "u32 tick, u32 n, n x (u32 word index, u32
 //                        word as stored)" with the words that changed since
@@ -57,6 +65,7 @@
 
 #include "debug/state_hash.h"
 #include "config/env.h"
+#include "gpu/frame_capture.h"
 
 #include <algorithm>
 #include <utility>
@@ -315,7 +324,7 @@ namespace
         fflush(file);
     }
 
-    // H3_STATE_DUMP: whether this level time is in the list.
+    // H3_STATE_DUMP / H3_CAPTURE_LEVEL: whether this level time is in the list.
     bool DumpRequested(const char* list, uint32_t levelTime)
     {
         char key[24];
@@ -406,5 +415,24 @@ void h3::debug::OnGameStateCopy(const uint8_t* state, uint32_t bytes, uint32_t a
             fwrite(state, 1, bytes, file);
             fclose(file);
         }
+    }
+
+    static const auto snapshots = [] {
+        struct { uint32_t first = 1, last = 0, every = 1; } range;
+        if (const char* spec = EnvString("H3_SNAPSHOT_LEVEL"))
+            if (sscanf(spec, "%u-%u/%u", &range.first, &range.last, &range.every) < 2 || range.every == 0)
+                range.every = 1;
+        return range;
+    }();
+    if (inLevel && !held && levelTime >= snapshots.first && levelTime <= snapshots.last &&
+        (levelTime - snapshots.first) % snapshots.every == 0)
+        h3::gpu::capture::RequestSnapshot(levelTime);
+
+    static const char* captures = EnvString("H3_CAPTURE_LEVEL");
+    if (captures && inLevel && !held && DumpRequested(captures, levelTime))
+    {
+        static const bool deep = EnvFlag("H3_CAPTURE_DEEP");
+        fprintf(stderr, "[state] capture requested at level time %u\n", levelTime);
+        h3::gpu::capture::RequestCapture(deep);
     }
 }

@@ -647,8 +647,19 @@ namespace h3::gpu::renderer::internal
     // fence if memexport results are waiting in it. Call before any other
     // submit of g_commands.
     void FenceMemExports();
-    // Writes back memexport results whose GPU work finished.
+    // Writes back memexport results whose GPU work finished (and the fence
+    // writes that waited for them).
     void PollMemExports();
+    // A fence write (EVENT_WRITE_SHD) to guest memory: while memexport
+    // results are in flight it waits until they're in guest memory, as on
+    // the console, and true is returned (the write happens later); false:
+    // nothing to wait for, the caller writes now. swapped is the value as
+    // stored (endian applied).
+    bool DeferFenceWrite(uint32_t address, uint32_t swapped);
+    // Does the deferred fence writes whose GPU work has finished, without
+    // waiting (the command processor, idle or waiting: a CPU may be
+    // waiting on one).
+    void PollDeferredFenceWrites();
 
     // ------------------------------------------------------------------
     // Occlusion queries (queries.cpp)

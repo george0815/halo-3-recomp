@@ -125,6 +125,13 @@ namespace h3::gpu::renderer::internal
             case 2:   // k_8
                 bpp = 1, format = SDL_GPU_TEXTUREFORMAT_R8_UNORM;
                 return true;
+            case 10:  // k_8_8
+                // The sniper rifle's scope screen: its depth-edge image
+                // (288x160 at 1FC10000, from a 16_16_FLOAT target) is
+                // resolved to 8_8. Unsupported, the resolve was skipped and
+                // the screen showed only its scanlines.
+                bpp = 2, format = SDL_GPU_TEXTUREFORMAT_R8G8_UNORM;
+                return true;
             default:
                 return false;
             }
@@ -690,13 +697,38 @@ namespace h3::gpu::renderer::internal
         // sampled back as 24_8: keep it as a float.
         if (depthSource && bpp == 4)
             hostFormat = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
-        ResolvedTexture* texture = DestinationTexture(destBase, destPitchReg, destFormat, bpp, hostFormat, uint32_t(y1 - y0));
+
+        // The rectangle lands at (x0, y0) of the destination layout. When it
+        // doesn't fit the pitch and height the registers give, the game has
+        // moved the base back so a rectangle from the middle of the surface
+        // lands at the origin of a texture further on: the sniper rifle's
+        // scope screen resolves the centre 288x160 of the half-size depth,
+        // (144,80)-(432,240), with a 320x192 destination at 05088000 and
+        // samples it from 050A0000, 4 macro tiles across and 2 down (128,64)
+        // later, at (16,16). Memory runs on in macro tiles past the pitch,
+        // so the rectangle belongs to the texture starting at its first
+        // macro tile, not to a destination it overhangs. Looking it up by
+        // the base alone clipped it to 176x112 in a texture nothing sampled,
+        // while the fetch at 050A0000 got the shadow map resolved there
+        // later in the frame: no depth edges, a blank scope screen.
+        uint32_t destPitch = AlignUp(destPitchReg & 0x3FFF, kMacroTileSize);
+        uint32_t destHeight = AlignUp((destPitchReg >> 16) & 0x3FFF, kMacroTileSize);
+        uint32_t textureBase = destBase;
+        uint32_t rectX = uint32_t(x0), rectY = uint32_t(y0);  // in the texture at textureBase
+        if (destPitch && (uint32_t(x1) > destPitch || uint32_t(y1) > destHeight))
+        {
+            uint32_t macroTileBytes = kMacroTileSize * kMacroTileSize * bpp;
+            uint32_t macroRowBytes = destPitch * kMacroTileSize * bpp;
+            textureBase = destBase + (rectY / kMacroTileSize) * macroRowBytes + (rectX / kMacroTileSize) * macroTileBytes;
+            rectX %= kMacroTileSize, rectY %= kMacroTileSize;
+        }
+        ResolvedTexture* texture = DestinationTexture(textureBase, destPitchReg, destFormat, bpp, hostFormat, uint32_t(y1 - y0));
         if (!texture)
             return;
 
         uint32_t offsetX, offsetY;
-        ResolvedOffset(*texture, destBase, offsetX, offsetY);
-        uint32_t destX = offsetX + uint32_t(x0), destY = offsetY + uint32_t(y0);
+        ResolvedOffset(*texture, textureBase, offsetX, offsetY);
+        uint32_t destX = offsetX + rectX, destY = offsetY + rectY;
         uint32_t w = uint32_t(x1 - x0), h = uint32_t(y1 - y0);
         if (destX + w > texture->pitch || destY + h > texture->height)
         {

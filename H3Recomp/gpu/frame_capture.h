@@ -40,6 +40,12 @@ namespace h3::gpu
         // the presented frame and every resolve (the renderer's dumps use
         // HotkeyFrame/HotkeyDirectory). For scenes a script can't reach.
         void RequestCapture(bool deep = false);
+        // A plain screenshot of the next presented frame, saved as
+        // level_<tag>.png (debug/state_hash.cpp H3_SNAPSHOT_LEVEL; any
+        // thread). TakeSnapshotRequest returns and clears the pending tag
+        // (false: none).
+        void RequestSnapshot(uint32_t tag);
+        bool TakeSnapshotRequest(uint32_t& tag);
         // Whether the current hotkey capture is a deep one (F10): the
         // renderer also saves color target 0 after every draw.
         bool HotkeyDeep();

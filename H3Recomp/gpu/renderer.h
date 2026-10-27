@@ -47,6 +47,14 @@ namespace h3::gpu::renderer
     // is off (the caller writes a fake one).
     bool OnOcclusionReport(uint32_t address);
 
+    // A fence write (EVENT_WRITE_SHD) of swapped (the value as stored) to a
+    // guest address: true if the renderer does it later, once the memory
+    // exports before it are in guest memory; false: the caller writes it.
+    bool OnFenceWrite(uint32_t address, uint32_t swapped);
+    // The command processor is idle or waiting: do the deferred fence
+    // writes whose GPU work has finished, so a CPU waiting on one goes on.
+    void OnCommandProcessorIdle();
+
     // Main thread: the most recently presented frame, if any.
     struct Frame
     {

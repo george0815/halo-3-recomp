@@ -513,13 +513,18 @@ namespace h3::gpu::texture
 
     FetchConstant LargestUsableLevel(const FetchConstant& fetch)
     {
-        if (fetch.mipMin == 0 || fetch.mipAddress == 0 || fetch.dimension != 1)
+        constexpr uint32_t kDimension2D = 1, kDimensionCube = 3;
+        bool cube = fetch.dimension == kDimensionCube;
+        if (fetch.mipMin == 0 || fetch.mipAddress == 0 || (fetch.dimension != kDimension2D && !cube))
             return fetch;
-        if (fetch.stacked)
+        if (fetch.stacked || cube)
         {
-            // Levels hold all layers (MipLevels' layout); the base level
-            // may not be resident (its address is then the mip address).
-            // Packed tail levels share a tile: stay above them.
+            // Levels hold all layers or faces (MipLevels' layout); the base
+            // level may not be resident (its address is then the mip
+            // address). Packed tail levels share a tile: stay above them.
+            // Cube maps used to skip this and decode the base level from
+            // the mip address, the tail as six garbage faces (Sierra's
+            // 64x64 cube at 079FE000, mips 1-6, in reflections).
             std::vector<FetchConstant> levels = MipLevels(fetch);
             for (uint32_t level = fetch.mipMin; level >= 1; level--)
                 if (level - 1 < levels.size() && !levels[level - 1].explicitOffset)
@@ -539,7 +544,20 @@ namespace h3::gpu::texture
         while (level > 1 && fetch.packedMips && std::min(levelSize(fetch.width, level), levelSize(fetch.height, level)) <= 16)
             level--;
         if (fetch.packedMips && std::min(levelSize(fetch.width, level), levelSize(fetch.height, level)) <= 16)
-            return fetch;
+        {
+            // Even level 1 is in the packed tail (a thin texture, e.g.
+            // Floodgate's 512x32 sky cloud strip): decode it from its place
+            // in the tail, without smaller levels. The base address is the
+            // mip address here, so decoding the base level read the tail as
+            // a 512x32 image (blocks of garbage colors in the sky).
+            std::vector<FetchConstant> levels = MipLevels(fetch);
+            if (levels.empty())
+                return fetch;
+            FetchConstant result = levels[0];
+            result.mipAddress = 0;
+            result.mipMax = 0;
+            return result;
+        }
 
         FetchConstant result = fetch;
         result.packedMips = false;

@@ -34,6 +34,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <unordered_map>
 
 namespace h3::gpu::renderer::internal
@@ -147,9 +148,45 @@ namespace h3::gpu::renderer::internal
         {
             SDL_GPUFence* fence;
             std::vector<Slot> slots;
-            uint32_t frame = 0;  // g_swaps when submitted
+            uint32_t frame = 0;     // g_swaps when submitted
+            uint64_t sequence = 0;  // submission order (g_batchSequence)
         };
         std::vector<Batch> g_batches;
+        // Batches submitted so far, and the last one whose results are in
+        // guest memory (batches complete in order).
+        uint64_t g_batchSequence = 0, g_completedSequence = 0;
+
+        // --- Deferred fence writes ---------------------------------------
+        //
+        // On the console a fence the GPU writes (EVENT_WRITE_SHD) lands
+        // after everything before it, memory exports included, so a CPU
+        // that saw the fence may reuse that memory. Here exports reach guest
+        // memory a frame or two after their packets: a fence written at
+        // once let Halo move resources over a particle buffer whose late
+        // exports then landed on what moved in (The Covenant's ground
+        // lightmap: a 62916-byte particle stream at 13354BB8 written over
+        // layer 1 of the lightmap compacted down onto it, rainbow patches on
+        // the ground). So while exports are in flight, fence writes wait for
+        // the batches submitted before them (DeferFenceWrite), in order.
+        struct DeferredWrite
+        {
+            uint32_t address;   // physical
+            uint32_t swapped;   // the value as stored (endian applied)
+            uint64_t sequence;  // the batch it waits for
+        };
+        std::vector<DeferredWrite> g_deferredWrites;
+
+        // Does the deferred fence writes whose batches are complete.
+        void ApplyDeferredWrites()
+        {
+            size_t done = 0;
+            for (; done < g_deferredWrites.size() && g_deferredWrites[done].sequence <= g_completedSequence; done++)
+            {
+                const DeferredWrite& write = g_deferredWrites[done];
+                memcpy(GuestPtr<uint8_t>(PhysicalToGuest(write.address & ~3u)), &write.swapped, 4);
+            }
+            g_deferredWrites.erase(g_deferredWrites.begin(), g_deferredWrites.begin() + done);
+        }
 
         // Compute variants by guest shader (null pipeline: failed).
         std::unordered_map<const Shader*, SDL_GPUComputePipeline*> g_pipelines;
@@ -750,6 +787,22 @@ void main()
                 stream.bytes = (d[3] & 0x7FFFFF) * elementBytes;
                 if (stream.bytes == 0 || stream.bytes > kMaxStreamBytes || streams.size() == kMaxStreams)
                     continue;
+                // H3_LOG_STREAMS_AT=<hex physical address>: each distinct
+                // stream holding that address (which shader, from when):
+                // finds the export overwriting a piece of memory found with
+                // H3_WATCH_WRITES (CompleteSlot as the writer). "all": every
+                // distinct stream.
+                static const char* logAt = EnvString("H3_LOG_STREAMS_AT");
+                if (logAt)
+                {
+                    static const bool all = strcmp(logAt, "all") == 0;
+                    static const uint32_t at = uint32_t(strtoul(logAt, nullptr, 16));
+                    static std::unordered_map<uint64_t, uint32_t> logged;  // (shader, base, bytes) -> first frame
+                    uint64_t key = vs.captureHash ^ (uint64_t(stream.base) << 32) ^ stream.bytes;
+                    if ((all || (at >= stream.base && at < stream.base + stream.bytes)) && logged.emplace(key, g_swaps).second)
+                        fprintf(stderr, "[streams-at] f%u vs_%016llx c%u: stream %08X+%u (format %u) holds %08X\n", g_swaps,
+                            (unsigned long long)vs.captureHash, constant, stream.base, stream.bytes, (d[2] >> 8) & 63, at);
+                }
                 streams.push_back(stream);
             }
             return streams;
@@ -1255,6 +1308,23 @@ void main()
         return false;
     }
 
+    namespace
+    {
+        // Applies a finished batch's results to guest memory, frees it, and
+        // does the fence writes that waited for it.
+        void CompleteBatch(Batch& batch)
+        {
+            for (Slot& slot : batch.slots)
+            {
+                CompleteSlot(slot);
+                RecycleSlot(std::move(slot));
+            }
+            SDL_ReleaseGPUFence(g_device, batch.fence);
+            g_completedSequence = batch.sequence;
+            ApplyDeferredWrites();
+        }
+    }
+
     void SyncMemExportsFor(const Shader& shader)
     {
         // H3_MEMEXPORT_ASYNC=1: never wait (results land a frame or two
@@ -1283,12 +1353,7 @@ void main()
         {
             Batch& batch = g_batches[done];
             SDL_WaitForGPUFences(g_device, true, &batch.fence, 1);
-            for (Slot& slot : batch.slots)
-            {
-                CompleteSlot(slot);
-                RecycleSlot(std::move(slot));
-            }
-            SDL_ReleaseGPUFence(g_device, batch.fence);
+            CompleteBatch(batch);
         }
         g_batches.erase(g_batches.begin(), g_batches.begin() + done);
         // Guest memory changed under this frame's input arena: upload
@@ -1311,26 +1376,58 @@ void main()
         g_submits++;
         SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(g_commands);
         g_commands = nullptr;
-        g_batches.push_back({ fence, std::move(g_unfenced), g_swaps });
+        g_batches.push_back({ fence, std::move(g_unfenced), g_swaps, ++g_batchSequence });
         g_unfenced.clear();
+    }
+
+    bool DeferFenceWrite(uint32_t address, uint32_t swapped)
+    {
+        // H3_MEMEXPORT_FENCE_ASYNC=1: fences land at once (the old
+        // behaviour: exports can land after the CPU reused their memory).
+        static const bool async = EnvFlag("H3_MEMEXPORT_FENCE_ASYNC");
+        if (async)
+            return false;
+        // Submit what's queued so the fence can wait for it.
+        FenceMemExports();
+        if (g_batches.empty() && g_deferredWrites.empty())
+            return false;
+        // Behind the last batch in flight; if none (earlier fence writes
+        // still waiting), in order behind those.
+        uint64_t sequence = g_batches.empty() ? g_deferredWrites.back().sequence : g_batches.back().sequence;
+        g_deferredWrites.push_back({ address, swapped, sequence });
+        return true;
+    }
+
+    namespace
+    {
+        // Completes the batches whose GPU work is done (oldest first; they
+        // finish in order), without waiting.
+        void CompleteFinishedBatches()
+        {
+            size_t done = 0;
+            for (; done < g_batches.size(); done++)
+            {
+                Batch& batch = g_batches[done];
+                if (!SDL_QueryGPUFence(g_device, batch.fence))
+                    break;
+                CompleteBatch(batch);
+            }
+            g_batches.erase(g_batches.begin(), g_batches.begin() + done);
+        }
+    }
+
+    void PollDeferredFenceWrites()
+    {
+        // Doesn't wait: the command processor calls this while idle or
+        // waiting, and blocking it on the GPU there delayed the next
+        // frame's packets.
+        if (!g_deferredWrites.empty())
+            CompleteFinishedBatches();
     }
 
     void PollMemExports()
     {
-        size_t done = 0;
-        for (; done < g_batches.size(); done++)
-        {
-            Batch& batch = g_batches[done];
-            if (!SDL_QueryGPUFence(g_device, batch.fence))
-                break;
-            for (Slot& slot : batch.slots)
-            {
-                CompleteSlot(slot);
-                RecycleSlot(std::move(slot));
-            }
-            SDL_ReleaseGPUFence(g_device, batch.fence);
-        }
-        g_batches.erase(g_batches.begin(), g_batches.begin() + done);
+        CompleteFinishedBatches();
 
         // H3_LOG_MEMEXPORT: slot counts every few seconds (free, waiting
         // for a fence, unsubmitted) and the bytes their buffers hold.

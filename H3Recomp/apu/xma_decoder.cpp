@@ -73,14 +73,17 @@ namespace h3::apu
             uint32_t loop_subframe_end : 3;
             uint32_t loop_subframe_skip : 3;
             uint32_t subframe_decode_count : 4;
-            uint32_t subframe_skip_count : 3;
+            // Output blocks to keep free per decoded frame (Xenia canary's
+            // name and use; once thought to be a subframe skip count).
+            uint32_t output_buffer_padding : 3;
             uint32_t sample_rate : 2;
             uint32_t is_stereo : 1;
             uint32_t unk_dword_1_c : 1;
             uint32_t output_buffer_valid : 1;
             // DWORD 2
             uint32_t input_buffer_read_offset : 26;
-            uint32_t unk_dword_2 : 6;
+            uint32_t error_status : 5;
+            uint32_t error_set : 1;
             // DWORD 3
             uint32_t loop_start : 26;
             uint32_t unk_dword_3 : 6;
@@ -247,6 +250,11 @@ namespace h3::apu
                 ContextData data;
                 data.Load(pointer);
                 ContextData before = data;
+                if (SubframeModel())
+                {
+                    WorkSubframes(data, before, pointer);
+                    return true;
+                }
                 Decode(data);
                 if (LogXma())
                 {
@@ -307,6 +315,10 @@ namespace h3::apu
             std::array<uint64_t, kRecentFrames> m_recentFrames{};
             uint32_t m_recentIndex = 0;
             uint64_t m_framesOut = 0;
+            // H3_LOG_XMA: each input buffer's last data hash, and whether
+            // it was used up since.
+            std::array<uint64_t, 2> m_bufferHash{};
+            std::array<bool, 2> m_bufferDone{};
 
             // Notes an output frame; logs it if it repeats a recent one.
             void NoteFrame(uint32_t byteCount, const ContextData& data)
@@ -341,6 +353,9 @@ namespace h3::apu
                 m_packetsSkip = 0;
                 m_splitFrameLen = m_splitFrameLenPartial = 0;
                 m_splitFramePaddingStart = 0;
+                m_frameSubframesLeft = 0;
+                m_loopFrameLimit = 0;
+                m_loopStartSkipPending = false;
             }
 
             // (Re)opens the FFmpeg decoder for the context's rate/channels.
@@ -377,6 +392,7 @@ namespace h3::apu
                 if (LogXma())
                     fprintf(stderr, "[xma] ctx %u: input buffer %u done (read bit %u)\n", id, data.current_buffer,
                         data.input_buffer_read_offset);
+                m_bufferDone[data.current_buffer] = true;
                 if (data.current_buffer == 0)
                     data.input_buffer_0_valid = 0;
                 else
@@ -563,6 +579,26 @@ namespace h3::apu
                     SwapInputBuffer(data);
                     return;
                 }
+                if (LogXma() && data.input_buffer_read_offset < kBitsPerPacket)
+                {
+                    // A buffer (re)started after it was used up or refilled,
+                    // with a hash of its data: the same hash right after
+                    // "done" means stale data decoded twice (heard as
+                    // repeated notes).
+                    uint64_t hash = 0xCBF29CE484222325ull;
+                    for (size_t i = 0; i < inputSize; i += 61)
+                        hash = (hash ^ input[i]) * 0x100000001B3ull;
+                    if (m_bufferDone[data.current_buffer] || hash != m_bufferHash[data.current_buffer])
+                        fprintf(stderr,
+                            "[xma] ctx %u: start buffer %u ptr %08X packets %zu bit %u hash %016llx stereo %u subframes decode %u skip %u "
+                            "loop %u (%u-%u, subframes %u-%u skip %u)%s\n",
+                            id, data.current_buffer, data.current_buffer ? data.input_buffer_1_ptr : data.input_buffer_0_ptr, inputPackets,
+                            data.input_buffer_read_offset, (unsigned long long)hash, data.is_stereo, data.subframe_decode_count,
+                            data.output_buffer_padding, data.loop_count, data.loop_start, data.loop_end, data.loop_subframe_start,
+                            data.loop_subframe_end, data.loop_subframe_skip, hash == m_bufferHash[data.current_buffer] ? " SAME DATA AGAIN" : "");
+                    m_bufferHash[data.current_buffer] = hash;
+                    m_bufferDone[data.current_buffer] = false;
+                }
 
                 Ring output{ Physical(data.output_buffer_ptr), data.output_buffer_block_count * kBytesPerSubframeChannel,
                     data.output_buffer_read_offset * kBytesPerSubframeChannel,
@@ -741,7 +777,480 @@ namespace h3::apu
                 }
 
                 if (output.write == output.read)
+                {
+                    if (LogXma())
+                        fprintf(stderr, "[xma] ctx %u: output ring filled completely (%u blocks, padding %u)\n", id,
+                            data.output_buffer_block_count, data.output_buffer_padding);
                     data.output_buffer_valid = 0;
+                }
+            }
+
+            // --- Subframe model (default; H3_XMA_SUBFRAMES=0 turns it off) -
+            //
+            // A port of Xenia canary's XmaContextNew (src/xenia/apu/
+            // xma_context_new.cc, 2024-2026; private/refs/xenia): output goes
+            // out in 256-byte subframe blocks (128 samples per channel), at
+            // most subframe_decode_count per pass, so loops can start and
+            // end inside a frame (loop_subframe_skip / loop_subframe_end),
+            // output_buffer_padding blocks stay free per frame, packets
+            // with no frame start (skip count 0xFF) are stepped over, and
+            // only the decoder's own fields are stored back. The default
+            // model above writes whole frames and ignores all of that, which
+            // repeated music notes where the game trims sounds with one-frame
+            // loops (The Ark's "Roll Call", The Covenant's start; fixed by
+            // this model, confirmed by ear 2026-10-26). The whole-frame model
+            // stays for A/B comparison.
+
+            // The subframe model's state: blocks left of the decoded frame
+            // (in m_rawFrame), the loop end frame's block limit (0: none),
+            // and whether the next frame starts a loop (skips blocks).
+            uint8_t m_frameSubframesLeft = 0;
+            uint8_t m_loopFrameLimit = 0;
+            bool m_loopStartSkipPending = false;
+            int32_t m_blocksFree = 0;  // output blocks free this pass
+            // The frame's packet data, then the next packet's (headers
+            // dropped), so frames spanning packets read straight through.
+            std::array<uint8_t, (kBytesPerPacket - 4) * 2> m_packetData{};
+
+            static constexpr uint32_t kBytesPerBlock = 256;
+            static constexpr uint32_t kBitsPerPacketHeader = 32;
+            static constexpr uint32_t kMaxFrameOffset = 0x4000 - kBitsPerPacketHeader;
+            static constexpr uint8_t kSkipWholePacket = 0xFF;
+            static constexpr uint32_t kDecodeError = 4;  // error_status
+
+            static bool SubframeModel()
+            {
+                static const bool enabled = EnvNumber("H3_XMA_SUBFRAMES", 1) != 0;
+                return enabled;
+            }
+
+            static bool AnyInputValid(const ContextData& data) { return data.input_buffer_0_valid || data.input_buffer_1_valid; }
+            static bool InputValid(const ContextData& data, uint32_t buffer)
+            {
+                return buffer == 0 ? data.input_buffer_0_valid : data.input_buffer_1_valid;
+            }
+            static uint32_t InputAddress(const ContextData& data, uint32_t buffer)
+            {
+                return buffer == 0 ? data.input_buffer_0_ptr : data.input_buffer_1_ptr;
+            }
+            static uint32_t InputPackets(const ContextData& data, uint32_t buffer)
+            {
+                return buffer == 0 ? data.input_buffer_0_packet_count : data.input_buffer_1_packet_count;
+            }
+            // Subframe blocks in one decoded frame: 4 per channel.
+            static uint8_t FrameBlocks(const ContextData& data) { return uint8_t((kBytesPerFrameChannel / kBytesPerBlock) << data.is_stereo); }
+
+            // Work() for the subframe model.
+            void WorkSubframes(ContextData& data, const ContextData& initial, uint8_t* pointer)
+            {
+                if (!data.output_buffer_valid)
+                    return;
+                Ring output{ Physical(data.output_buffer_ptr), data.output_buffer_block_count * kBytesPerBlock,
+                    data.output_buffer_read_offset * kBytesPerBlock, data.output_buffer_write_offset * kBytesPerBlock };
+                if (output.capacity == 0)
+                    return;
+                m_blocksFree = int32_t(output.WriteCount() / kBytesPerBlock);
+
+                // A context with no input at all only drains a frame
+                // already decoded; touching it otherwise would reset the
+                // game's output offsets.
+                if (InputPackets(data, 0) == 0 && InputPackets(data, 1) == 0)
+                {
+                    if (m_frameSubframesLeft == 0)
+                        return;
+                    Consume(output, data);
+                    data.output_buffer_write_offset = output.write / kBytesPerBlock;
+                    if (output.read == output.write)
+                        data.output_buffer_valid = 0;
+                    StoreMerged(data, initial, pointer);
+                    return;
+                }
+
+                // Room for one pass: subframe_decode_count blocks (at least
+                // one) plus the padding.
+                int32_t decodeCount = int32_t(std::max(1u, uint32_t(data.subframe_decode_count)));
+                int32_t needed = decodeCount + int32_t(data.output_buffer_padding);
+                if (needed > m_blocksFree)
+                {
+                    // No room for a pass: wait for the game to read some.
+                    StoreMerged(data, initial, pointer);
+                    return;
+                }
+                while (m_blocksFree >= needed)
+                {
+                    uint32_t offsetBefore = data.input_buffer_read_offset;
+                    uint8_t leftBefore = m_frameSubframesLeft;
+                    DecodeSubframes(data);
+                    Consume(output, data);
+                    // Out of input (or failed), with the frame delivered.
+                    if ((!AnyInputValid(data) || data.error_status == kDecodeError) && m_frameSubframesLeft == 0)
+                        break;
+                    // No progress: wait for the next kick.
+                    if (leftBefore == 0 && data.input_buffer_read_offset == offsetBefore && m_frameSubframesLeft == 0)
+                        break;
+                }
+
+                if (AnyInputValid(initial))
+                    data.output_buffer_write_offset = output.write / kBytesPerBlock;
+                else if (data.output_buffer_write_offset != data.output_buffer_read_offset)
+                {
+                    // Starved: games read write == read as "stalled".
+                    data.output_buffer_write_offset = data.output_buffer_read_offset;
+                    data.output_buffer_valid = 0;
+                }
+                // The output ring is full: tell the game.
+                if (m_blocksFree == 0 && output.read == output.write)
+                    data.output_buffer_valid = 0;
+                StoreMerged(data, initial, pointer);
+            }
+
+            // Writes up to subframe_decode_count blocks of the decoded frame,
+            // within the loop end limit.
+            void Consume(Ring& output, const ContextData& data)
+            {
+                if (m_frameSubframesLeft == 0)
+                    return;
+                uint8_t total = FrameBlocks(data);
+                uint8_t consumed = uint8_t(total - m_frameSubframesLeft);
+                if (m_loopFrameLimit > 0 && consumed >= m_loopFrameLimit)
+                {
+                    // The loop end cut: drop the rest of the frame (charging
+                    // the padding as a finished frame would).
+                    m_blocksFree -= data.output_buffer_padding;
+                    m_frameSubframesLeft = 0;
+                    m_loopFrameLimit = 0;
+                    return;
+                }
+                int32_t count = std::min<int32_t>(m_frameSubframesLeft, int32_t(std::max(1u, uint32_t(data.subframe_decode_count))));
+                if (m_loopFrameLimit > 0)
+                    count = std::min<int32_t>(count, m_loopFrameLimit - consumed);
+                output.Write(m_rawFrame.data() + kBytesPerBlock * consumed, uint32_t(count) * kBytesPerBlock);
+                if (LogXma())
+                    NoteFrame(uint32_t(count) * kBytesPerBlock, data);
+                // The padding is charged once, when the frame is done.
+                int32_t padding = m_frameSubframesLeft - count == 0 ? int32_t(data.output_buffer_padding) : 0;
+                m_blocksFree -= count + padding;
+                m_frameSubframesLeft = uint8_t(m_frameSubframesLeft - count);
+            }
+
+            // Jumps back to the loop start when the read offset is at the
+            // loop end (one-frame loops, start == end, trim a sound's end).
+            void UpdateLoop(ContextData& data)
+            {
+                if (data.loop_count == 0)
+                    return;
+                uint32_t loopStart = std::max(kBitsPerPacketHeader, uint32_t(data.loop_start));
+                uint32_t loopEnd = std::max(kBitsPerPacketHeader, uint32_t(data.loop_end));
+                if (data.input_buffer_read_offset != loopEnd)
+                    return;
+                if (LogXma())
+                    fprintf(stderr, "[xma] ctx %u: subframe loop %u -> %u (count %u, subframes end %u skip %u)\n", id,
+                        data.input_buffer_read_offset, loopStart, data.loop_count, data.loop_subframe_end, data.loop_subframe_skip);
+                data.input_buffer_read_offset = loopStart;
+                m_loopStartSkipPending = true;
+                if (data.loop_count != 255)
+                    data.loop_count--;
+            }
+
+            // Moves to the other input buffer (this one's used up).
+            void SwapInputSubframes(ContextData& data)
+            {
+                if (LogXma())
+                    fprintf(stderr, "[xma] ctx %u: input buffer %u done (read bit %u)\n", id, data.current_buffer,
+                        data.input_buffer_read_offset);
+                m_bufferDone[data.current_buffer] = true;
+                if (data.current_buffer == 0)
+                    data.input_buffer_0_valid = 0;
+                else
+                    data.input_buffer_1_valid = 0;
+                data.current_buffer ^= 1;
+                data.input_buffer_read_offset = kBitsPerPacketHeader;
+            }
+
+            // A packet `index` packets into the current buffer (past its end:
+            // into the other buffer), if that buffer is valid and long
+            // enough. Returns the buffer and packet index, or false.
+            bool PacketAt(const ContextData& data, uint32_t index, uint32_t& buffer, uint32_t& packet) const
+            {
+                buffer = data.current_buffer;
+                uint32_t currentPackets = InputPackets(data, buffer);
+                if (index >= currentPackets)
+                {
+                    buffer ^= 1;
+                    index -= currentPackets;
+                }
+                if (!InputValid(data, buffer) || !InputAddress(data, buffer) || index >= InputPackets(data, buffer))
+                    return false;
+                packet = index;
+                return true;
+            }
+            const uint8_t* NextPacket(const ContextData& data, uint32_t index) const
+            {
+                uint32_t buffer, packet;
+                if (!PacketAt(data, index, buffer, packet))
+                    return nullptr;
+                return Physical(InputAddress(data, buffer)) + packet * kBytesPerPacket;
+            }
+
+            // Bit offset of the first frame starting at or after packet
+            // `index` of a buffer (following skip counts past packets that
+            // only continue a frame), or the header size if none.
+            static uint32_t NextFrameOffset(const uint8_t* buffer, uint32_t index, uint32_t packets)
+            {
+                while (index < packets)
+                {
+                    const uint8_t* packet = buffer + index * kBytesPerPacket;
+                    uint32_t first = PacketFrameOffset(packet);
+                    if (first <= kMaxFrameOffset)
+                        return index * kBitsPerPacket + first;
+                    uint8_t skip = uint8_t(PacketSkipCount(packet));
+                    if (skip == kSkipWholePacket)
+                        break;
+                    index += skip + 1u;
+                }
+                return kBitsPerPacketHeader;
+            }
+            uint32_t NextFrameOffset(const ContextData& data, uint32_t index) const
+            {
+                uint32_t buffer, packet;
+                if (!PacketAt(data, index, buffer, packet))
+                    return kBitsPerPacketHeader;
+                return NextFrameOffset(Physical(InputAddress(data, buffer)), packet, InputPackets(data, buffer));
+            }
+
+            // The frames of a packet: how many there are, which one starts at
+            // frameOffset (bits from the packet start) and its length (0:
+            // its length field itself continues in the next packet).
+            struct PacketInfo
+            {
+                uint32_t frameCount = 0, frame = 0, frameLength = 0;
+                bool LastFrame() const { return frameCount == 0 || frame == frameCount - 1; }
+            };
+            static PacketInfo ReadPacketInfo(const uint8_t* packet, uint32_t frameOffset)
+            {
+                PacketInfo info;
+                uint32_t first = PacketFrameOffset(packet);
+                BitStream stream(const_cast<uint8_t*>(packet), kBitsPerPacket);
+                stream.SetOffset(first);
+                if (frameOffset < first)
+                    info.frameLength = first - frameOffset;  // the tail of a split frame
+                for (;;)
+                {
+                    if (stream.BitsRemaining() < 15)
+                    {
+                        // The length field runs into the next packet: count
+                        // the frame, length unknown here.
+                        if (stream.BitsRemaining() > 0)
+                        {
+                            if (stream.Offset() == frameOffset)
+                            {
+                                info.frame = info.frameCount;
+                                info.frameLength = 0;
+                            }
+                            info.frameCount++;
+                        }
+                        break;
+                    }
+                    uint64_t length = stream.Peek(15);
+                    if (length == 0 || length == kMaxFrameLength)
+                        break;
+                    if (stream.Offset() == frameOffset)
+                    {
+                        info.frame = info.frameCount;
+                        info.frameLength = uint32_t(length);
+                    }
+                    info.frameCount++;
+                    if (length > stream.BitsRemaining())
+                        break;  // the last frame, split
+                    stream.Advance(length - 1);
+                    if (stream.Read(1) == 0)
+                        break;
+                }
+                // XMA2 packets give their frame count (packet metadata 1).
+                if ((packet[2] & 7) == 1)
+                {
+                    uint32_t headerCount = packet[0] >> 2;
+                    if (headerCount > info.frameCount)
+                    {
+                        if (info.frameLength == 0)
+                            info.frame = info.frameCount;
+                        info.frameCount = headerCount;
+                    }
+                }
+                return info;
+            }
+
+            // Decodes the frame at the read offset into m_rawFrame (unless one
+            // is still being consumed) and moves the read offset on (Xenia
+            // canary's XmaContextNew::Decode).
+            void DecodeSubframes(ContextData& data)
+            {
+                if (!AnyInputValid(data) || m_frameSubframesLeft > 0)
+                    return;
+                if (!InputValid(data, data.current_buffer))
+                {
+                    SwapInputSubframes(data);
+                    if (!InputValid(data, data.current_buffer))
+                        return;
+                }
+                uint8_t* input = Physical(InputAddress(data, data.current_buffer));
+                m_packetData.fill(0);
+
+                // The loop end frame (decided before the loop jumps back).
+                bool loopEndFrame = data.loop_count > 0 &&
+                    data.input_buffer_read_offset == std::max(kBitsPerPacketHeader, uint32_t(data.loop_end));
+                UpdateLoop(data);
+                if (!data.output_buffer_block_count)
+                    return;
+                // An offset inside a packet header: start at the data.
+                if (data.input_buffer_read_offset < kBitsPerPacketHeader)
+                    data.input_buffer_read_offset = kBitsPerPacketHeader;
+
+                uint32_t packets = InputPackets(data, data.current_buffer);
+                size_t inputSize = size_t(packets) * kBytesPerPacket;
+                if (data.input_buffer_read_offset >= inputSize * 8)
+                    return;
+                uint32_t packetIndex = data.input_buffer_read_offset / kBitsPerPacket;
+                uint8_t* packet = input + packetIndex * kBytesPerPacket;
+                uint32_t firstFrame = PacketFrameOffset(packet);
+                uint32_t relative = data.input_buffer_read_offset % kBitsPerPacket;
+                if (relative < firstFrame)
+                {
+                    // The tail of a frame begun in an earlier packet (we don't
+                    // have its start): go to the packet's first frame.
+                    data.input_buffer_read_offset = packetIndex * kBitsPerPacket + firstFrame;
+                    relative = firstFrame;
+                }
+                uint8_t skip = uint8_t(PacketSkipCount(packet));
+                if (skip == kSkipWholePacket)
+                {
+                    // No frame starts in this packet: on to the next one.
+                    uint32_t next = NextFrameOffset(data, packetIndex + 1);
+                    if (packetIndex + 1 >= packets || next == kBitsPerPacketHeader)
+                        SwapInputSubframes(data);
+                    data.input_buffer_read_offset = next;
+                    return;
+                }
+
+                PacketInfo info = ReadPacketInfo(packet, relative);
+                uint32_t nextPacketIndex = packetIndex + skip + 1u;
+                constexpr uint32_t kDataBytes = kBytesPerPacket - 4;
+                if (info.frameLength == 0)
+                {
+                    // The length field is split: read it across both packets.
+                    const uint8_t* next = NextPacket(data, nextPacketIndex);
+                    if (!next)
+                    {
+                        SwapInputSubframes(data);
+                        return;
+                    }
+                    std::memcpy(m_packetData.data(), packet + 4, kDataBytes);
+                    std::memcpy(m_packetData.data() + kDataBytes, next + 4, kDataBytes);
+                    BitStream combined(m_packetData.data(), (kBitsPerPacket - kBitsPerPacketHeader) * 2);
+                    combined.SetOffset(relative - kBitsPerPacketHeader);
+                    uint64_t length = combined.Peek(15);
+                    if (length == kMaxFrameLength)
+                    {
+                        data.error_status = kDecodeError;
+                        return;
+                    }
+                    info.frameLength = uint32_t(length);
+                }
+
+                BitStream inPacket(input, (packetIndex + 1) * kBitsPerPacket);
+                inPacket.SetOffset(data.input_buffer_read_offset);
+                uint32_t bitsToCopy = std::min(uint32_t(inPacket.BitsRemaining()), info.frameLength);
+                if (bitsToCopy == 0)
+                {
+                    SwapInputSubframes(data);
+                    return;
+                }
+                if (info.LastFrame() && inPacket.BitsRemaining() < info.frameLength)
+                {
+                    // The frame continues in the stream's next packet.
+                    const uint8_t* next = NextPacket(data, nextPacketIndex);
+                    if (!next)
+                    {
+                        data.error_status = kDecodeError;
+                        return;
+                    }
+                    std::memcpy(m_packetData.data() + kDataBytes, next + 4, kDataBytes);
+                }
+                std::memcpy(m_packetData.data(), packet + 4, kDataBytes);
+
+                BitStream stream(m_packetData.data(), (kBitsPerPacket - kBitsPerPacketHeader) * 2);
+                stream.SetOffset(relative - kBitsPerPacketHeader);
+                m_frameData.fill(0);
+                uint32_t paddingStart = uint32_t(stream.Copy(m_frameData.data() + 1, info.frameLength));
+                if (PrepareDecoder(data.sample_rate, data.is_stereo))
+                {
+                    m_packet->data = m_frameData.data();
+                    uint32_t bits = paddingStart + info.frameLength;
+                    m_packet->size = int(1 + bits / 8 + (bits % 8 ? 1 : 0));
+                    uint32_t paddingEnd = uint32_t(m_packet->size) * 8 - (8 + bits);
+                    m_frameData[0] = uint8_t(((paddingStart & 7) << 5) | ((paddingEnd & 7) << 2));
+                    if (avcodec_send_packet(m_codec, m_packet) >= 0 && avcodec_receive_frame(m_codec, m_frame) >= 0)
+                    {
+                        ConvertFrame(data.is_stereo);
+                        m_frameSubframesLeft = FrameBlocks(data);
+                        // Loop end: only blocks 0..loop_subframe_end.
+                        m_loopFrameLimit = loopEndFrame ? uint8_t((data.loop_subframe_end + 1) << data.is_stereo) : 0;
+                        // Loop start: skip the first loop_subframe_skip blocks.
+                        if (m_loopStartSkipPending)
+                        {
+                            uint8_t skipBlocks = uint8_t(data.loop_subframe_skip << data.is_stereo);
+                            if (skipBlocks < m_frameSubframesLeft)
+                                m_frameSubframesLeft = uint8_t(m_frameSubframesLeft - skipBlocks);
+                            m_loopStartSkipPending = false;
+                        }
+                    }
+                    else if (LogXma())
+                        fprintf(stderr, "[xma] ctx %u: bad frame at bit %u (packet %u frame %u)\n", id, data.input_buffer_read_offset,
+                            packetIndex, info.frame);
+                }
+
+                // Where the next frame is.
+                if (!info.LastFrame())
+                {
+                    uint32_t next = (data.input_buffer_read_offset + bitsToCopy) % kBitsPerPacket;
+                    data.input_buffer_read_offset = packetIndex * kBitsPerPacket + next;
+                    return;
+                }
+                uint32_t nextOffset = NextFrameOffset(data, nextPacketIndex);
+                if (nextPacketIndex >= packets || nextOffset == kBitsPerPacketHeader)
+                    SwapInputSubframes(data);
+                if (nextOffset == kBitsPerPacketHeader && AnyInputValid(data))
+                {
+                    // At the start of the next buffer: its first frame.
+                    nextOffset = PacketFrameOffset(Physical(InputAddress(data, data.current_buffer)));
+                    if (nextOffset > kMaxFrameOffset)
+                    {
+                        SwapInputSubframes(data);
+                        return;
+                    }
+                }
+                data.input_buffer_read_offset = nextOffset;
+            }
+
+            // Stores only the fields the decoder owns into the context as it
+            // is now, keeping anything the game changed meanwhile.
+            static void StoreMerged(const ContextData& data, const ContextData& initial, uint8_t* pointer)
+            {
+                ContextData fresh;
+                fresh.Load(pointer);
+                fresh.loop_count = data.loop_count;
+                fresh.output_buffer_write_offset = data.output_buffer_write_offset;
+                if (initial.input_buffer_0_valid && !data.input_buffer_0_valid)
+                    fresh.input_buffer_0_valid = 0;
+                if (initial.input_buffer_1_valid && !data.input_buffer_1_valid)
+                    fresh.input_buffer_1_valid = 0;
+                if (initial.output_buffer_valid && !data.output_buffer_valid)
+                    fresh.output_buffer_valid = 0;
+                fresh.input_buffer_read_offset = data.input_buffer_read_offset;
+                fresh.error_status = data.error_status;
+                fresh.current_buffer = data.current_buffer;
+                fresh.output_buffer_read_offset = data.output_buffer_read_offset;
+                fresh.Store(pointer);
             }
         };
 

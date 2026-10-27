@@ -394,6 +394,17 @@ namespace h3::gpu::renderer
         return true;
     }
 
+    bool OnFenceWrite(uint32_t address, uint32_t swapped)
+    {
+        return g_enabled && internal::DeferFenceWrite(address, swapped);
+    }
+
+    void OnCommandProcessorIdle()
+    {
+        if (g_enabled)
+            internal::PollDeferredFenceWrites();
+    }
+
     bool AcquireFrame(Frame& frame)
     {
         std::lock_guard lock(g_frameMutex);

@@ -593,6 +593,15 @@ void main() { xe_color = vec4(1.0, 0.0, 1.0, 1.0); }
             g_swaps <= snapshotTo;
         // An F9 capture also saves its frame (into the capture's folder).
         bool hotkey = capture::HotkeyFrame() != 0 && g_swaps == capture::HotkeyFrame();
+        // H3_SNAPSHOT_LEVEL (debug/state_hash.cpp): level_<level time>.png.
+        uint32_t levelTag = 0;
+        bool levelSnapshot = texture && capture::TakeSnapshotRequest(levelTag);
+        if (levelSnapshot)
+        {
+            char levelPath[64];
+            snprintf(levelPath, sizeof(levelPath), "level_%u.png", levelTag);
+            DumpTexture(texture, width, height, levelPath, format);
+        }
         if (!((dumpFrame != 0 && g_swaps == dumpFrame) || snapshot || hotkey) || (dumpResolves && !hotkey) || !texture)
             return;
         if (const char* address = EnvString("H3_DUMP_ADDRESS"))

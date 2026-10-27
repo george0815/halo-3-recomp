@@ -640,6 +640,10 @@ namespace h3::gpu
                 bool reported = false;
                 while (!Compare(waitInfo, PollValue(waitInfo, address) & mask, ref))
                 {
+                    // The value may be a fence the renderer holds back
+                    // (renderer::OnFenceWrite): this thread would never get
+                    // idle to let it go.
+                    renderer::OnCommandProcessorIdle();
                     if (!reported && std::chrono::steady_clock::now() - start > kStuckWaitReport)
                     {
                         fprintf(stderr, "[gpu] stuck waiting on %s 0x%08X: (0x%08X & 0x%08X) func %u ref 0x%08X\n",
@@ -713,7 +717,12 @@ namespace h3::gpu
                 uint32_t address = reader.Read();
                 uint32_t value = reader.Read();
                 WriteRegister(kRegVgtEventInitiator, initiator & kEventTypeMask);
-                WriteMemory(address, (initiator >> 31) ? g_swapCounter.load() : value);
+                // Behind the memory exports before it, which the renderer
+                // writes back late (renderer/memexport.cpp, "Deferred fence
+                // writes").
+                uint32_t fence = (initiator >> 31) ? g_swapCounter.load() : value;
+                if (!renderer::OnFenceWrite(address, SwapEndian32(fence, address)))
+                    WriteMemory(address, fence);
                 break;
             }
             case kOpEventWriteZpd:
@@ -913,6 +922,9 @@ namespace h3::gpu
                 uint32_t writePointer = ReadRegister(kRegCpRbWptr) % size;
                 if (writePointer == readPointer)
                 {
+                    // A CPU may be waiting on a fence the renderer holds back
+                    // until its exports are in: let it go.
+                    renderer::OnCommandProcessorIdle();
                     // PERF: polls the write pointer; it's plain memory, so the
                     // CPU's update can't wake this thread directly (hooking
                     // D3D's kick function could).

@@ -25,6 +25,8 @@ namespace h3::gpu::capture
         // window thread), and the frame and folder of the latest one.
         std::atomic<bool> g_requested{ false };
         std::atomic<bool> g_requestedDeep{ false };
+        // RequestSnapshot's tag + 1 (0: no snapshot pending).
+        std::atomic<uint64_t> g_snapshotRequest{ 0 };
         bool g_deep = false;  // the current hotkey capture is deep
         uint32_t g_hotkeyFrame = 0;
         std::string g_hotkeyDirectory;
@@ -184,7 +186,9 @@ namespace h3::gpu::capture
         fprintf(out, "\n");
         // Texture fetch constants of type texture:
         // slot:base:format:signs:exp:size:dimension (t = tiled, p = packed
-        // mips):mip levels@mip address:swizzle (x/y/z/w, 0, 1).
+        // mips):mip levels@mip address:swizzle (x/y/z/w, 0, 1):c<clamp x,
+        // y, z> (0 wrap, 1 mirror, 2 clamp, 3 mirror once, 4-7 half
+        // border / border variants).
         fprintf(out, "  textures");
         for (uint32_t t = 0; t < 32; t++)
         {
@@ -199,9 +203,9 @@ namespace h3::gpu::capture
             char swizzle[5] = {};
             for (uint32_t i = 0; i < 4; i++)
                 swizzle[i] = "xyzw01??"[(fetch.swizzle >> (3 * i)) & 7];
-            fprintf(out, " %u:%08X:%u:%02X:%d:%ux%u:d%u%s%s:m%u-%u@%08X:%s", t, w1 & 0xFFFFF000, w1 & 0x3F, (w0 >> 2) & 0xFF,
+            fprintf(out, " %u:%08X:%u:%02X:%d:%ux%u:d%u%s%s:m%u-%u@%08X:%s:c%u%u%u", t, w1 & 0xFFFFF000, w1 & 0x3F, (w0 >> 2) & 0xFF,
                 int32_t(w3 << 13) >> 26, fetch.width, fetch.height, fetch.dimension, fetch.tiled ? "t" : "", fetch.packedMips ? "p" : "",
-                fetch.mipMin, fetch.mipMax, fetch.mipAddress, swizzle);
+                fetch.mipMin, fetch.mipMax, fetch.mipAddress, swizzle, fetch.clampX, fetch.clampY, fetch.clampZ);
         }
         fprintf(out, "\n");
     }
@@ -281,6 +285,18 @@ namespace h3::gpu::capture
         if (deep)
             g_requestedDeep = true;
         g_requested = true;
+    }
+
+    void RequestSnapshot(uint32_t tag)
+    {
+        g_snapshotRequest = uint64_t(tag) + 1;
+    }
+
+    bool TakeSnapshotRequest(uint32_t& tag)
+    {
+        uint64_t request = g_snapshotRequest.exchange(0);
+        tag = uint32_t(request - 1);
+        return request != 0;
     }
 
     bool HotkeyDeep()
