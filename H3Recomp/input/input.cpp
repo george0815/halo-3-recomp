@@ -203,7 +203,7 @@ namespace h3::input
         std::vector<MouseMotion> g_mouseMotion;  // window thread only
         float g_mouseSensitivity = 1.0f;
         float g_mouseInvertY = 1.0f;    // -1 to invert vertical mouse look
-        int g_mouseWheel = 0;           // notches not yet turned into presses
+        int g_mouseWheel = 0;           // whole notches since the last Update
         uint64_t g_wheelPressUntilNs = 0;
 
         // The window an event belongs to (null for global events).
@@ -281,17 +281,29 @@ namespace h3::input
             }
             break;
         case SDL_EVENT_KEY_DOWN:
+            // H3_LOG_INPUT: the raw key events too (repeats included), to
+            // tell a doubled press from the keyboard apart from the game's.
+            if (g_log)
+                fprintf(stderr, "[input] key down %s%s\n", SDL_GetScancodeName(event.key.scancode), event.key.repeat ? " (repeat)" : "");
             if (event.key.scancode == SDL_SCANCODE_F1)
                 if (SDL_Window* window = EventWindow(event))
                     SDL_SetWindowRelativeMouseMode(window, false);
+            break;
+        case SDL_EVENT_KEY_UP:
+            if (g_log)
+                fprintf(stderr, "[input] key up %s\n", SDL_GetScancodeName(event.key.scancode));
             break;
         case SDL_EVENT_MOUSE_MOTION:
             if (SDL_Window* window = EventWindow(event); window && SDL_GetWindowRelativeMouseMode(window))
                 g_mouseMotion.push_back({ SDL_GetTicksNS(), event.motion.xrel, event.motion.yrel });
             break;
         case SDL_EVENT_MOUSE_WHEEL:
+            // Whole notches only: a high-resolution wheel (or smooth
+            // scrolling) sends several fractional events per notch, and
+            // counting each as a notch switched weapons twice or more.
+            // SDL accumulates the fractions into integer_y.
             if (SDL_Window* window = EventWindow(event); window && SDL_GetWindowRelativeMouseMode(window))
-                g_mouseWheel += event.wheel.y != 0 ? 1 : 0;
+                g_mouseWheel += std::abs(int(event.wheel.integer_y));
             break;
         default:
             break;
@@ -320,13 +332,18 @@ namespace h3::input
         bool captured = focus && SDL_GetWindowRelativeMouseMode(focus);
         SDL_MouseButtonFlags mouse = captured ? SDL_GetMouseState(nullptr, nullptr) : 0;
 
-        // Each wheel notch is a ~100 ms press of whatever "Mouse Wheel" is
-        // bound to (the game needs to see it held for a frame or two), with
-        // a 50 ms release between notches.
+        // A scroll is a ~100 ms press of whatever "Mouse Wheel" is bound to
+        // (the game needs to see it held for a frame or two), then a 50 ms
+        // release. Notches arriving during that press or release belong to
+        // the same scroll and are dropped: queued, a two-notch flick became
+        // two weapon switches 150 ms apart, the weapon dropping and coming
+        // straight back up (the "switch animation plays twice" bug).
         constexpr uint64_t kWheelPressNs = 100'000'000, kWheelGapNs = 50'000'000;
-        if (g_mouseWheel > 0 && now >= g_wheelPressUntilNs + kWheelGapNs)
+        if (now < g_wheelPressUntilNs + kWheelGapNs)
+            g_mouseWheel = 0;
+        else if (g_mouseWheel > 0)
         {
-            g_mouseWheel--;
+            g_mouseWheel = 0;
             g_wheelPressUntilNs = now + kWheelPressNs;
         }
         bool wheel = now < g_wheelPressUntilNs;
@@ -421,8 +438,8 @@ namespace h3::input
             state.packetNumber = g_state.packetNumber + 1;
             g_state = state;
             if (g_log)
-                fprintf(stderr, "[input] buttons %04X triggers %u %u left %d %d right %d %d\n", state.buttons, state.leftTrigger,
-                    state.rightTrigger, state.thumbLX, state.thumbLY, state.thumbRX, state.thumbRY);
+                fprintf(stderr, "[input] frame %u buttons %04X triggers %u %u left %d %d right %d %d\n", frame, state.buttons,
+                    state.leftTrigger, state.rightTrigger, state.thumbLX, state.thumbLY, state.thumbRX, state.thumbRY);
         }
     }
 

@@ -563,12 +563,22 @@ namespace h3::gpu::texture
         result.packedMips = false;
         result.mipMin = 0;
         result.address = fetch.mipAddress;
+        // A level's storage has power-of-two dimensions (the pitch and the
+        // stride to the next level), but its image is the real size: a
+        // 384x384 texture's level 1 is 192x192 in a 256x256 slot. Sized to
+        // the slot, the host texture's 0-1 coordinates spanned the black
+        // padding, and tiled terrain showed it as a dark grid (The
+        // Covenant's opening: the island and the mountains).
         for (uint32_t l = 1; l <= level; l++)
         {
-            result.width = result.pitch = levelSize(fetch.width, l);
-            result.height = levelSize(fetch.height, l);
+            FetchConstant slot = result;
+            slot.width = slot.pitch = levelSize(fetch.width, l);
+            slot.height = levelSize(fetch.height, l);
+            result.pitch = slot.pitch;
+            result.width = std::max(1u, fetch.width >> l);
+            result.height = std::max(1u, fetch.height >> l);
             if (l < level)
-                result.address += AlignUp(GuestSize(result), kLevelAlignment);
+                result.address += AlignUp(GuestSize(slot), kLevelAlignment);
         }
         return result;
     }

@@ -185,6 +185,11 @@ namespace h3::gpu::renderer::internal
             std::vector<texture::FetchConstant> mips = texture::MipLevels(constant);
             if (base.width != constant.width || base.height != constant.height)
             {
+                // H3_NO_STANDIN_MIPS=1 (testing): a stand-in level alone,
+                // as before 2026-10-27.
+                static const bool none = EnvFlag("H3_NO_STANDIN_MIPS");
+                if (none)
+                    return {};
                 size_t level = 0;
                 while (level < mips.size() && (mips[level].width != base.width || mips[level].height != base.height))
                     level++;

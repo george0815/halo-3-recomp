@@ -27,8 +27,10 @@
 #include "memory.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 
 using namespace h3;
 
@@ -124,9 +126,14 @@ PPC_FUNC(sub_821D7098)
 // seed, HUD histories) then differs between two replays of a film.
 // H3_LOCKSTEP=1 (testing) passes exactly one tick's time instead: one tick
 // per frame, the game running as fast as frames finish (vsync permitting).
+// H3_FRAME_DELAY_MS=<n> (testing) sleeps n ms per main loop iteration: a
+// slow machine's frames, several game ticks each.
 PPC_FUNC_IMPL(__imp__sub_820983E0);
 PPC_FUNC(sub_820983E0)
 {
+    static const uint32_t delayMs = EnvNumber("H3_FRAME_DELAY_MS");
+    if (delayMs)
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
     static const bool lockstep = EnvFlag("H3_LOCKSTEP");
     if (lockstep)
     {
