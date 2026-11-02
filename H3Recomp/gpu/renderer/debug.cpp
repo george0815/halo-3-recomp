@@ -12,6 +12,7 @@
 #include <cctype>
 #include <set>
 #include <unordered_map>
+#include <thread>
 #include <vector>
 #include <string>
 #include <cmath>
@@ -213,6 +214,26 @@ namespace h3::gpu::renderer::internal
             HalfToRgba8(pixels, width, height, path);
         else if (format != SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)
             ToRgba8(static_cast<uint32_t*>(pixels), width * height, format);
+        // H3_SNAPSHOT_ASYNC=1: compress and write the PNG on a background
+        // thread, so saving every frame doesn't slow frames down several
+        // times (~100 ms each), which distorts anything timed by real time
+        // (first-person animation). The GPU download still waits.
+        static const bool async = EnvFlag("H3_SNAPSHOT_ASYNC");
+        if (async && !half)
+        {
+            std::vector<uint32_t> copy(static_cast<uint32_t*>(pixels), static_cast<uint32_t*>(pixels) + size_t(width) * height);
+            std::thread([copy = std::move(copy), width, height, file = std::string(path)]() mutable {
+                SDL_Surface* surface = SDL_CreateSurfaceFrom(int(width), int(height), SDL_PIXELFORMAT_ABGR8888, copy.data(), int(width * 4));
+                if (surface)
+                {
+                    SDL_SavePNG(surface, file.c_str());
+                    SDL_DestroySurface(surface);
+                }
+            }).detach();
+            SDL_UnmapGPUTransferBuffer(g_device, download);
+            SDL_ReleaseGPUTransferBuffer(g_device, download);
+            return;
+        }
         SDL_Surface* surface = SDL_CreateSurfaceFrom(int(width), int(height), SDL_PIXELFORMAT_ABGR8888, pixels, int(width * 4));
         if (surface && SDL_SavePNG(surface, path))
             fprintf(stderr, "[render] wrote %s (%ux%u)\n", path, width, height);

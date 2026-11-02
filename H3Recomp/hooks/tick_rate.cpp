@@ -125,7 +125,8 @@ PPC_FUNC(sub_821D7098)
 // (103 ticks in 100 frames at 60/60). Per-frame work (the local random
 // seed, HUD histories) then differs between two replays of a film.
 // H3_LOCKSTEP=1 (testing) passes exactly one tick's time instead: one tick
-// per frame, the game running as fast as frames finish (vsync permitting).
+// per frame, the game running as fast as frames finish (vsync permitting);
+// H3_LOCKSTEP_TICKS=<n> passes n ticks' time (n ticks per frame).
 // H3_FRAME_DELAY_MS=<n> (testing) sleeps n ms per main loop iteration: a
 // slow machine's frames, several game ticks each.
 PPC_FUNC_IMPL(__imp__sub_820983E0);
@@ -135,11 +136,12 @@ PPC_FUNC(sub_820983E0)
     if (delayMs)
         std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
     static const bool lockstep = EnvFlag("H3_LOCKSTEP");
-    if (lockstep)
+    static const uint32_t lockstepTicks = EnvNumber("H3_LOCKSTEP_TICKS");
+    if (lockstep || lockstepTicks)
     {
         uint32_t gameTime = GuestRef<uint32_t>(uint32_t(GuestRef<uint32_t>(ctx.r13.u32)) + kGameTimeSlot);
         if (gameTime)
-            ctx.f1.f64 = float(GuestRef<float>(gameTime + 8));  // seconds per tick
+            ctx.f1.f64 = float(GuestRef<float>(gameTime + 8)) * float(lockstepTicks ? lockstepTicks : 1);  // seconds per tick
     }
     __imp__sub_820983E0(ctx, base);
 }

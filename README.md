@@ -199,6 +199,7 @@ Environment variables:
 | `H3_DUMP_VIEWS=1` | With `H3_DUMP_FRAME`: save each part of a resolved texture copied out for sampling at another size (`view_*.png`) |
 | `H3_DUMP_SCALE=<n>` | Divide 16-bit float colors by n in dumps (Halo's final 7e3 target holds 32x values) |
 | `H3_SNAPSHOT_EVERY=<n>` | Save every n-th presented frame as `frame_<n>.png` (from frame `H3_SNAPSHOT_FROM` to `H3_SNAPSHOT_TO`, if set) |
+| `H3_SNAPSHOT_ASYNC=1` | Write snapshot PNGs on a background thread, so saving every frame doesn't slow frames down (real-time-driven animation) |
 | `H3_LOG_CLEARS=1` | Log D3D clears (screen-space rectangle draws) with their rectangles, color and surface |
 | `H3_LOG_AUDIO=1` | Log audio frames submitted and their peak level, once a second |
 | `H3_AUDIO_DUMP=<file>` | Also write the audio output as raw 6-channel 48 kHz float (`ffmpeg -f f32le -ac 6 -ar 48000 -i <file> out.wav`) |
@@ -216,6 +217,7 @@ Environment variables:
 | `H3_TRAP_ON_STUCK=1` | Raise SIGTRAP when a thread is stuck on a critical section (for an attached debugger) |
 | `H3_RANDOM_SEED=<n>` | Fixed random seeds (XNetRandom, the game's clock-based seeds, the local random seed at level start, a seed of its own for the particle thread): the game state lands at the same address and replays compare word for word (`tools/films/`) |
 | `H3_LOCKSTEP=1` | Exactly one game tick per frame (the game runs as fast as frames finish), so per-frame state replays alike |
+| `H3_LOCKSTEP_TICKS=<n>` | Exactly n game ticks per frame (testing multi-tick frames) |
 | `H3_STATE_HASH=<file>` | Append `<copy> <tick> <hash>` for every per-tick game state copy: a checksum of the 4 MB game state per tick (`tools/films/`) |
 | `H3_STATE_MASK=<file>` | Leave the cosmetic state that file names (data arrays, object fields, words; learned by `tools/films/learn_mask.py`) out of `H3_STATE_HASH` |
 | `H3_STATE_DUMP=<tick>[,...]` | With `H3_STATE_HASH`: save the raw game state at those ticks as `state_<tick>.bin` |
