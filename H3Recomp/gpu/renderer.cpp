@@ -147,6 +147,8 @@ namespace h3::gpu::renderer
         g_noWriteBack = EnvFlag("H3_NO_WRITEBACK");
         g_uniformConstants = EnvFlag("H3_UNIFORM_CONSTANTS");
         shader::g_storageConstants = !g_uniformConstants;
+        shader::g_borderClamp = EnvFlag("H3_BORDER_CLAMP");
+        shader::g_weightsOffset = !EnvFlag("H3_NO_WEIGHTS_OFFSET");
         CreatePlaceholders(device);
 
         // Shader compilation (pipelines.cpp): asynchronous if asked

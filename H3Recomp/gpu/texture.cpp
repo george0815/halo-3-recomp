@@ -305,6 +305,7 @@ namespace h3::gpu::texture
         fetch.endian = (words[1] >> 6) & 3;
         fetch.address = words[1] & 0xFFFFF000;
         fetch.stacked = (words[1] >> 10) & 1;
+        fetch.borderColor = words[5] & 3;
         fetch.dimension = (words[5] >> 9) & 3;
         fetch.packedMips = (words[5] >> 11) & 1;
         fetch.mipAddress = words[5] & 0xFFFFF000;

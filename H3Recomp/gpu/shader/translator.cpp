@@ -23,6 +23,8 @@
 namespace h3::gpu::shader
 {
     bool g_storageConstants = true;
+    bool g_borderClamp = false;
+    bool g_weightsOffset = true;
 
     using namespace ucode;
 
@@ -116,6 +118,35 @@ uint xe_swap(uint value, uint mode)
     if (mode == 3u)  // 16-in-32
         return (value << 16) | (value >> 16);
     return value;
+}
+)";
+
+        // Clamp-to-border for 1D/2D fetches (g_borderClamp; only appended
+        // then, so the default GLSL and its cache names don't change). The
+        // renderer sets tfetch.w bit 28/29 for an x/y clamp mode of 6, bit 30
+        // for a white border (else transparent black: Xenia's sampler border
+        // colors; the two YCbCr blacks are rare and approximated as it), bit
+        // 31 for a fetch constant that point filters. Bilinear filtering
+        // blends border texels in over the half texel past an edge; point
+        // filtering switches at the edge. Uses the base level's size, so at a
+        // smaller mip the fade is narrower than the hardware's.
+        const char* kBorderGlsl = R"(
+vec4 xe_border(vec4 v, vec2 coords, vec2 size, bool linear, uint fetchConstant)
+{
+    uint w = xe_sys.tfetch[fetchConstant].w;
+    if ((w & 0x30000000u) == 0u)
+        return v;
+    vec2 inside;
+    if (linear && (w & 0x80000000u) == 0u)
+        inside = clamp(min(coords, 1.0 - coords) * size + 0.5, 0.0, 1.0);
+    else
+        inside = step(0.0, coords) * (1.0 - step(1.0, coords));
+    if ((w & 0x10000000u) == 0u)
+        inside.x = 1.0;
+    if ((w & 0x20000000u) == 0u)
+        inside.y = 1.0;
+    vec4 border = (w & 0x40000000u) != 0u ? vec4(1.0) : vec4(0.0);
+    return mix(border, v, inside.x * inside.y);
 }
 )";
 
@@ -1507,18 +1538,43 @@ void main()
                             writes.c_str(), dst.c_str()));
                         return;
                     }
-                    std::string sample = Format("xe_texture_result(%s, %uu)", sampleOf(sampler, buildCoords(sampler)).c_str(),
-                        f.TextureConstIndex());
+                    std::string raw = sampleOf(sampler, buildCoords(sampler));
+                    if (g_borderClamp && f.TextureDim() != TextureDimension::Cube)
+                    {
+                        // Clamp-to-border (g_borderClamp): fade the edge-
+                        // clamped sample by the coordinates' guest texels
+                        // inside, before the fetch constant's conversion as a
+                        // sampler's border color would be.
+                        bool point = f.TextureMagFilter() == kTextureFilterPoint && f.TextureMinFilter() == kTextureFilterPoint;
+                        Line(Format("vec2 border_coords = %s;", buildCoords(sampler).c_str()));
+                        raw = Format("xe_border(%s, border_coords, vec2(textureSize(%s, 0)) / xe_texture_scale(%uu), %s, %uu)",
+                            sampleOf(sampler, "border_coords").c_str(), sampler.c_str(), f.TextureConstIndex(),
+                            point ? "false" : "true", f.TextureConstIndex());
+                    }
+                    std::string sample = Format("xe_texture_result(%s, %uu)", raw.c_str(), f.TextureConstIndex());
                     Line(Format("vec4 fetched = %s; vec4 dst = %s; %s %s = dst;", sample.c_str(), dst.c_str(), writes.c_str(),
                         dst.c_str()));
                     return;
                 }
                 case FetchOpcode::GetTextureWeights:
                 {
-                    // Bilinear weights: the fractional texel position.
+                    // Bilinear weights: the fractional texel position, in
+                    // guest texels, with the instruction's offset (as
+                    // Xenia: fract(coords * size + offset - 0.5)). Halo's
+                    // shadow PCF asks for weights at offset +0.5 to line them
+                    // up with its point taps at floor(coords * size) + {-1,
+                    // 0, 1}; without the offset the weights were half a texel
+                    // off and every shadow map texel edge became a hard step
+                    // (blocky shadows, flicker as they move).
+                    // H3_NO_WEIGHTS_OFFSET=1: the old behaviour (no offset).
                     uint32_t binding = TextureBindingFor(f.TextureConstIndex(), f.TextureDim());
-                    Line(Format("vec2 texel = vec2(%s, %s) * (vec2(textureSize(xe_texture%u, 0).xy) / xe_texture_scale(%uu)) - 0.5;",
-                        coordinate(0).c_str(), coordinate(1).c_str(), binding, f.TextureConstIndex()));
+                    float ox = g_weightsOffset ? f.TextureOffset(0) : 0.0f;
+                    float oy = g_weightsOffset && f.TextureDim() != TextureDimension::D1 ? f.TextureOffset(1) : 0.0f;
+                    std::string texels = Format("vec2(%s, %s)", coordinate(0).c_str(), coordinate(1).c_str());
+                    if (!f.TextureUnnormalized() || !g_weightsOffset)
+                        texels = Format("%s * (vec2(textureSize(xe_texture%u, 0).xy) / xe_texture_scale(%uu))", texels.c_str(),
+                            binding, f.TextureConstIndex());
+                    Line(Format("vec2 texel = %s + vec2(%.9g, %.9g);", texels.c_str(), ox - 0.5f, oy - 0.5f));
                     std::string writes = DestinationWrites(f, "fetched");
                     if (!writes.empty())
                         Line(Format("vec4 fetched = vec4(fract(texel), 0.0, 0.0); vec4 dst = %s; %s %s = dst;", dst.c_str(),
@@ -1650,6 +1706,8 @@ void main()
                 }
                 out += kPrelude;
                 out += kPwlGammaGlsl;
+                if (g_borderClamp)
+                    out += kBorderGlsl;
                 if (m_compute)
                     out += kMemExportFunctions;
 

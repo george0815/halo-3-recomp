@@ -59,6 +59,13 @@ namespace h3::gpu::renderer::internal
         // whether to filter between layers, in the same word.
         constexpr uint32_t kStackedLayersShift = 16, kMaxStackedLayers = 0x7FF;
         constexpr uint32_t kStackedLinearBit = 1u << 27;
+        // Clamp-to-border, emulated in the shader for H3_BORDER_CLAMP=1
+        // (translator.cpp, kBorderGlsl): which axes clamp to the border, a
+        // white border, and a fetch constant that point filters.
+        constexpr uint32_t kBorderXBit = 1u << 28, kBorderYBit = 1u << 29, kBorderWhiteBit = 1u << 30, kBorderPointBit = 1u << 31;
+        // Fetch constant values: clamp mode 6 (clamp to border), border
+        // color 1 (ABGR white).
+        constexpr uint32_t kClampToBorder = 6, kBorderColorWhite = 1;
         // Fetch constant dimension values (texture.h).
         constexpr uint32_t kDimension2D = 1, kDimension3D = 2, kDimensionCube = 3;
         // Faces of a cube map.
@@ -704,13 +711,27 @@ namespace h3::gpu::renderer::internal
         // the guest's value: the fetch constant's swizzle (adapted to the
         // host format), sign modes and exponent (translator.cpp,
         // xe_texture_result).
+        // A fetch constant's clamp-to-border flags for its system constant
+        // word 3 (kBorderXBit...; 0 when neither x nor y clamps to the border).
+        uint32_t BorderBits(const texture::FetchConstant& fetch)
+        {
+            uint32_t bits = (fetch.clampX == kClampToBorder ? kBorderXBit : 0) | (fetch.clampY == kClampToBorder ? kBorderYBit : 0);
+            if (!bits)
+                return 0;
+            if (fetch.borderColor == kBorderColorWhite)
+                bits |= kBorderWhiteBit;
+            if (fetch.magFilter == 0 && fetch.minFilter == 0)
+                bits |= kBorderPointBit;
+            return bits;
+        }
+
         void SetMemoryTextureConstants(uint32_t* constants, const texture::FetchConstant& fetch)
         {
             uint32_t signPrecision = texture::SignPrecision(fetch);
             constants[0] = texture::HostSwizzle(fetch);
             constants[1] = signPrecision ? fetch.signs : 0;
             constants[2] = uint32_t(fetch.expAdjust);
-            constants[3] = std::max(signPrecision, 1u);
+            constants[3] = std::max(signPrecision, 1u) | BorderBits(fetch);
         }
 
         // Binds a texture decoded from memory, if it decodes.
@@ -841,6 +862,8 @@ namespace h3::gpu::renderer::internal
                     // Resolved textures are render-scale times the guest's
                     // size; the shader divides texture sizes by this.
                     constants[3] |= g_renderScale << kTextureScaleShift;
+                    if (fetch.valid)
+                        constants[3] |= BorderBits(fetch);
                 }
                 else if (usable && fetch.dimension <= kDimension2D)
                 {

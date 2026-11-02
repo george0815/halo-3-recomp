@@ -39,6 +39,7 @@ namespace h3::gpu::texture
         uint32_t mipMin = 0, mipMax = 0;  // levels the sampler may use
         uint32_t dimension = 0;    // 0 1D, 1 2D, 2 3D/stacked, 3 cube
         uint32_t clampX = 0, clampY = 0, clampZ = 0;
+        uint32_t borderColor = 0;  // clamp mode 6's color: 0 ABGR black, 1 ABGR white, 2-3 YCbCr blacks
         uint32_t magFilter = 0, minFilter = 0;
         bool volumeLinear = false;  // filter between a stacked texture's layers (vol mag filter)
         uint32_t swizzle = 0;      // 3 bits per component: 0-3 = XYZW, 4 = 0, 5 = 1

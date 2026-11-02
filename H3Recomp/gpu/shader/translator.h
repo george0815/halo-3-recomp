@@ -54,7 +54,9 @@ namespace h3::gpu::shader
     //                            0-7 = apply them (textures decoded from
     //                            memory; 2: signed components are 16-bit),
     //                            w bits 8-15 = host texels per guest texel
-    //                            (0 = 1; resolves at a render scale)
+    //                            (0 = 1; resolves at a render scale),
+    //                            w bits 28-31 = clamp-to-border flags
+    //                            (g_borderClamp, kBorderGlsl)
     //   vec4  color_exp_bias;    pixel shaders: color output i *= [i]
     //   float alpha_ref;         alpha test reference (flags bits 5-8:
     //                            function, enable)
@@ -135,6 +137,19 @@ namespace h3::gpu::shader
     // from a uniform block the renderer pushes per draw (the renderer
     // clears it for H3_UNIFORM_CONSTANTS=1, before translating anything).
     extern bool g_storageConstants;
+
+    // Whether 1D/2D texture fetches emulate clamp-to-border (fetch clamp
+    // mode 6; SDL GPU has no border address mode, so the sampler clamps to
+    // the edge and xe_border fades to the border color). Off by default: it
+    // changes every pixel shader's GLSL, so every shader cache name and the
+    // pipeline manifest with them (a full recompile on the next play). The
+    // renderer sets it for H3_BORDER_CLAMP=1, before translating anything.
+    extern bool g_borderClamp;
+
+    // Whether getWeights applies the instruction's texel offset (on by
+    // default; the renderer clears it for H3_NO_WEIGHTS_OFFSET=1, to compare
+    // with the old half-texel-off weights).
+    extern bool g_weightsOffset;
 
     // Microcode disassembly, for debugging the translator.
     std::string Disassemble(bool isVertex, const uint32_t* dwords, uint32_t dwordCount);
