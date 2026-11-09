@@ -178,11 +178,23 @@ namespace h3::gpu::capture
             RegFloat(kRegPaClVportYOffset), RegFloat(kRegPaClVportZOffset));
         fprintf(out, "  poly offset front %g,%g back %g,%g\n", RegFloat(kRegPaSuPolyOffsetFrontScale),
             RegFloat(kRegPaSuPolyOffsetFrontOffset), RegFloat(kRegPaSuPolyOffsetBackScale), RegFloat(kRegPaSuPolyOffsetBackOffset));
-        // Pixel shader constants c0-c7 and c255 (ALU constants 256 on).
+        // Boolean constants (8 words: vertex 0-127, pixel 128-255).
+        fprintf(out, "  bools");
+        for (uint32_t i = 0; i < 8; i++)
+            fprintf(out, " %08X", ReadRegister(kRegShaderConstantBool + i));
+        fprintf(out, "\n");
+        // Pixel shader constants c0-c31 and c255 (ALU constants 256 on).
         fprintf(out, "  ps constants");
-        for (uint32_t c : { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 255u })
+        for (uint32_t c : { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u, 16u, 17u, 18u, 19u, 20u, 21u, 22u, 23u, 24u, 25u, 26u, 27u, 28u, 29u, 30u, 31u, 255u })
             fprintf(out, " c%u(%g %g %g %g)", c, RegFloat(kRegShaderConstantAlu + (256 + c) * 4), RegFloat(kRegShaderConstantAlu + (256 + c) * 4 + 1),
                 RegFloat(kRegShaderConstantAlu + (256 + c) * 4 + 2), RegFloat(kRegShaderConstantAlu + (256 + c) * 4 + 3));
+        // The rest (c32-c254) where not all zero.
+        for (uint32_t c = 32; c < 255; c++)
+        {
+            uint32_t r = kRegShaderConstantAlu + (256 + c) * 4;
+            if (ReadRegister(r) | ReadRegister(r + 1) | ReadRegister(r + 2) | ReadRegister(r + 3))
+                fprintf(out, " c%u(%g %g %g %g)", c, RegFloat(r), RegFloat(r + 1), RegFloat(r + 2), RegFloat(r + 3));
+        }
         fprintf(out, "\n");
         // Texture fetch constants of type texture:
         // slot:base:format:signs:exp:size:dimension (t = tiled, p = packed

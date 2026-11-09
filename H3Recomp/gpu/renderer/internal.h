@@ -426,6 +426,7 @@ namespace h3::gpu::renderer::internal
         // first carry-over into it.
         bool synced = false;
         uint64_t syncedWrite = 0;
+        uint32_t usedFrame = 0;  // g_swaps when last looked up (TrimRenderTargets)
     };
 
     // Video memory held by one kind of host resource (for the H3_LOG_FPS
@@ -456,6 +457,9 @@ namespace h3::gpu::renderer::internal
     bool IsFloatHostFormat(SDL_GPUTextureFormat format);
     // Host render targets and their video memory (for logs).
     VideoMemoryUse RenderTargetMemory();
+    // Releases color targets no longer in use (see targets.cpp); once a
+    // frame.
+    void TrimRenderTargets();
 
     // GPU passes by kind and the pixels they cover (the scissor or blit
     // rectangle), for H3_LOG_FPS's "[passes]" line: where fill rate goes

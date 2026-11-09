@@ -672,13 +672,21 @@ namespace h3::gpu::renderer::internal
             return cached.texture;
         }
 
+        // H3_NO_FORCED_FILTERS=1: samplers follow the fetch constant only
+        // (as before tfetch filter overrides were honoured).
+        bool NoForcedFilters()
+        {
+            static const bool off = EnvFlag("H3_NO_FORCED_FILTERS");
+            return off;
+        }
+
         // The sampler for a fetch constant's clamp and filter modes.
         SDL_GPUSampler* SamplerFor(const texture::FetchConstant& fetch)
         {
             // Aniso filter field: 0 off, 1-5 = 1x-16x.
             uint32_t aniso = fetch.anisoFilter >= 1 && fetch.anisoFilter <= 5 ? 1u << (fetch.anisoFilter - 1) : 1;
             uint32_t key = fetch.clampX | (fetch.clampY << 3) | (fetch.clampZ << 6) | (fetch.magFilter << 9) | (fetch.minFilter << 11) |
-                (fetch.mipFilter << 13) | (aniso << 16);
+                (fetch.mipFilter << 13) | (aniso << 16) | ((uint32_t(fetch.lodBias) & 0x3FF) << 21);
             SDL_GPUSampler*& sampler = g_samplers[key];
             if (sampler)
                 return sampler;
@@ -695,6 +703,11 @@ namespace h3::gpu::renderer::internal
             // Mip filter: point, linear, or base level only.
             info.mipmap_mode = fetch.mipFilter == 1 ? SDL_GPU_SAMPLERMIPMAPMODE_LINEAR : SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
             info.max_lod = fetch.mipFilter == 2 ? 0.0f : 1000.0f;
+            // The fetch constant's LOD bias (the shader adds the
+            // instruction's own, translator.cpp).
+            info.mip_lod_bias = float(fetch.lodBias) / 32.0f;
+            if (fetch.lodBias)
+                LogOnce("texture LOD bias " + std::to_string(float(fetch.lodBias) / 32.0f));
             if (aniso > 1)
             {
                 info.enable_anisotropy = true;
@@ -763,6 +776,17 @@ namespace h3::gpu::renderer::internal
             for (uint32_t i = 0; i < kTextureFetchDwords; i++)
                 words[i] = ReadRegister(kRegShaderConstantFetch + binding.fetchConstant * kTextureFetchDwords + i);
             texture::FetchConstant fetch = texture::ParseFetchConstant(words);
+            // Instructions that force linear filtering (point-forced ones
+            // snap their coordinates in the shader instead).
+            for (const shader::TextureBinding& other : shader.info.textures)
+                if (other.fetchConstant == binding.fetchConstant && other.forceLinear && !NoForcedFilters())
+                {
+                    if (fetch.magFilter != 1 || fetch.minFilter != 1)
+                        LogOnce("forced linear filter on point fetch constant " + std::to_string(binding.fetchConstant) + " format " +
+                            std::to_string(fetch.format) + " " + std::to_string(fetch.width) + "x" + std::to_string(fetch.height));
+                    fetch.magFilter = fetch.minFilter = 1;
+                    break;
+                }
             // H3_LOG_TEXTURE_DECODES also counts, per frame, the textures
             // bound without their base level (mip_min_level above 0: not
             // resident, streaming in or moved), to time a streaming dip.

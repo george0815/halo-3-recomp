@@ -450,6 +450,32 @@ void main()
                 : m_vertex(isVertex), m_compute(isVertex && compute), m_dwords(dwords), m_count(count)
             {
                 m_info.isVertex = isVertex;
+                // H3_DEBUG_PS=<hash prefix>@<case>=<GLSL vec4> (debugging):
+                // in the pixel shader whose capture name (ps_<FNV-1a of the
+                // big-endian microcode>) starts with the prefix, evaluate the
+                // expression at the start of control flow case <case> and
+                // write it to color 0 instead of the shader's own output.
+                // Deep captures (F10) then show the value per pixel.
+                if (!isVertex)
+                    if (const char* spec = std::getenv("H3_DEBUG_PS"))
+                    {
+                        std::string text(spec);
+                        size_t at = text.find('@'), eq = text.find('=');
+                        if (at != std::string::npos && eq != std::string::npos && at < eq)
+                        {
+                            uint64_t hash = 0xCBF29CE484222325ull;
+                            for (uint32_t i = 0; i < count; i++)
+                                for (int b = 3; b >= 0; b--)
+                                    hash = (hash ^ ((dwords[i] >> (8 * b)) & 0xFF)) * 0x100000001B3ull;
+                            char name[24];
+                            snprintf(name, sizeof(name), "%016llx", (unsigned long long)hash);
+                            if (std::string(name).rfind(text.substr(0, at), 0) == 0)
+                            {
+                                m_debugCase = int(strtol(text.c_str() + at + 1, nullptr, 10));
+                                m_debugExpr = text.substr(eq + 1);
+                            }
+                        }
+                    }
             }
 
             // Decodes the control flow, emits the GLSL and returns it with the shader's metadata
@@ -501,6 +527,11 @@ void main()
                                     f.Opcode() == FetchOpcode::VertexFetch ? "vertex" : "texture",
                                     uint32_t(f.Opcode()), f.DstReg(), f.SrcReg(),
                                     f.Opcode() == FetchOpcode::VertexFetch ? f.VertexConstIndex() : f.TextureConstIndex());
+                                if (f.Opcode() != FetchOpcode::VertexFetch)
+                                    out += Format("         filters mag %u min %u mip %u aniso %u%s%s bias %g\n", f.TextureMagFilter(),
+                                        f.TextureMinFilter(), f.TextureMipFilter(), (d[1] >> 18) & 7,
+                                        f.TextureUseComputedLod() ? " computed-lod" : "", f.TextureUseRegisterLod() ? " register-lod" : "",
+                                        double(f.TextureLodBias()));
                             }
                             else
                             {
@@ -521,6 +552,8 @@ void main()
 
         private:
             bool m_vertex;
+            int m_debugCase = -1;      // H3_DEBUG_PS
+            std::string m_debugExpr;
             bool m_compute;  // the memexport compute variant of a vertex shader
             const uint32_t* m_dwords;
             uint32_t m_count;
@@ -647,6 +680,11 @@ void main()
                             f.Opcode() == FetchOpcode::GetTextureComputedLod)
                         {
                             TextureBindingFor(f.TextureConstIndex(), f.TextureDim());
+                            if (f.Opcode() == FetchOpcode::TextureFetch &&
+                                (f.TextureMagFilter() == kTextureFilterLinear || f.TextureMinFilter() == kTextureFilterLinear))
+                                for (TextureBinding& binding : m_info.textures)
+                                    if (binding.fetchConstant == f.TextureConstIndex())
+                                        binding.forceLinear = true;
                             // Stacked textures' second (2D array) binding,
                             // registered here too: every sampler must be
                             // numbered before the vertex memory buffer, which
@@ -693,6 +731,8 @@ void main()
                     m_indent = 2;
                     Line(Format("case %u:", i));
                     m_indent = 3;
+                    if (int(i) == m_debugCase)
+                        Line(Format("xe_debug = vec4(%s);", m_debugExpr.c_str()));
                     EmitControlFlow(i, cf);
                 }
             }
@@ -1851,6 +1891,8 @@ vec3 xe_cube_direction(vec3 stf)
                 out += "    vec4 r[64];\n    for (int i = 0; i < 64; i++) r[i] = vec4(0.0);\n";
                 out += "    int a0 = 0;\n    int aL = 0;\n    bool p0 = false;\n    float ps = 0.0;\n";
                 out += "    int newA0 = 0;\n    bool newP0 = false;\n    bool kill = false;\n";
+                if (m_debugCase >= 0)
+                    out += "    vec4 xe_debug = vec4(0.0);\n";
                 out += "    int loopDepth = -1;\n    int loopSavedAL[4];\n    int loopIteration[4];\n    uint loopConstant[4];\n";
                 out += "    int callDepth = -1;\n    int callStack[4];\n";
                 if (m_vertex)
@@ -1903,6 +1945,8 @@ vec3 xe_cube_direction(vec3 stf)
                         out += Format("    if ((xe_sys.flags & %uu) != 0u)\n        xe_color%u_out = clamp(xe_color%u_out, 0.0, 1.0);\n",
                             0x1000u << i, i, i);
                     }
+                if (m_debugCase >= 0 && (m_info.colorTargetMask & 1))
+                    out += "    xe_color0_out = xe_debug;\n";
                 // Polygon offset, slope part (the constant part moved the
                 // vertices' depth): the depth's steepest screen-space change
                 // times the factor. Done here rather than as host depth

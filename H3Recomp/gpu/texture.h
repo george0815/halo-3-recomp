@@ -47,6 +47,7 @@ namespace h3::gpu::texture
         int32_t expAdjust = 0;
         uint32_t mipFilter = 0;    // 0 point, 1 linear, 2 base map only
         uint32_t anisoFilter = 0;  // 0 off, n = 2^(n-1) samples
+        int32_t lodBias = 0;       // signed, 5 fractional bits (LOD bias = lodBias / 32)
         // A mip level inside a packed mip tail: its block offset in the
         // tail's tile (set by MipLevels; otherwise Layout derives it).
         bool explicitOffset = false;

@@ -1583,7 +1583,12 @@ namespace h3::gpu::renderer::internal
             return offset;
         // The host measures the slope per host texel, which is pixelScale
         // times smaller than per guest pixel.
-        offset.slope = RegisterFloat(scaleRegister) * kPolyOffsetScaleUnit * pixelScale;
+        // H3_POLY_SLOPE_SCALE=<factor> (testing): scale the slope part.
+        static const float slopeScale = [] {
+            const char* text = EnvString("H3_POLY_SLOPE_SCALE");
+            return text ? float(atof(text)) : 1.0f;
+        }();
+        offset.slope = RegisterFloat(scaleRegister) * kPolyOffsetScaleUnit * pixelScale * slopeScale;
         offset.constant = RegisterFloat(offsetRegister);
         return offset;
     }

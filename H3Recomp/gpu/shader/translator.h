@@ -78,6 +78,10 @@ namespace h3::gpu::shader
         // textures (the first is a 3D texture; the renderer binds one and the
         // shader picks by tfetch.w's layer count).
         bool array = false;
+        // Some fetch through this constant forces linear filtering (the
+        // instruction's mag or min filter is linear, not "use the fetch
+        // constant"): the renderer's sampler follows it.
+        bool forceLinear = false;
     };
 
     struct ShaderInfo

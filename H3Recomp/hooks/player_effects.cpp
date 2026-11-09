@@ -83,3 +83,40 @@ PPC_FUNC(sub_8212BF98)
     __imp__sub_8212BF98(ctx, base);
     seed = current;
 }
+
+// Camera impulse length at 60 ticks per second (another of MCC's fixes).
+//
+// sub_8223EE80 (MCC FUN_1405b8f60, player_effects.cpp) starts a damage
+// response's camera impulse on a player's view (r4 = the player's effect
+// state, r5 = the impulse definition, duration in seconds first): it copies
+// the definition into the state and converts the duration to ticks (state +
+// kImpulseTicksFloat, and s16 at kImpulseTicks). MCC then keeps impulses of
+// exactly one 30 Hz tick (trunc(duration * 30) == 1) at one game tick: it
+// divides both by game ticks per 30 Hz tick, so the kick isn't spread over
+// two ticks at 60. Applied at the first call after the stores (cosine of the
+// impulse angle, return address kAfterImpulseTicks), r31 = state, r27 =
+// definition.
+namespace
+{
+    constexpr uint32_t kAfterImpulseTicks = 0x8223F030;
+    constexpr uint32_t kImpulseTicksFloat = 76;
+    constexpr uint32_t kImpulseTicks = 132;
+}
+
+PPC_FUNC_IMPL(__imp__sub_82081428);
+PPC_FUNC(sub_82081428)
+{
+    if (uint32_t(ctx.lr) == kAfterImpulseTicks && h3::hooks::ContentFixes())
+    {
+        float duration = h3::GuestRef<float>(ctx.r27.u32);
+        if (int16_t(int32_t(duration * 30.0f)) == 1)
+        {
+            int perTick = h3::hooks::TicksPerOriginalTick();
+            auto& ticksFloat = h3::GuestRef<float>(ctx.r31.u32 + kImpulseTicksFloat);
+            auto& ticks = h3::GuestRef<int16_t>(ctx.r31.u32 + kImpulseTicks);
+            ticksFloat = float(ticksFloat) / float(perTick);
+            ticks = int16_t(int32_t(int16_t(ticks)) / perTick);
+        }
+    }
+    __imp__sub_82081428(ctx, base);
+}

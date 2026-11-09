@@ -200,7 +200,17 @@ PPC_FUNC(__imp__RtlEnterCriticalSection)
 // BOOL RtlTryEnterCriticalSection(PRTL_CRITICAL_SECTION cs)
 PPC_FUNC(__imp__RtlTryEnterCriticalSection)
 {
-    ctx.r3.u64 = TryEnterCriticalSection(ctx.r3.u32, CurrentThread()->kthread);
+    uint32_t cs = ctx.r3.u32;
+    ctx.r3.u64 = TryEnterCriticalSection(cs, CurrentThread()->kthread);
+    // H3_LOG_TRYLOCK=1 (testing): failed tries, with the caller and the
+    // time (ms since start), to look for periodic contention.
+    static const bool log = h3::EnvFlag("H3_LOG_TRYLOCK");
+    if (log && ctx.r3.u64 == 0)
+    {
+        static const auto start = std::chrono::steady_clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+        fprintf(stderr, "[trylock] %lld ms cs %08X lr %08X\n", (long long)ms, cs, uint32_t(ctx.lr));
+    }
 }
 
 // void RtlLeaveCriticalSection(PRTL_CRITICAL_SECTION cs)

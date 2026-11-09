@@ -136,11 +136,15 @@ namespace h3::gpu::renderer::internal
         uint64_t key = (uint64_t(base) << 8) | (uint64_t(xenosFormat) << 1) | (depth ? 1 : 0);
         auto it = g_renderTargets.find(key);
         if (it != g_renderTargets.end())
+        {
+            it->second.usedFrame = g_swaps;
             return &it->second;
+        }
 
         RenderTarget target;
         target.format = depth ? g_depthFormat : ColorTargetFormat(xenosFormat);
         target.xenosFormat = xenosFormat;
+        target.usedFrame = g_swaps;
         SDL_GPUTextureCreateInfo info{};
         info.type = SDL_GPU_TEXTURETYPE_2D;
         info.format = target.format;
@@ -218,6 +222,47 @@ namespace h3::gpu::renderer::internal
         return it != g_colorAtBase.end() ? it->second : nullptr;
     }
 
+    // Each (base, format) pair keeps a full sample-space texture (~70 MB at
+    // render scale 2), and Halo uses ~20 of them by mid-level, more over a
+    // session (formats a menu or another level used once). A color target
+    // that isn't the current one at its base holds nothing the current one
+    // doesn't (the current target always has everything: GetColorTarget),
+    // so one unused for kTargetIdleFrames is released; if the game comes
+    // back to it, it's created again and gets a full carry-over (never
+    // synced). Depth targets and current targets stay.
+    void TrimRenderTargets()
+    {
+        constexpr uint32_t kTrimInterval = 600;
+        constexpr uint32_t kTargetIdleFrames = 1800;
+        if (g_swaps % kTrimInterval != 0)
+            return;
+        bool flushed = false;
+        for (auto it = g_renderTargets.begin(); it != g_renderTargets.end();)
+        {
+            RenderTarget& target = it->second;
+            uint32_t base = uint32_t(it->first >> 8);
+            bool depth = (it->first & 1) != 0;
+            auto current = g_colorAtBase.find(base);
+            bool isCurrent = current != g_colorAtBase.end() && current->second == &target;
+            if (depth || isCurrent || base == kScratchBase || g_swaps - target.usedFrame < kTargetIdleFrames)
+            {
+                ++it;
+                continue;
+            }
+            if (!flushed)
+            {
+                Flush();  // pending draws may still refer to it
+                flushed = true;
+            }
+            static const bool log = EnvFlag("H3_LOG_FPS");
+            if (log)
+                fprintf(stderr, "[render] frame %u: released render target base %03X format %u (idle %u frames)\n", g_swaps, base,
+                    target.xenosFormat, g_swaps - target.usedFrame);
+            SDL_ReleaseGPUTexture(g_device, target.texture);
+            it = g_renderTargets.erase(it);
+        }
+    }
+
     VideoMemoryUse RenderTargetMemory()
     {
         VideoMemoryUse use;
@@ -247,6 +292,19 @@ namespace h3::gpu::renderer::internal
                 if (!((colorMask >> (4 * i)) & 0xF) || !(ps.info.colorTargetMask & (1u << i)))
                     continue;
                 uint32_t info = ReadRegister(kRegColorInfo[i]);
+                // Two targets at one EDRAM base: keep the lower index, as
+                // Xenia does. Halo's lighting passes bind one target twice
+                // and pick the output a bool constant enables; binding one
+                // host texture into two slots is undefined on the host, and
+                // the wrong output won on Crow's Nest's landing pad grates
+                // (black). H3_KEEP_ALIASED_TARGETS=1: bind both (the old way).
+                static const bool keepAliased = EnvFlag("H3_KEEP_ALIASED_TARGETS");
+                bool aliased = false;
+                for (uint32_t j = 0; j < i && !keepAliased; j++)
+                    if (targets.color[j] && EdramBase(ReadRegister(kRegColorInfo[j])) == EdramBase(info))
+                        aliased = true;
+                if (aliased)
+                    continue;
                 RenderTarget* target = GetColorTarget(EdramBase(info), ColorFormat(info));
                 if (!target)
                     continue;

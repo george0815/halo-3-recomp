@@ -218,6 +218,7 @@ Environment variables:
 | `H3_RANDOM_SEED=<n>` | Fixed random seeds (XNetRandom, the game's clock-based seeds, the local random seed at level start, a seed of its own for the particle thread): the game state lands at the same address and replays compare word for word (`tools/films/`) |
 | `H3_LOCKSTEP=1` | Exactly one game tick per frame (the game runs as fast as frames finish), so per-frame state replays alike |
 | `H3_LOCKSTEP_TICKS=<n>` | Exactly n game ticks per frame (testing multi-tick frames) |
+| `H3_CAPTURE_LEVEL_TICK=<n>` | F9 capture (F10 with `H3_CAPTURE_DEEP=1`) when the first level's game tick reaches n: live runs drift by hundreds of frames, level ticks don't (one deep capture per run: cutscenes keep real time through the freeze) |
 | `H3_STATE_HASH=<file>` | Append `<copy> <tick> <hash>` for every per-tick game state copy: a checksum of the 4 MB game state per tick (`tools/films/`) |
 | `H3_STATE_MASK=<file>` | Leave the cosmetic state that file names (data arrays, object fields, words; learned by `tools/films/learn_mask.py`) out of `H3_STATE_HASH` |
 | `H3_STATE_DUMP=<tick>[,...]` | With `H3_STATE_HASH`: save the raw game state at those ticks as `state_<tick>.bin` |

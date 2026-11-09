@@ -25,6 +25,7 @@
 #include "config/env.h"
 #include "config/settings.h"
 #include "memory.h"
+#include "gpu/frame_capture.h"
 
 #include <algorithm>
 #include <chrono>
@@ -106,8 +107,13 @@ namespace
 
 // game_time_initialize (a level or the menu starts).
 PPC_FUNC_IMPL(__imp__sub_821D6F30);
+namespace
+{
+    uint32_t g_gameTimeInits = 0;  // game_time_initialize calls (1: menu, 2: first level)
+}
 PPC_FUNC(sub_821D6F30)
 {
+    g_gameTimeInits++;
     WithTickRate(ctx, base, __imp__sub_821D6F30);
     hooks::ResetLocalRandomSeed();
 }
@@ -144,6 +150,28 @@ PPC_FUNC(sub_820983E0)
             ctx.f1.f64 = float(GuestRef<float>(gameTime + 8)) * float(lockstepTicks ? lockstepTicks : 1);  // seconds per tick
     }
     __imp__sub_820983E0(ctx, base);
+
+    // H3_CAPTURE_LEVEL_TICK=<n> (testing): an F9 capture (F10 with
+    // H3_CAPTURE_DEEP) once the first level's game time reaches tick n.
+    // Frame numbers drift by hundreds between live runs (menu and load
+    // timing); this counts from the level's own start.
+    static const uint32_t captureTick = EnvNumber("H3_CAPTURE_LEVEL_TICK");
+    static bool captured = false, armed = false;
+    if (captureTick && !captured && g_gameTimeInits >= 2)
+    {
+        uint32_t gameTime = GuestRef<uint32_t>(uint32_t(GuestRef<uint32_t>(ctx.r13.u32)) + kGameTimeSlot);
+        uint32_t tick = gameTime ? uint32_t(GuestRef<uint32_t>(gameTime + 12)) : 0u;
+        // Armed by a tick below the target first: right after
+        // initialization the field isn't a tick count yet.
+        if (gameTime && tick < captureTick)
+            armed = true;
+        else if (gameTime && armed)
+        {
+            captured = true;
+            fprintf(stderr, "[hooks] capture at level tick %u\n", tick);
+            h3::gpu::capture::RequestCapture(EnvFlag("H3_CAPTURE_DEEP"));
+        }
+    }
 }
 
 // D3D's swap interrupt (the GPU reached a Swap): r3 = the swap's flags,

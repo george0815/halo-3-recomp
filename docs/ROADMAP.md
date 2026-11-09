@@ -141,7 +141,9 @@ Rough phases. Each one is a large amount of work; that's fine.
       fps. Heavier scenes untested. Content tuned per tick misbehaves at 60
       (play-through 2026-10-22, private/BUGS.md): MCC's own fixes for it
       (the `tps / 30` sites in H3EK's halo3_tag_test.exe) are being ported
-      behind `hooks::ContentFixes()` (weapon fire pacing, camera shake);
+      behind `hooks::ContentFixes()` (weapon fire pacing, camera shake and
+      impulses, first-person weapon timing, AI burst minimum, auto exposure
+      rate);
       30 fps cutscene animation under a 60 Hz follow camera makes objects
       jitter back and forth (Pelicans in Sierra 117's ending, The Ark's
       intro, The Covenant)

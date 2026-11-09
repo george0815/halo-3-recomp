@@ -75,6 +75,14 @@ int main(int argc, char** argv)
         printf("ok   %s: %zu textures, %zu vfetch, colors %X%s%s\n", name.c_str(), result.info.textures.size(),
             result.info.vertexFetchConstants.size(), result.info.colorTargetMask, result.info.writesDepth ? ", depth" : "",
             result.info.usesMemExport ? ", memexport" : "");
+        // Compacted float constants: XE_C(i) in the GLSL reads guest c<n>.
+        if (!result.info.compactConstants.empty())
+        {
+            printf("     constants:");
+            for (size_t i = 0; i < result.info.compactConstants.size(); i++)
+                printf(" XE_C(%zu)=c%u", i, result.info.compactConstants[i]);
+            printf("\n");
+        }
     }
     return failures ? 1 : 0;
 }

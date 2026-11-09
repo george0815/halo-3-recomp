@@ -308,6 +308,7 @@ namespace h3::gpu::renderer
         PollMemExports();
         TrimTextureCache();
         TrimResolvedViews();
+        TrimRenderTargets();
         // H3_LOG_FPS: how many pipelines and shaders exist (creating them
         // stalls this thread).
         static const bool logCounts = EnvFlag("H3_LOG_FPS");

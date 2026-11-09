@@ -312,6 +312,7 @@ namespace h3::gpu::texture
         fetch.volumeLinear = words[4] & 1;  // vol_mag_filter
         fetch.mipMin = (words[4] >> 2) & 0xF;
         fetch.mipMax = (words[4] >> 6) & 0xF;
+        fetch.lodBias = int32_t(words[4] << 10) >> 22;
         switch (fetch.dimension)
         {
         case 0:

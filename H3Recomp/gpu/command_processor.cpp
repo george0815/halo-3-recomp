@@ -656,11 +656,19 @@ namespace h3::gpu
                         DumpRecentHistory();
                         reported = true;
                     }
-                    // PERF: spins (yielding) until the CPU writes the value;
-                    // a wake-up from the guest's register/memory writes isn't
-                    // possible with plain memory, but a short sleep after a
-                    // while would free the core.
-                    std::this_thread::yield();
+                    // Waits for the CPU to write the value (plain memory or
+                    // a register: nothing to be woken by). Yield-spins for
+                    // the first kSpinWait (most waits end within it), then
+                    // sleeps kWaitSleep between polls so a long wait doesn't
+                    // hold a core the game's threads could use.
+                    // H3_SPIN_WAITS=1: always spin (as before 2026-11-09).
+                    static const bool alwaysSpin = EnvFlag("H3_SPIN_WAITS");
+                    constexpr auto kSpinWait = std::chrono::microseconds(1000);
+                    constexpr auto kWaitSleep = std::chrono::microseconds(50);
+                    if (alwaysSpin || std::chrono::steady_clock::now() - start < kSpinWait)
+                        std::this_thread::yield();
+                    else
+                        std::this_thread::sleep_for(kWaitSleep);
                 }
                 if (g_logWaits)
                 {

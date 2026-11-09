@@ -31,10 +31,13 @@ add_executable(H3Recomp
     debug/profiler.cpp
     debug/state_hash.cpp
     debug/write_watch.cpp
+    hooks/ai_combat.cpp
+    hooks/biped_physics.cpp
     hooks/block_copy.cpp
     hooks/campaign.cpp
     hooks/cinematic_camera.cpp
     hooks/damage_log.cpp
+    hooks/exposure.cpp
     hooks/fibers.cpp
     hooks/first_person_weapons.cpp
     hooks/player_effects.cpp

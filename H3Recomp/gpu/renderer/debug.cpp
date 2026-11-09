@@ -80,7 +80,8 @@ namespace h3::gpu::renderer::internal
     {
         // A texture's pixels as RGBA8 (half floats clamped to 0..1). Waits
         // for the GPU (debugging only).
-        std::vector<uint32_t> ReadbackRgba8(SDL_GPUTexture* texture, uint32_t width, uint32_t height, SDL_GPUTextureFormat format)
+        std::vector<uint32_t> ReadbackRgba8(SDL_GPUTexture* texture, uint32_t width, uint32_t height, SDL_GPUTextureFormat format,
+            std::vector<float>* floats = nullptr)
         {
             FenceMemExports();  // this submits g_commands
             bool half = format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
@@ -106,8 +107,15 @@ namespace h3::gpu::renderer::internal
             {
                 const uint16_t* halves = static_cast<const uint16_t*>(pixels);
                 uint8_t* bytes8 = reinterpret_cast<uint8_t*>(out.data());
+                if (floats)
+                    floats->resize(out.size() * 4);
                 for (size_t i = 0; i < out.size() * 4; i++)
-                    bytes8[i] = uint8_t(std::clamp(HalfToFloat(halves[i]), 0.0f, 1.0f) * 255.0f);
+                {
+                    float f = HalfToFloat(halves[i]);
+                    bytes8[i] = uint8_t(std::clamp(f, 0.0f, 1.0f) * 255.0f);
+                    if (floats)
+                        (*floats)[i] = f;
+                }
             }
             else
             {
@@ -135,8 +143,16 @@ namespace h3::gpu::renderer::internal
                 previousFrame = frame;
             }
             uint32_t width = kDumpTargetWidth * g_renderScale, height = kDumpTargetHeight * g_renderScale;
-            std::vector<uint32_t> pixels = ReadbackRgba8(texture, width, height, format);
+            // Float targets: compared and saved as floats too (values over 1
+            // clamp to the same RGBA8), the changed rectangle as
+            // <name>.f32 (width x height x RGBA floats).
+            static std::unordered_map<SDL_GPUTexture*, std::vector<float>> previousFloats;
+            if (previous.empty())
+                previousFloats.clear();
+            std::vector<float> floats;
+            std::vector<uint32_t> pixels = ReadbackRgba8(texture, width, height, format, &floats);
             std::vector<uint32_t>& last = previous[texture];
+            std::vector<float>& lastFloats = previousFloats[texture];
             FILE* log = fopen(capture::CapturePath("deep_capture.txt").c_str(), "a");
             if (last.empty())
             {
@@ -144,6 +160,7 @@ namespace h3::gpu::renderer::internal
                     fprintf(log, "draw %u: target %p format %d: first use (baseline)\n", g_frameDraws, (void*)texture, int(format));
                 // Also keep the baseline image (downscaled 2x) for context.
                 last = std::move(pixels);
+                lastFloats = std::move(floats);
                 if (log)
                     fclose(log);
                 return;
@@ -151,8 +168,14 @@ namespace h3::gpu::renderer::internal
             uint32_t x0 = width, y0 = height, x1 = 0, y1 = 0;
             for (uint32_t y = 0; y < height; y++)
                 for (uint32_t x = 0; x < width; x++)
-                    if (pixels[size_t(y) * width + x] != last[size_t(y) * width + x])
+                {
+                    size_t i = size_t(y) * width + x;
+                    bool changed = pixels[i] != last[i];
+                    if (!changed && !floats.empty() && lastFloats.size() == floats.size())
+                        changed = memcmp(&floats[i * 4], &lastFloats[i * 4], 16) != 0;
+                    if (changed)
                         x0 = std::min(x0, x), y0 = std::min(y0, y), x1 = std::max(x1, x + 1), y1 = std::max(y1, y + 1);
+                }
             if (x0 < x1)
             {
                 uint32_t w = x1 - x0, h = y1 - y0;
@@ -167,6 +190,13 @@ namespace h3::gpu::renderer::internal
                     SDL_SavePNG(surface, capture::CapturePath(name).c_str());
                     SDL_DestroySurface(surface);
                 }
+                if (!floats.empty())
+                    if (FILE* raw = fopen(capture::CapturePath(std::string(name) + ".f32").c_str(), "wb"))
+                    {
+                        for (uint32_t y = 0; y < h; y++)
+                            fwrite(&floats[(size_t(y0 + y) * width + x0) * 4], 16, w, raw);
+                        fclose(raw);
+                    }
                 if (log)
                     fprintf(log, "draw %u: target %p format %d: changed %u,%u-%u,%u (%ux%u) -> %s\n", g_frameDraws, (void*)texture,
                         int(format), x0, y0, x1, y1, w, h, name);
@@ -174,6 +204,7 @@ namespace h3::gpu::renderer::internal
             if (log)
                 fclose(log);
             last = std::move(pixels);
+            lastFloats = std::move(floats);
         }
     }
 
