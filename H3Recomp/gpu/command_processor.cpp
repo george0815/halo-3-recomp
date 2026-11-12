@@ -443,6 +443,7 @@ namespace h3::gpu
                 logged++;
                 fprintf(stderr, "[gpu] reg %04X = %08X\n", index, value);
             }
+            capture::OnRegisterWrite(index, value);
             WriteRegister(index, value);
             if (index >= kRegScratch0 && index <= kRegScratch7)
             {

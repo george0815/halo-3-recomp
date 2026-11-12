@@ -697,9 +697,21 @@ namespace h3::gpu::renderer::internal
         // Queues a filled draw for the next Flush, with snapshots of the float
         // constants its shaders read. (Taken here, last: preparing the draw
         // can flush, which starts a new constant range.)
+        // The last queued draw whose pixel shader has H3_DEBUG_PS variants,
+        // for ReplayDebugVariants.
+        std::unique_ptr<PendingDraw> g_lastDebugDraw;
+        uint32_t g_lastDebugVariants = 0;
+
         void QueueDraw(std::unique_ptr<PendingDraw> draw)
         {
             const shader::ShaderInfo* infos[2] = { &g_vertexShader->info, &g_pixelShader->info };
+            g_lastDebugVariants = infos[1]->debugVariants;
+            if (g_lastDebugVariants)
+            {
+                if (!g_lastDebugDraw)
+                    g_lastDebugDraw = std::make_unique<PendingDraw>();
+                *g_lastDebugDraw = *draw;
+            }
             if (g_uniformConstants)
             {
                 for (uint32_t stage = 0; stage < 2; stage++)
@@ -1130,6 +1142,16 @@ namespace h3::gpu::renderer::internal
             if (colorControl & 8)
                 system.flags |= ((colorControl & 7) << kSystemFlagAlphaFuncShift) | kSystemFlagAlphaTest;
             system.alphaRef = RegisterFloat(kRegRbAlphaRef);
+            // User clip planes: PA_CL_CLIP_CNTL bits 0-5 enable PA_CL_UCP_n.
+            // H3_NO_CLIP_PLANES=1 ignores them (to compare).
+            static const bool noClipPlanes = EnvFlag("H3_NO_CLIP_PLANES");
+            if (uint32_t enabled = noClipPlanes ? 0 : ReadRegister(kRegPaClClipCntl) & 0x3F)
+            {
+                system.flags |= enabled << kSystemFlagClipPlaneShift;
+                for (uint32_t i = 0; i < 6; i++)
+                    for (uint32_t j = 0; j < 4; j++)
+                        system.clipPlanes[i][j] = RegisterFloat(kRegPaClUcp + i * 4 + j);
+            }
             // D24FS8 depth: round to the 24-bit float format.
             if (targets.depth && DepthIsFloat(ReadRegister(kRegRbDepthInfo)))
                 system.flags |= kSystemFlagRoundDepth24;
@@ -1540,6 +1562,29 @@ namespace h3::gpu::renderer::internal
         g_stagedRanges.clear();
         g_residentThisFlush.clear();
         g_constantArena.clear();
+    }
+
+    bool HasDebugVariants() { return g_lastDebugDraw && g_lastDebugVariants; }
+
+    void ReplayDebugVariants(const std::function<void(uint32_t)>& readback)
+    {
+        if (!g_lastDebugDraw || !g_lastDebugVariants)
+            return;
+        uint32_t variants = g_lastDebugVariants;
+        Flush();
+        for (uint32_t variant = 1; variant <= variants; variant++)
+        {
+            std::unique_ptr<PendingDraw> draw = NewDraw();
+            *draw = *g_lastDebugDraw;
+            draw->system.debugVariant = variant;
+            // Constants snapshotted again from the registers (still the
+            // draw's own: this runs right after it, before the next draw's
+            // writes); the original snapshot's staging may be reused.
+            QueueDraw(std::move(draw));
+            Flush();
+            readback(variant);
+        }
+        g_lastDebugVariants = 0;
     }
 
     void EndFrameBuffers()

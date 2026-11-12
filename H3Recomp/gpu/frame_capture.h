@@ -28,6 +28,10 @@ namespace h3::gpu
         // A packet was skipped by predication.
         void OnPredicatedSkip(uint32_t opcode);
 
+        // A command-stream register write (logged for render state
+        // registers that matter when debugging blending / alpha test).
+        void OnRegisterWrite(uint32_t index, uint32_t value);
+
         // An occlusion query report (EVENT_WRITE_ZPD) to a sample count
         // address.
         void OnZpd(uint32_t initiator, uint32_t address);

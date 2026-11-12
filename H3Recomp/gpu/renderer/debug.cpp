@@ -133,7 +133,7 @@ namespace h3::gpu::renderer::internal
         // the changed rectangle (draw_<frame>_<n>_<x>_<y>.png), listing each
         // in deep_capture.txt. Full images per draw were ~1 GB a frame and
         // took minutes.
-        void DeepCaptureDraw(SDL_GPUTexture* texture, SDL_GPUTextureFormat format, uint32_t frame)
+        void DeepCaptureDraw(SDL_GPUTexture* texture, SDL_GPUTextureFormat format, uint32_t frame, uint32_t variant = 0)
         {
             static std::unordered_map<SDL_GPUTexture*, std::vector<uint32_t>> previous;
             static uint32_t previousFrame = 0;
@@ -154,6 +154,12 @@ namespace h3::gpu::renderer::internal
             std::vector<uint32_t>& last = previous[texture];
             std::vector<float>& lastFloats = previousFloats[texture];
             FILE* log = fopen(capture::CapturePath("deep_capture.txt").c_str(), "a");
+            if (last.empty() && variant)
+            {
+                if (log)
+                    fclose(log);
+                return;
+            }
             if (last.empty())
             {
                 if (log)
@@ -183,7 +189,10 @@ namespace h3::gpu::renderer::internal
                 for (uint32_t y = 0; y < h; y++)
                     memcpy(&crop[size_t(y) * w], &pixels[size_t(y0 + y) * width + x0], size_t(w) * 4);
                 char name[96];
-                snprintf(name, sizeof(name), "draw_%u_%04u_%u_%u.png", frame, g_frameDraws, x0, y0);
+                if (variant)
+                    snprintf(name, sizeof(name), "draw_%u_%04u_v%u_%u_%u.png", frame, g_frameDraws, variant, x0, y0);
+                else
+                    snprintf(name, sizeof(name), "draw_%u_%04u_%u_%u.png", frame, g_frameDraws, x0, y0);
                 SDL_Surface* surface = SDL_CreateSurfaceFrom(int(w), int(h), SDL_PIXELFORMAT_ABGR8888, crop.data(), int(w * 4));
                 if (surface)
                 {
@@ -197,12 +206,17 @@ namespace h3::gpu::renderer::internal
                             fwrite(&floats[(size_t(y0 + y) * width + x0) * 4], 16, w, raw);
                         fclose(raw);
                     }
+                char suffix[24] = "";
+                if (variant)
+                    snprintf(suffix, sizeof(suffix), " variant %u", variant);
                 if (log)
-                    fprintf(log, "draw %u: target %p format %d: changed %u,%u-%u,%u (%ux%u) -> %s\n", g_frameDraws, (void*)texture,
-                        int(format), x0, y0, x1, y1, w, h, name);
+                    fprintf(log, "draw %u%s: target %p format %d: changed %u,%u-%u,%u (%ux%u) -> %s\n", g_frameDraws,
+                        suffix, (void*)texture, int(format), x0, y0, x1, y1, w, h, name);
             }
             if (log)
                 fclose(log);
+            if (variant)
+                return;  // the image after the draw itself stays the reference
             last = std::move(pixels);
             lastFloats = std::move(floats);
         }
@@ -296,6 +310,50 @@ namespace h3::gpu::renderer::internal
         if (deep)
         {
             DeepCaptureDraw(targets.color[index], targets.colorFormat[index], capture::HotkeyFrame());
+            // H3_DEBUG_PS variants: the draw again per expression, the
+            // values saved as draw_<frame>_<n>_v<k>_<x>_<y>.png(.f32),
+            // compared with the image after the draw itself.
+            if (HasDebugVariants())
+            {
+                // The replays write the debug values (and the shader's other
+                // outputs again, additively for blended passes): the bound
+                // color targets are saved first and restored after, so the
+                // rest of the frame draws on the real image.
+                uint32_t width = kDumpTargetWidth * g_renderScale, height = kDumpTargetHeight * g_renderScale;
+                SDL_GPUTexture* saved[4] = {};
+                auto copyRegion = [&](SDL_GPUTexture* from, SDL_GPUTexture* to) {
+                    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(Commands());
+                    SDL_GPUTextureLocation src{}, dst{};
+                    src.texture = from;
+                    dst.texture = to;
+                    SDL_CopyGPUTextureToTexture(copy, &src, &dst, width, height, 1, false);
+                    SDL_EndGPUCopyPass(copy);
+                };
+                for (uint32_t i = 0; i < 4; i++)
+                    if (targets.color[i])
+                    {
+                        SDL_GPUTextureCreateInfo info{};
+                        info.type = SDL_GPU_TEXTURETYPE_2D;
+                        info.format = targets.colorFormat[i];
+                        info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                        info.width = width;
+                        info.height = height;
+                        info.layer_count_or_depth = 1;
+                        info.num_levels = 1;
+                        saved[i] = SDL_CreateGPUTexture(g_device, &info);
+                        if (saved[i])
+                            copyRegion(targets.color[i], saved[i]);
+                    }
+                ReplayDebugVariants([&](uint32_t variant) {
+                    DeepCaptureDraw(targets.color[index], targets.colorFormat[index], capture::HotkeyFrame(), variant);
+                });
+                for (uint32_t i = 0; i < 4; i++)
+                    if (saved[i])
+                    {
+                        copyRegion(saved[i], targets.color[i]);
+                        SDL_ReleaseGPUTexture(g_device, saved[i]);
+                    }
+            }
             return;
         }
         char path[64];

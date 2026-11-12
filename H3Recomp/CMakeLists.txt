@@ -38,6 +38,7 @@ add_executable(H3Recomp
     hooks/cinematic_camera.cpp
     hooks/damage_log.cpp
     hooks/exposure.cpp
+    hooks/object_lighting_log.cpp
     hooks/fibers.cpp
     hooks/first_person_weapons.cpp
     hooks/player_effects.cpp

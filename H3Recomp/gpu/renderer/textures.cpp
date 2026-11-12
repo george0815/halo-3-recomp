@@ -601,6 +601,18 @@ namespace h3::gpu::renderer::internal
                             }
                         rgba = expanded.data();
                     }
+                    else if (decoded.format == SDL_GPU_TEXTUREFORMAT_R8G8_UNORM)
+                    {
+                        // Two channels (CTX1, 8_8): R, G, 0, opaque.
+                        expanded.assign(size_t(decoded.rowTexels) * decoded.rows * 4, 255);
+                        for (size_t i = 0; i < size_t(decoded.rowTexels) * decoded.rows; i++)
+                        {
+                            expanded[i * 4] = decoded.data[i * 2];
+                            expanded[i * 4 + 1] = decoded.data[i * 2 + 1];
+                            expanded[i * 4 + 2] = 0;
+                        }
+                        rgba = expanded.data();
+                    }
                     else if (decoded.format != SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)
                         return;
                     SDL_Surface* surface = SDL_CreateSurfaceFrom(int(decoded.width), int(decoded.height), SDL_PIXELFORMAT_ABGR8888,
@@ -634,6 +646,11 @@ namespace h3::gpu::renderer::internal
                 info.layer_count_or_depth = faces;
                 info.num_levels = levels;
                 cached.texture = SDL_CreateGPUTexture(g_device, &info);
+                static const bool logVolumesCreate = EnvFlag("H3_LOG_VOLUMES");
+                if (logVolumesCreate && (array || volume))
+                    fprintf(stderr, "[render] created %s %08X %ux%u layers/depth %u levels %u format %d (fetch level base %08X depth %u)\n",
+                        array ? "2D array" : "3D", constant.address, info.width, info.height, faces, levels, int(info.format), fetch.address,
+                        fetch.depth);
                 // New textures (a video's first frames, data still streaming
                 // in) are watched like ones that just changed.
                 cached.changedFrame = g_swaps;

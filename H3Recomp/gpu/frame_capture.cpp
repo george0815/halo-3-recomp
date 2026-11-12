@@ -173,6 +173,9 @@ namespace h3::gpu::capture
         fprintf(out, "  window offset %08X mode cntl %08X vte cntl %08X depthcontrol %08X colormask %08X blend %08X stencil %08X\n",
             ReadRegister(kRegPaScWindowOffset), ReadRegister(0x2205), ReadRegister(0x2206), ReadRegister(0x2200),
             ReadRegister(0x2104), ReadRegister(0x2201), ReadRegister(0x210D));  // 0x210D: RB_STENCILREFMASK
+        fprintf(out, "  blend1-3 %08X %08X %08X colorcontrol %08X vs const %08X ps const %08X\n", ReadRegister(0x2209),
+            ReadRegister(0x220A), ReadRegister(0x220B), ReadRegister(0x2202), ReadRegister(0x2307),
+            ReadRegister(0x2308));  // RB_BLENDCONTROL1-3, RB_COLORCONTROL, SQ_VS_CONST, SQ_PS_CONST
         fprintf(out, "  viewport scale %g,%g,%g offset %g,%g,%g\n", RegFloat(kRegPaClVportXScale),
             RegFloat(kRegPaClVportYScale), RegFloat(kRegPaClVportZScale), RegFloat(kRegPaClVportXOffset),
             RegFloat(kRegPaClVportYOffset), RegFloat(kRegPaClVportZOffset));
@@ -192,6 +195,15 @@ namespace h3::gpu::capture
         for (uint32_t c = 32; c < 255; c++)
         {
             uint32_t r = kRegShaderConstantAlu + (256 + c) * 4;
+            if (ReadRegister(r) | ReadRegister(r + 1) | ReadRegister(r + 2) | ReadRegister(r + 3))
+                fprintf(out, " c%u(%g %g %g %g)", c, RegFloat(r), RegFloat(r + 1), RegFloat(r + 2), RegFloat(r + 3));
+        }
+        fprintf(out, "\n");
+        // Vertex float constants (c0-c255) where not all zero.
+        fprintf(out, "  vs constants");
+        for (uint32_t c = 0; c < 256; c++)
+        {
+            uint32_t r = kRegShaderConstantAlu + c * 4;
             if (ReadRegister(r) | ReadRegister(r + 1) | ReadRegister(r + 2) | ReadRegister(r + 3))
                 fprintf(out, " c%u(%g %g %g %g)", c, RegFloat(r), RegFloat(r + 1), RegFloat(r + 2), RegFloat(r + 3));
         }
@@ -232,6 +244,14 @@ namespace h3::gpu::capture
     {
         if (FILE* out = Out())
             fprintf(out, "  skipped predicated opcode %02X\n", opcode);
+    }
+
+    void OnRegisterWrite(uint32_t index, uint32_t value)
+    {
+        // RB_DEPTHCONTROL..RB_BLENDCONTROL3, RB_ALPHA_REF.
+        if ((index >= 0x2200 && index <= 0x220B) || index == 0x210E)
+            if (FILE* out = Out())
+                fprintf(out, "  reg %04X = %08X\n", index, value);
     }
 
     void OnZpd(uint32_t initiator, uint32_t address)

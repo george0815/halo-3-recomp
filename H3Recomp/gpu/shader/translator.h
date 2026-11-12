@@ -69,6 +69,8 @@ namespace h3::gpu::shader
     //                            positions step by 1/render_scale
     //   float target_width, _height; host render target size (flags bit 9:
     //                            snap screen-space corners to guest pixels)
+    //   vec4  ucp[6];            user clip planes in guest clip space
+    //                            (flags bits 16-21: plane i enabled)
     struct TextureBinding
     {
         uint32_t fetchConstant;
@@ -99,6 +101,7 @@ namespace h3::gpu::shader
         // constant (which says where the shader writes).
         std::vector<uint32_t> memExportStreamConstants;
         bool usesKill = false;
+        uint32_t debugVariants = 0;   // pixel shaders: H3_DEBUG_PS expressions (see Translate)
         uint32_t interpolatorMask = 0;  // vertex shaders: interpolators written
         // Float constants read: one past the highest c[] index used directly,
         // or all of them when indexed by an address register. The renderer

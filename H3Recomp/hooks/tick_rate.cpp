@@ -31,7 +31,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <thread>
+#include <vector>
 
 using namespace h3;
 
@@ -151,23 +153,50 @@ PPC_FUNC(sub_820983E0)
     }
     __imp__sub_820983E0(ctx, base);
 
-    // H3_CAPTURE_LEVEL_TICK=<n> (testing): an F9 capture (F10 with
-    // H3_CAPTURE_DEEP) once the first level's game time reaches tick n.
-    // Frame numbers drift by hundreds between live runs (menu and load
-    // timing); this counts from the level's own start.
-    static const uint32_t captureTick = EnvNumber("H3_CAPTURE_LEVEL_TICK");
-    static bool captured = false, armed = false;
-    if (captureTick && !captured && g_gameTimeInits >= 2)
+    // H3_CAPTURE_LEVEL_TICK=<n>[,<n>...] (testing): an F9 capture (F10
+    // with H3_CAPTURE_DEEP) once the first level's game time reaches each
+    // tick n (ascending). Frame numbers drift by hundreds between live runs
+    // (menu and load timing); this counts from the level's own start.
+    static const std::vector<uint32_t> captureTicks = [] {
+        std::vector<uint32_t> ticks;
+        if (const char* text = EnvString("H3_CAPTURE_LEVEL_TICK"))
+            for (const char* p = text; *p;)
+            {
+                char* end;
+                uint32_t value = uint32_t(strtoul(p, &end, 10));
+                if (end == p)
+                    break;
+                if (value)
+                    ticks.push_back(value);
+                p = *end == ',' ? end + 1 : end;
+            }
+        return ticks;
+    }();
+    // H3_LOG_TICKS=1 (testing): the game tick and wall-clock time at each
+    // call, to map snapshot files (by modification time) to ticks.
+    static const bool logTicks = EnvFlag("H3_LOG_TICKS");
+    if (logTicks)
+    {
+        uint32_t gameTime = GuestRef<uint32_t>(uint32_t(GuestRef<uint32_t>(ctx.r13.u32)) + kGameTimeSlot);
+        timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+        fprintf(stderr, "[tick] %u wall %.4f\n", gameTime ? uint32_t(GuestRef<uint32_t>(gameTime + 12)) : 0u,
+            double(now.tv_sec) + now.tv_nsec * 1e-9);
+    }
+    static size_t nextCapture = 0;
+    static bool armed = false;
+    if (nextCapture < captureTicks.size() && g_gameTimeInits >= 2)
     {
         uint32_t gameTime = GuestRef<uint32_t>(uint32_t(GuestRef<uint32_t>(ctx.r13.u32)) + kGameTimeSlot);
         uint32_t tick = gameTime ? uint32_t(GuestRef<uint32_t>(gameTime + 12)) : 0u;
-        // Armed by a tick below the target first: right after
+        // Armed by a tick below the first target first: right after
         // initialization the field isn't a tick count yet.
-        if (gameTime && tick < captureTick)
+        if (gameTime && tick < captureTicks[0])
             armed = true;
-        else if (gameTime && armed)
+        if (gameTime && armed && tick >= captureTicks[nextCapture])
         {
-            captured = true;
+            while (nextCapture < captureTicks.size() && tick >= captureTicks[nextCapture])
+                nextCapture++;
             fprintf(stderr, "[hooks] capture at level tick %u\n", tick);
             h3::gpu::capture::RequestCapture(EnvFlag("H3_CAPTURE_DEEP"));
         }

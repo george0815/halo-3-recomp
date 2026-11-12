@@ -299,10 +299,24 @@ namespace h3::gpu::renderer::internal
                 // the wrong output won on Crow's Nest's landing pad grates
                 // (black). H3_KEEP_ALIASED_TARGETS=1: bind both (the old way).
                 static const bool keepAliased = EnvFlag("H3_KEEP_ALIASED_TARGETS");
+                // H3_ALIAS_KEEP_HIGHER=<ps hash high 32 bits, hex> (experiment):
+                // the higher index wins for that pixel shader.
+                static const char* keepHigherSpec = EnvString("H3_ALIAS_KEEP_HIGHER");
+                static const uint32_t keepHigherHash = keepHigherSpec ? uint32_t(strtoul(keepHigherSpec, nullptr, 16)) : 0;
+                bool keepHigher = keepHigherSpec && uint32_t(ps.captureHash >> 32) == keepHigherHash;
                 bool aliased = false;
                 for (uint32_t j = 0; j < i && !keepAliased; j++)
                     if (targets.color[j] && EdramBase(ReadRegister(kRegColorInfo[j])) == EdramBase(info))
-                        aliased = true;
+                    {
+                        if (keepHigher)
+                        {
+                            RenderTarget* scratch = GetRenderTarget(kScratchBase, kColorFormat8888, false);
+                            targets.color[j] = scratch->texture;
+                            targets.colorFormat[j] = scratch->format;
+                        }
+                        else
+                            aliased = true;
+                    }
                 if (aliased)
                     continue;
                 RenderTarget* target = GetColorTarget(EdramBase(info), ColorFormat(info));

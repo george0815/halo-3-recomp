@@ -39,6 +39,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -51,6 +52,7 @@ namespace h3::gpu::renderer::internal
     // ------------------------------------------------------------------
 
     constexpr uint32_t kRegPaClClipCntl = 0x2204;   // bit 16: clip disable; bits 0-5: user clip planes
+    constexpr uint32_t kRegPaClUcp = 0x2388;        // PA_CL_UCP_0_X: six planes, four floats each
     constexpr uint32_t kRegPaSuScModeCntl = 0x2205;  // culling, poly offset; bit 16: window offset enable; bit 21: primitive reset enable
     constexpr uint32_t kRegPaClVteCntl = 0x2206;     // which viewport scale/offset parts apply; bits 8-10 position formats
     constexpr uint32_t kRegRbDepthControl = 0x2200;  // depth/stencil test state
@@ -582,7 +584,8 @@ namespace h3::gpu::renderer::internal
         float renderScale;         // g_renderScale
         float targetSize[2];       // host render target size (texels)
         uint32_t queryId;          // occlusion query draws: the id written (queries.cpp)
-        uint32_t pad2;
+        uint32_t debugVariant;     // H3_DEBUG_PS variant replayed (0: the draw itself; debug.cpp)
+        float clipPlanes[6][4];    // PA_CL_UCP_n: user clip planes in guest clip space
     };
 
     // SystemConstants::flags bits (must match translator.h).
@@ -602,6 +605,7 @@ namespace h3::gpu::renderer::internal
         return approx;
     }
     constexpr uint32_t kSystemFlagClampColorShift = 12;  // 4 bits: clamp color output i
+    constexpr uint32_t kSystemFlagClipPlaneShift = 16;   // 6 bits: user clip plane i enabled
 
     // Texture/sampler bindings for a shader's textures, filling the texture
     // part of the system constants.
@@ -777,6 +781,10 @@ namespace h3::gpu::renderer::internal
         SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
     // H3_DUMP_DRAWS: dump a color target after the current draw.
     void DumpAfterDraw();
+    // Deep captures: replays the last queued draw once per H3_DEBUG_PS variant
+    // of its pixel shader, calling readback(variant) after each (draw.cpp).
+    void ReplayDebugVariants(const std::function<void(uint32_t)>& readback);
+    bool HasDebugVariants();
     // H3_DUMP_PRIM: dump color target 0 before/after draws of a primitive type.
     void DumpAroundPrimitive(uint32_t primitive, bool after);
     // H3_DUMP_RESTORE: dump the depth bytes and the depth target after a

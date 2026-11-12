@@ -103,9 +103,16 @@ namespace
     constexpr uint32_t kImpulseTicks = 132;
 }
 
+namespace h3::hooks
+{
+    bool CheckTrigEnabled();
+    void CheckTrig(bool cosine, double x, double got);
+}
+
 PPC_FUNC_IMPL(__imp__sub_82081428);
 PPC_FUNC(sub_82081428)
 {
+    double trigInput = ctx.f1.f64;
     if (uint32_t(ctx.lr) == kAfterImpulseTicks && h3::hooks::ContentFixes())
     {
         float duration = h3::GuestRef<float>(ctx.r27.u32);
@@ -119,4 +126,6 @@ PPC_FUNC(sub_82081428)
         }
     }
     __imp__sub_82081428(ctx, base);
+    if (h3::hooks::CheckTrigEnabled())
+        h3::hooks::CheckTrig(true, trigInput, ctx.f1.f64);
 }

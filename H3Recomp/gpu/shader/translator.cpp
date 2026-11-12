@@ -158,6 +158,8 @@ vec4 xe_border(vec4 v, vec2 coords, vec2 size, bool linear, uint fetchConstant)
         // the other three like Xenia's geometry shader: opposite the
         // right-angle corner, every output = a + b - corner.
         const char* kVertexMain = R"(
+out float gl_ClipDistance[6];  // user clip planes (xe_write_vertex)
+
 // Writes a finished vertex: interpolators, then the position through the
 // viewport transform (system constants) into host clip space.
 void xe_write_vertex(vec4 position, vec4 outputs[16])
@@ -175,6 +177,12 @@ void xe_write_vertex(vec4 position, vec4 outputs[16])
         position.xy *= position.w;
     if ((xe_sys.flags & 8u) != 0u)
         position.z *= position.w;
+    // User clip planes (PA_CL_CLIP_CNTL bits 0-5 in flags bits 16-21,
+    // PA_CL_UCP_n): the guest's clip-space position against each enabled
+    // plane, as Xenia does. Halo clips every dynamic light draw to the
+    // light's bounds with all six.
+    for (int i = 0; i < 6; i++)
+        gl_ClipDistance[i] = (xe_sys.flags & (0x10000u << i)) != 0u ? dot(position, xe_sys.ucp[i]) : 1.0;
     gl_Position = vec4(position.xyz * xe_sys.ndc_scale.xyz + position.w * xe_sys.ndc_offset.xyz, position.w);
     // Point lists (SDL_GPU requires the output for them; other topologies
     // ignore it).
@@ -450,31 +458,41 @@ void main()
                 : m_vertex(isVertex), m_compute(isVertex && compute), m_dwords(dwords), m_count(count)
             {
                 m_info.isVertex = isVertex;
-                // H3_DEBUG_PS=<hash prefix>@<case>=<GLSL vec4> (debugging):
+                // H3_DEBUG_PS=<hash prefix>@<case>=<GLSL vec4>[;...] (debugging):
                 // in the pixel shader whose capture name (ps_<FNV-1a of the
-                // big-endian microcode>) starts with the prefix, evaluate the
-                // expression at the start of control flow case <case> and
-                // write it to color 0 instead of the shader's own output.
-                // Deep captures (F10) then show the value per pixel.
+                // big-endian microcode>) starts with the prefix, each entry
+                // is a debug variant k (1-based, in order): with
+                // xe_sys.debug_variant == k the expression is evaluated at
+                // the start of control flow case <case> and written to color
+                // 0 instead of the shader's own output. Variant 0 renders
+                // normally. Deep captures (F10) replay each draw once per
+                // variant (debug.cpp DumpAfterDraw) and save the values per
+                // pixel.
                 if (!isVertex)
                     if (const char* spec = std::getenv("H3_DEBUG_PS"))
                     {
-                        std::string text(spec);
-                        size_t at = text.find('@'), eq = text.find('=');
-                        if (at != std::string::npos && eq != std::string::npos && at < eq)
+                        uint64_t hash = 0xCBF29CE484222325ull;
+                        for (uint32_t i = 0; i < count; i++)
+                            for (int b = 3; b >= 0; b--)
+                                hash = (hash ^ ((dwords[i] >> (8 * b)) & 0xFF)) * 0x100000001B3ull;
+                        char name[24];
+                        snprintf(name, sizeof(name), "%016llx", (unsigned long long)hash);
+                        std::string all(spec);
+                        for (size_t start = 0; start < all.size();)
                         {
-                            uint64_t hash = 0xCBF29CE484222325ull;
-                            for (uint32_t i = 0; i < count; i++)
-                                for (int b = 3; b >= 0; b--)
-                                    hash = (hash ^ ((dwords[i] >> (8 * b)) & 0xFF)) * 0x100000001B3ull;
-                            char name[24];
-                            snprintf(name, sizeof(name), "%016llx", (unsigned long long)hash);
+                            size_t end = all.find(';', start);
+                            if (end == std::string::npos)
+                                end = all.size();
+                            std::string text = all.substr(start, end - start);
+                            start = end + 1;
+                            size_t at = text.find('@');
+                            size_t eq = at == std::string::npos ? at : text.find('=', at);
+                            if (at == std::string::npos || eq == std::string::npos)
+                                continue;
                             if (std::string(name).rfind(text.substr(0, at), 0) == 0)
-                            {
-                                m_debugCase = int(strtol(text.c_str() + at + 1, nullptr, 10));
-                                m_debugExpr = text.substr(eq + 1);
-                            }
+                                m_debug.push_back({ int(strtol(text.c_str() + at + 1, nullptr, 10)), text.substr(eq + 1) });
                         }
+                        m_info.debugVariants = uint32_t(m_debug.size());
                     }
             }
 
@@ -552,8 +570,7 @@ void main()
 
         private:
             bool m_vertex;
-            int m_debugCase = -1;      // H3_DEBUG_PS
-            std::string m_debugExpr;
+            std::vector<std::pair<int, std::string>> m_debug;  // H3_DEBUG_PS: (case, expression) per variant
             bool m_compute;  // the memexport compute variant of a vertex shader
             const uint32_t* m_dwords;
             uint32_t m_count;
@@ -731,8 +748,9 @@ void main()
                     m_indent = 2;
                     Line(Format("case %u:", i));
                     m_indent = 3;
-                    if (int(i) == m_debugCase)
-                        Line(Format("xe_debug = vec4(%s);", m_debugExpr.c_str()));
+                    for (size_t k = 0; k < m_debug.size(); k++)
+                        if (int(i) == m_debug[k].first)
+                            Line(Format("if (xe_sys.debug_variant == %uu) xe_debug = vec4(%s);", unsigned(k + 1), m_debug[k].second.c_str()));
                     EmitControlFlow(i, cf);
                 }
             }
@@ -1709,7 +1727,7 @@ void main()
                 out += Format("layout(std140, set = %u, binding = 1) uniform XeSystem\n{\n"
                               "    uvec4 bools[2];\n    uvec4 loops[8];\n    uvec4 vfetch[96];\n"
                               "    vec4 ndc_scale;\n    vec4 ndc_offset;\n    uint ps_param_gen;\n    uint flags;\n    uint rect_indices;\n    uint tess_segments;\n    uint tess_patch_base;\n    float depth_bias_slope;\n    float point_size;\n"
-                              "    uvec4 tfetch[32];\n    vec4 color_exp_bias;\n    float alpha_ref;\n    float pixel_scale_x;\n    float pixel_scale_y;\n    float render_scale;\n    float target_width;\n    float target_height;\n} xe_sys;\n",
+                              "    uvec4 tfetch[32];\n    vec4 color_exp_bias;\n    float alpha_ref;\n    float pixel_scale_x;\n    float pixel_scale_y;\n    float render_scale;\n    float target_width;\n    float target_height;\n    uint query_id;\n    uint debug_variant;\n    vec4 ucp[6];\n} xe_sys;\n",
                     uniformSet);
                 for (const TextureBinding& texture : m_info.textures)
                     out += Format("layout(set = %u, binding = %u) uniform %s xe_texture%u;\n", textureSet, texture.binding,
@@ -1891,7 +1909,7 @@ vec3 xe_cube_direction(vec3 stf)
                 out += "    vec4 r[64];\n    for (int i = 0; i < 64; i++) r[i] = vec4(0.0);\n";
                 out += "    int a0 = 0;\n    int aL = 0;\n    bool p0 = false;\n    float ps = 0.0;\n";
                 out += "    int newA0 = 0;\n    bool newP0 = false;\n    bool kill = false;\n";
-                if (m_debugCase >= 0)
+                if (!m_debug.empty())
                     out += "    vec4 xe_debug = vec4(0.0);\n";
                 out += "    int loopDepth = -1;\n    int loopSavedAL[4];\n    int loopIteration[4];\n    uint loopConstant[4];\n";
                 out += "    int callDepth = -1;\n    int callStack[4];\n";
@@ -1945,8 +1963,8 @@ vec3 xe_cube_direction(vec3 stf)
                         out += Format("    if ((xe_sys.flags & %uu) != 0u)\n        xe_color%u_out = clamp(xe_color%u_out, 0.0, 1.0);\n",
                             0x1000u << i, i, i);
                     }
-                if (m_debugCase >= 0 && (m_info.colorTargetMask & 1))
-                    out += "    xe_color0_out = xe_debug;\n";
+                if (!m_debug.empty() && (m_info.colorTargetMask & 1))
+                    out += "    if (xe_sys.debug_variant != 0u)\n        xe_color0_out = xe_debug;\n";
                 // Polygon offset, slope part (the constant part moved the
                 // vertices' depth): the depth's steepest screen-space change
                 // times the factor. Done here rather than as host depth

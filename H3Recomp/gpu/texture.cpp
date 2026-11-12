@@ -198,8 +198,14 @@ namespace h3::gpu::texture
                 break;
             case Convert::Ctx1:
             {
-                // Endpoints (R, G) x2, then 2 bits per texel, as in Xenia.
-                uint8_t r[4] = { src[0], src[2] }, g[4] = { src[1], src[3] };
+                // Endpoints x2, then 2 bits per texel. Each endpoint is a
+                // 16-bit value with R (the normal's x) in the high byte and
+                // G in the low one, as Xenia found for Halo 3: reading them
+                // the other way round swapped x and y of every CTX1 normal
+                // map (marine faces lit as if creased the wrong way).
+                // H3_CTX1_LOW_R=1: the old order (to compare).
+                static const bool lowR = std::getenv("H3_CTX1_LOW_R") != nullptr;
+                uint8_t r[4] = { src[lowR ? 0 : 1], src[lowR ? 2 : 3] }, g[4] = { src[lowR ? 1 : 0], src[lowR ? 3 : 2] };
                 r[2] = uint8_t((2 * r[0] + r[1]) / 3), g[2] = uint8_t((2 * g[0] + g[1]) / 3);
                 r[3] = uint8_t((r[0] + 2 * r[1]) / 3), g[3] = uint8_t((g[0] + 2 * g[1]) / 3);
                 uint32_t indices = src[4] | (src[5] << 8) | (src[6] << 16) | (uint32_t(src[7]) << 24);
