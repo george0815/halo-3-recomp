@@ -157,6 +157,9 @@ namespace h3::gpu::shader
     // default; the renderer clears it for H3_NO_WEIGHTS_OFFSET=1, to compare
     // with the old half-texel-off weights).
     extern bool g_weightsOffset;
+    // Hand-filtered taps (getWeights) snapped to guest texels on scaled
+    // resolves; false with H3_NO_SNAP_WEIGHTED_TAPS=1 (to compare).
+    extern bool g_snapWeightedTaps;
 
     // Microcode disassembly, for debugging the translator.
     std::string Disassemble(bool isVertex, const uint32_t* dwords, uint32_t dwordCount);

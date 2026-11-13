@@ -606,6 +606,7 @@ namespace h3::gpu::renderer::internal
     }
     constexpr uint32_t kSystemFlagClampColorShift = 12;  // 4 bits: clamp color output i
     constexpr uint32_t kSystemFlagClipPlaneShift = 16;   // 6 bits: user clip plane i enabled
+    constexpr uint32_t kSystemFlagNoPixelKill = 1u << 22;  // depth-only EDRAM mode: pixel shader kills ignored
 
     // Texture/sampler bindings for a shader's textures, filling the texture
     // part of the system constants.

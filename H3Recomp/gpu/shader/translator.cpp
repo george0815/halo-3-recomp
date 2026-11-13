@@ -25,6 +25,7 @@ namespace h3::gpu::shader
     bool g_storageConstants = true;
     bool g_borderClamp = false;
     bool g_weightsOffset = true;
+    bool g_snapWeightedTaps = true;
 
     using namespace ucode;
 
@@ -624,6 +625,8 @@ void main()
                 return out;
             }
             std::set<uint32_t> m_vertexFetchSet;
+            // Fetch constants the shader asks bilinear weights for (ScanFetches).
+            std::set<uint32_t> m_weightedFetchConstants;
             bool m_usesPosition = false;
             int m_indent = 0;
 
@@ -697,6 +700,8 @@ void main()
                             f.Opcode() == FetchOpcode::GetTextureComputedLod)
                         {
                             TextureBindingFor(f.TextureConstIndex(), f.TextureDim());
+                            if (f.Opcode() == FetchOpcode::GetTextureWeights)
+                                m_weightedFetchConstants.insert(f.TextureConstIndex());
                             if (f.Opcode() == FetchOpcode::TextureFetch &&
                                 (f.TextureMagFilter() == kTextureFilterLinear || f.TextureMinFilter() == kTextureFilterLinear))
                                 for (TextureBinding& binding : m_info.textures)
@@ -1265,7 +1270,10 @@ void main()
                 {
                     m_info.usesKill = true;
                     if (!m_vertex)
-                        Line("if (kill) discard;");
+                        // Not in depth-only EDRAM mode (flags bit 22, set
+                        // by the renderer): the console doesn't run the
+                        // pixel shader there.
+                        Line("if (kill && (xe_sys.flags & 0x400000u) == 0u) discard;");
                 }
 
                 m_indent--;
@@ -1556,6 +1564,21 @@ void main()
                         std::string snapped = Format("xe_snap_texcoord(%s, %s)", xy.c_str(), hostSize.c_str());
                         if (f.TextureMagFilter() == kTextureFilterPoint && f.TextureMinFilter() == kTextureFilterPoint)
                             snapped = Format("((floor(%s * %s) + 0.5) / %s)", snapped.c_str(), hostSize.c_str(), hostSize.c_str());
+                        // A shader that also asks for this texture's bilinear
+                        // weights (getWeights) filters by hand: point taps a
+                        // guest texel apart, blended by the weights (Halo's
+                        // shadow PCF). The weights are in guest texels, so
+                        // each tap must be one value per guest texel. On a
+                        // resolve at a render scale the taps read whichever
+                        // host texel the coordinate fell in, changing value
+                        // mid guest texel while the weights didn't: blocky,
+                        // comb-edged shadows at scale 2 (smooth at 1). Snap
+                        // those taps to one host texel per guest texel (its
+                        // first; no change at scale 1).
+                        if (!volume && f.TextureDim() == TextureDimension::D2 && m_weightedFetchConstants.count(f.TextureConstIndex()) &&
+                            g_snapWeightedTaps)
+                            snapped = Format("xe_guest_texel(%s, %s, xe_texture_scale(%uu))", snapped.c_str(), hostSize.c_str(),
+                                f.TextureConstIndex());
                         return volume ? Format("vec3(%s, %s.z)", snapped.c_str(), coords.c_str()) : snapped;
                     };
                     float bias = f.TextureLodBias();
@@ -1820,6 +1843,16 @@ vec4 xe_max4(vec4 v)
 vec2 xe_snap_texcoord(vec2 coords, vec2 size)
 {
     return (round(coords * size * 256.0) + 0.5) / (256.0 * size);
+}
+
+// A coordinate moved to the center of the first host texel of the guest
+// texel it is in (scale: host texels per guest texel; 1: unchanged).
+vec2 xe_guest_texel(vec2 coords, vec2 hostSize, float scale)
+{
+    if (scale <= 1.0)
+        return coords;
+    vec2 guestSize = hostSize / scale;
+    return (floor(coords * guestSize) + 0.5 / scale) / guestSize;
 }
 
 // Host texels per guest texel of a fetch constant's texture (tfetch.w bits

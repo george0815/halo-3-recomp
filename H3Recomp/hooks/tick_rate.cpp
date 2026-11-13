@@ -31,6 +31,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <atomic>
 #include <ctime>
 #include <thread>
 #include <vector>
@@ -137,6 +138,8 @@ PPC_FUNC(sub_821D7098)
 // H3_LOCKSTEP_TICKS=<n> passes n ticks' time (n ticks per frame).
 // H3_FRAME_DELAY_MS=<n> (testing) sleeps n ms per main loop iteration: a
 // slow machine's frames, several game ticks each.
+static std::atomic<uint32_t> g_captureRequestTick{ 0 };
+
 PPC_FUNC_IMPL(__imp__sub_820983E0);
 PPC_FUNC(sub_820983E0)
 {
@@ -150,6 +153,20 @@ PPC_FUNC(sub_820983E0)
         uint32_t gameTime = GuestRef<uint32_t>(uint32_t(GuestRef<uint32_t>(ctx.r13.u32)) + kGameTimeSlot);
         if (gameTime)
             ctx.f1.f64 = float(GuestRef<float>(gameTime + 8)) * float(lockstepTicks ? lockstepTicks : 1);  // seconds per tick
+    }
+    // H3_CAPTURE_HOLD_TICKS=1 (testing, with H3_CAPTURE_LEVEL_TICK): after
+    // a capture request the game gets one more tick (the frame needs it),
+    // then waits here until that frame is captured: a capture stalls the
+    // renderer for seconds while this thread would run on, so a list of
+    // consecutive ticks would otherwise all land on one frame. Gives up
+    // after 60 s.
+    static const bool holdTicks = EnvFlag("H3_CAPTURE_HOLD_TICKS");
+    if (holdTicks && h3::gpu::capture::Busy())
+    {
+        uint32_t gameTime = GuestRef<uint32_t>(uint32_t(GuestRef<uint32_t>(ctx.r13.u32)) + kGameTimeSlot);
+        uint32_t tick = gameTime ? uint32_t(GuestRef<uint32_t>(gameTime + 12)) : 0u;
+        for (int waited = 0; tick > g_captureRequestTick && h3::gpu::capture::Busy() && waited < 60000; waited++)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     __imp__sub_820983E0(ctx, base);
 
@@ -199,6 +216,7 @@ PPC_FUNC(sub_820983E0)
                 nextCapture++;
             fprintf(stderr, "[hooks] capture at level tick %u\n", tick);
             h3::gpu::capture::RequestCapture(EnvFlag("H3_CAPTURE_DEEP"));
+            g_captureRequestTick = tick;
         }
     }
 }

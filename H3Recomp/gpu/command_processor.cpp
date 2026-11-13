@@ -465,6 +465,8 @@ namespace h3::gpu
             bool constants = index - kRegShaderConstantAlu < 2 * kAluConstantsPerStage &&
                 index + count - kRegShaderConstantAlu <= 2 * kAluConstantsPerStage;
             bool logged = logRange.first <= logRange.second && index <= logRange.second && index + count > logRange.first;
+            static const bool captureConstants = EnvString("H3_CAPTURE_PS_CONST") != nullptr;  // frame_capture.cpp
+            logged = logged || captureConstants;
             if (!constants || logged || count == 0)
             {
                 for (uint32_t i = 0; i < count; i++)

@@ -149,6 +149,7 @@ namespace h3::gpu::renderer
         shader::g_storageConstants = !g_uniformConstants;
         shader::g_borderClamp = EnvFlag("H3_BORDER_CLAMP");
         shader::g_weightsOffset = !EnvFlag("H3_NO_WEIGHTS_OFFSET");
+        shader::g_snapWeightedTaps = !EnvFlag("H3_NO_SNAP_WEIGHTED_TAPS");
         CreatePlaceholders(device);
 
         // Shader compilation (pipelines.cpp): asynchronous if asked
@@ -300,6 +301,12 @@ namespace h3::gpu::renderer
         }
 
         g_swaps++;
+        // H3_LOG_TICKS=1 (testing): wall-clock time of each presented frame,
+        // to match frames to the [tick] lines of hooks/tick_rate.cpp.
+        static const bool logSwaps = EnvFlag("H3_LOG_TICKS");
+        if (logSwaps)
+            fprintf(stderr, "[swap] %u wall %.4f\n", g_swaps,
+                std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count());
         g_frameResolves = 0;
         DumpMemoryAtSwap();
         PokeMemoryAtSwap();

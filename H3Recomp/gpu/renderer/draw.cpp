@@ -1138,8 +1138,21 @@ namespace h3::gpu::renderer::internal
                     system.flags |= 1u << (kSystemFlagClampColorShift + i);
             }
             // Alpha test: RB_COLORCONTROL function (bits 0-2) and enable (bit 3).
+            // Depth-only EDRAM mode (RB_MODECONTROL 5): the console doesn't
+            // run the pixel shader, so nothing it does can drop a pixel (no
+            // kills, no alpha test). Halo 3 draws opaque shadow casters this
+            // way with whatever alpha-cutout shader, constants and texture
+            // the previous object left bound (casters that do need a cutout
+            // go in color+depth mode): running it cut objects out of shadow
+            // maps depending on draw order, e.g. the Chief losing his shadow
+            // and a marine gaining one for single frames in the Crow's Nest
+            // intro. H3_DEPTH_ONLY_PS=1: run it as before (to compare).
+            static const bool depthOnlyPixelShader = EnvFlag("H3_DEPTH_ONLY_PS");
+            bool noPixelShader = (ReadRegister(kRegRbModeControl) & 7) == kEdramModeDepthOnly && !depthOnlyPixelShader;
+            if (noPixelShader)
+                system.flags |= kSystemFlagNoPixelKill;
             uint32_t colorControl = ReadRegister(kRegRbColorControl);
-            if (colorControl & 8)
+            if ((colorControl & 8) && !noPixelShader)
                 system.flags |= ((colorControl & 7) << kSystemFlagAlphaFuncShift) | kSystemFlagAlphaTest;
             system.alphaRef = RegisterFloat(kRegRbAlphaRef);
             // User clip planes: PA_CL_CLIP_CNTL bits 0-5 enable PA_CL_UCP_n.

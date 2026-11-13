@@ -25,6 +25,8 @@ namespace h3::gpu::capture
         // window thread), and the frame and folder of the latest one.
         std::atomic<bool> g_requested{ false };
         std::atomic<bool> g_requestedDeep{ false };
+        // A requested capture hasn't finished its frame yet (Busy).
+        std::atomic<bool> g_busy{ false };
         // RequestSnapshot's tag + 1 (0: no snapshot pending).
         std::atomic<uint64_t> g_snapshotRequest{ 0 };
         bool g_deep = false;  // the current hotkey capture is deep
@@ -252,6 +254,16 @@ namespace h3::gpu::capture
         if ((index >= 0x2200 && index <= 0x220B) || index == 0x210E)
             if (FILE* out = Out())
                 fprintf(out, "  reg %04X = %08X\n", index, value);
+        // H3_CAPTURE_PS_CONST=<n>: also every write to pixel shader float
+        // constant c<n> (which draws set it, which inherit it).
+        static const uint32_t psConst = EnvNumber("H3_CAPTURE_PS_CONST", ~0u);
+        if (psConst < 256 && (index - (kRegShaderConstantAlu + (256 + psConst) * 4)) < 4)
+            if (FILE* out = Out())
+            {
+                float f;
+                memcpy(&f, &value, sizeof(f));
+                fprintf(out, "  ps c%u.%c = %g\n", psConst, "xyzw"[index & 3], f);
+            }
     }
 
     void OnZpd(uint32_t initiator, uint32_t address)
@@ -291,6 +303,8 @@ namespace h3::gpu::capture
             g_requestedDeep = deep;
             g_requested = true;
         }
+        if (g_hotkeyFrame && frame == g_hotkeyFrame && !g_requested)
+            g_busy = false;
         // A hotkey request: capture the frame starting now, in a new folder.
         if (g_requested.exchange(false) && !g_out)
         {
@@ -312,8 +326,14 @@ namespace h3::gpu::capture
         }
     }
 
+    bool Busy()
+    {
+        return g_busy;
+    }
+
     void RequestCapture(bool deep)
     {
+        g_busy = true;
         if (deep)
             g_requestedDeep = true;
         g_requested = true;
