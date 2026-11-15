@@ -52,7 +52,9 @@ namespace h3::gpu::renderer::internal
         // 4: resident vertex memory binding (draw.cpp ResidentOffset).
         // 5: query_id / debug_variant in the system constants (debug.cpp).
         // 6: kills ignored in depth-only mode (kSystemFlagNoPixelKill).
-        constexpr uint32_t kManifestVersion = 6;
+        // 7: structured control flow and registers as variables
+        //    (translator.cpp StructuredRegion, ScalarRegisters).
+        constexpr uint32_t kManifestVersion = 7;
         // Worker threads for shader and pipeline creation. The game itself
         // keeps about six host threads busy; drivers compile pipelines
         // single-threaded, so a few workers go a long way.

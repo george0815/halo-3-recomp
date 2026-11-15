@@ -160,6 +160,10 @@ namespace h3::gpu::shader
     // Hand-filtered taps (getWeights) snapped to guest texels on scaled
     // resolves; false with H3_NO_SNAP_WEIGHTED_TAPS=1 (to compare).
     extern bool g_snapWeightedTaps;
+    // Control flow as structured GLSL where the shader allows it (see
+    // StructuredRegion in translator.cpp); false with
+    // H3_NO_STRUCTURED_SHADERS=1: always the state machine (to compare).
+    extern bool g_structuredControlFlow;
 
     // Microcode disassembly, for debugging the translator.
     std::string Disassemble(bool isVertex, const uint32_t* dwords, uint32_t dwordCount);

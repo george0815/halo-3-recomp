@@ -11,6 +11,7 @@
 #include <gpu/shader/translator.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -36,6 +37,8 @@ int main(int argc, char** argv)
         fprintf(stderr, "usage: h3shader [--disasm | --compute] <out dir> <shader.bin>...\n");
         return 1;
     }
+    // H3_NO_STRUCTURED_SHADERS=1: the control flow state machine (as in the game).
+    h3::gpu::shader::g_structuredControlFlow = getenv("H3_NO_STRUCTURED_SHADERS") == nullptr;
     std::filesystem::path outDir = argv[first];
     std::filesystem::create_directories(outDir);
 

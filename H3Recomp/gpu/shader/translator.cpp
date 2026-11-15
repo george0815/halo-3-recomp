@@ -26,6 +26,7 @@ namespace h3::gpu::shader
     bool g_borderClamp = false;
     bool g_weightsOffset = true;
     bool g_snapWeightedTaps = true;
+    bool g_structuredControlFlow = true;
 
     using namespace ucode;
 
@@ -573,6 +574,43 @@ void main()
             bool m_vertex;
             std::vector<std::pair<int, std::string>> m_debug;  // H3_DEBUG_PS: (case, expression) per variant
             bool m_compute;  // the memexport compute variant of a vertex shader
+            bool m_structured = false;  // the body is structured GLSL, not the state machine (EmitBody)
+            // With structured control flow and no relative register access,
+            // the registers become separate variables r<n> instead of the
+            // array r[64] (written "r[<n>]" throughout the body): the array
+            // stays in memory on the driver's side (a pixel shader's
+            // ps_param_gen writes it with a dynamic index), separate
+            // variables optimize like any local. Fills `used` with the
+            // registers the body touches.
+            static std::string ScalarRegisters(const std::string& body, std::set<uint32_t>& used)
+            {
+                std::string out;
+                out.reserve(body.size());
+                size_t at = 0;
+                while (true)
+                {
+                    size_t found = body.find("r[", at);
+                    if (found == std::string::npos)
+                        break;
+                    size_t digits = found + 2, end = digits;
+                    while (end < body.size() && isdigit(uint8_t(body[end])))
+                        end++;
+                    bool name = found == 0 || !(isalnum(uint8_t(body[found - 1])) || body[found - 1] == '_');
+                    if (!name || end == digits || end >= body.size() || body[end] != ']')
+                    {
+                        out.append(body, at, digits - at);
+                        at = digits;
+                        continue;
+                    }
+                    uint32_t index = uint32_t(std::stoul(body.substr(digits, end - digits)));
+                    used.insert(index);
+                    out.append(body, at, found - at);
+                    out += "r" + std::to_string(index);
+                    at = end + 1;
+                }
+                out.append(body, at, std::string::npos);
+                return out;
+            }
             const uint32_t* m_dwords;
             uint32_t m_count;
             ShaderInfo m_info;
@@ -743,9 +781,18 @@ void main()
                 return Format("((xe_sys.bools[%u][%u] & %uu) != 0u)", index >> 7, (index >> 5) & 3, 1u << (index & 31));
             }
 
-            // Emits the control flow state machine: one case per control flow instruction.
+            // Emits the control flow. Structured GLSL (ifs and for loops) when
+            // the shader's jumps and loops nest (StructuredRegion); otherwise a
+            // state machine, one switch case per control flow instruction.
             void EmitBody()
             {
+                m_structured = g_structuredControlFlow && StructuredRegion(0, m_cfCount, m_cfCount, false);
+                if (m_structured)
+                {
+                    m_indent = 1;
+                    StructuredRegion(0, m_cfCount, m_cfCount, true);
+                    return;
+                }
                 m_indent = 2;
                 for (uint32_t i = 0; i < m_cfCount && m_error.empty(); i++)
                 {
@@ -753,11 +800,203 @@ void main()
                     m_indent = 2;
                     Line(Format("case %u:", i));
                     m_indent = 3;
-                    for (size_t k = 0; k < m_debug.size(); k++)
-                        if (int(i) == m_debug[k].first)
-                            Line(Format("if (xe_sys.debug_variant == %uu) xe_debug = vec4(%s);", unsigned(k + 1), m_debug[k].second.c_str()));
+                    EmitDebug(i);
                     EmitControlFlow(i, cf);
                 }
+            }
+
+            // H3_DEBUG_PS expressions attached to control flow instruction i.
+            void EmitDebug(uint32_t i)
+            {
+                for (size_t k = 0; k < m_debug.size(); k++)
+                    if (int(i) == m_debug[k].first)
+                        Line(Format("if (xe_sys.debug_variant == %uu) xe_debug = vec4(%s);", unsigned(k + 1), m_debug[k].second.c_str()));
+            }
+
+            // GLSL for a conditional exec's or jump's condition.
+            std::string CfCondition(const CfInstruction& cf, bool onPredicate)
+            {
+                return onPredicate ? Format("(p0 == %s)", cf.Condition() ? "true" : "false")
+                                   : Format("(%s == %s)", BoolConstant(cf.BoolAddress()).c_str(), cf.Condition() ? "true" : "false");
+            }
+
+            // Control flow instructions [begin, end) as structured GLSL: the
+            // state machine's while/switch keeps every register in memory
+            // and costs the driver up to seconds per pipeline, while ifs and
+            // loops optimize like ordinary code. With `emit` false it only
+            // checks that the region has the shapes handled here (what Halo
+            // 3's shaders use), returning false otherwise:
+            // - conditional execs without a conditional end of the shader;
+            // - a forward conditional jump over a block: if; when the block
+            //   ends in an unconditional jump further forward, or by ending
+            //   the shader, what it jumps over is the else;
+            // - loops whose start and end pair up within the region;
+            // - no calls, returns or backward jumps, and no jump or loop
+            //   leaving its enclosing block any other way.
+            // `exit`: the instruction control reaches once the region is done
+            // (its end, where an enclosing block's jump leads, a loop's end;
+            // m_cfCount: the shader is over). A jump there leaves the region,
+            // and an exec that ends the shader is handled only where the
+            // exit is the shader's end (what follows it is dead).
+            bool StructuredRegion(uint32_t begin, uint32_t end, uint32_t exit, bool emit)
+            {
+                uint32_t i = begin;
+                while (i < end)
+                {
+                    const CfInstruction& cf = m_cf[i];
+                    if (emit)
+                        EmitDebug(i);
+                    switch (cf.Opcode())
+                    {
+                    case CfOpcode::Alloc:
+                        // A new export allocation stores the previous memexport.
+                        if (emit && m_compute)
+                            Line("xe_memexport_flush();");
+                        i++;
+                        continue;
+                    case CfOpcode::Nop:
+                    case CfOpcode::MarkVsFetchDone:
+                        i++;
+                        continue;
+
+                    case CfOpcode::Exec:
+                    case CfOpcode::ExecEnd:
+                        if (emit)
+                            EmitExec(cf);
+                        if (cf.EndsShader())
+                            return exit == m_cfCount;  // the rest is dead
+                        i++;
+                        continue;
+
+                    case CfOpcode::CondExec:
+                    case CfOpcode::CondExecEnd:
+                    case CfOpcode::CondExecPredClean:
+                    case CfOpcode::CondExecPredCleanEnd:
+                    case CfOpcode::CondExecPred:
+                    case CfOpcode::CondExecPredEnd:
+                        if (cf.EndsShader())
+                            return false;
+                        if (emit)
+                        {
+                            bool onPredicate = cf.Opcode() == CfOpcode::CondExecPred || cf.Opcode() == CfOpcode::CondExecPredEnd;
+                            Line("if " + CfCondition(cf, onPredicate));
+                            Line("{");
+                            m_indent++;
+                            EmitExec(cf);
+                            m_indent--;
+                            Line("}");
+                        }
+                        i++;
+                        continue;
+
+                    case CfOpcode::LoopStart:
+                    {
+                        // The start names the instruction after the end; the
+                        // end names the first of the body.
+                        uint32_t after = cf.TargetAddress();
+                        if (after <= i + 1 || after > end)
+                            return false;
+                        const CfInstruction& loopEnd = m_cf[after - 1];
+                        if (loopEnd.Opcode() != CfOpcode::LoopEnd || loopEnd.TargetAddress() != i + 1)
+                            return false;
+                        if (emit)
+                        {
+                            Line("{");
+                            m_indent++;
+                            Line(Format("uint xe_loop%u = xe_sys.loops[%u][%u];", i, cf.LoopId() >> 2, cf.LoopId() & 3));
+                            Line(Format("int xe_saved_aL%u = aL;", i));
+                            if (!cf.LoopIsRepeat())
+                                Line(Format("aL = int((xe_loop%u >> 8) & 0xFFu);", i));
+                            Line(Format("for (uint xe_iteration%u = 0u; xe_iteration%u < (xe_loop%u & 0xFFu); xe_iteration%u++)", i, i, i, i));
+                            Line("{");
+                            m_indent++;
+                        }
+                        if (!StructuredRegion(i + 1, after - 1, after - 1, emit))
+                            return false;
+                        if (emit)
+                        {
+                            EmitDebug(after - 1);
+                            Line(Format("aL += int(bitfieldExtract(int(xe_loop%u), 16, 8));", i));
+                            if (loopEnd.LoopIsPredicatedBreak())
+                                Line(Format("if (p0 == %s) break;", loopEnd.Condition() ? "true" : "false"));
+                            m_indent--;
+                            Line("}");
+                            Line(Format("aL = xe_saved_aL%u;", i));
+                            m_indent--;
+                            Line("}");
+                        }
+                        i = after;
+                        continue;
+                    }
+
+                    case CfOpcode::CondJmp:
+                    {
+                        // A jump to where the region continues anyway skips
+                        // the rest of it.
+                        uint32_t target = cf.TargetAddress();
+                        if (target > end && target == exit)
+                            target = end;
+                        if (target <= i || target > end)
+                            return false;
+                        if (cf.IsUnconditional())
+                        {
+                            i = target;  // what it jumps over is dead
+                            continue;
+                        }
+                        std::string skip = CfCondition(cf, cf.IsPredicated());
+                        // How the block the jump skips ends: by jumping on
+                        // (to within the region or to its exit) or by ending
+                        // the shader, and what's between is the else.
+                        const CfInstruction& lastCf = m_cf[target - 1];
+                        bool elseJump = target - 1 > i && lastCf.Opcode() == CfOpcode::CondJmp && lastCf.IsUnconditional() &&
+                            lastCf.TargetAddress() > target && (lastCf.TargetAddress() <= end || lastCf.TargetAddress() == exit);
+                        uint32_t last = target - 1;
+                        while (last > i && (m_cf[last].Opcode() == CfOpcode::Nop || m_cf[last].Opcode() == CfOpcode::MarkVsFetchDone ||
+                            m_cf[last].Opcode() == CfOpcode::Alloc))
+                            last--;
+                        bool elseEnd = !elseJump && exit == m_cfCount && last > i && target < end &&
+                            (m_cf[last].Opcode() == CfOpcode::Exec || m_cf[last].Opcode() == CfOpcode::ExecEnd) && m_cf[last].EndsShader();
+                        uint32_t thenEnd = elseJump ? target - 1 : target;
+                        uint32_t after = elseJump ? std::min(lastCf.TargetAddress(), end) : (elseEnd ? end : target);
+                        uint32_t blockExit = after == end ? exit : after;
+                        if (emit)
+                        {
+                            Line("if (!" + skip + ")");
+                            Line("{");
+                            m_indent++;
+                        }
+                        if (!StructuredRegion(i + 1, thenEnd, blockExit, emit))
+                            return false;
+                        if (emit)
+                        {
+                            m_indent--;
+                            Line("}");
+                        }
+                        if (after > target)
+                        {
+                            if (emit)
+                            {
+                                Line("else");
+                                Line("{");
+                                m_indent++;
+                            }
+                            if (!StructuredRegion(target, after, blockExit, emit))
+                                return false;
+                            if (emit)
+                            {
+                                m_indent--;
+                                Line("}");
+                            }
+                        }
+                        i = after;
+                        continue;
+                    }
+
+                    default:
+                        return false;  // LoopEnd on its own, calls, returns
+                    }
+                }
+                return true;
             }
 
             // Emits the case for one control flow instruction: exec clauses, loops, calls, jumps,
@@ -1939,13 +2178,31 @@ vec3 xe_cube_direction(vec3 stf)
                 if (StorageConstants())  // the draw's constants (see the XE_C declaration)
                     out += m_vertex ? "    uint xe_constant_base = xe_constants[gl_InstanceIndex].x;\n"
                                     : "    uint xe_constant_base = xe_ps_constant_base;\n";
-                out += "    vec4 r[64];\n    for (int i = 0; i < 64; i++) r[i] = vec4(0.0);\n";
+                // The body, with registers as variables where possible
+                // (ScalarRegisters); r0 and r1 take a vertex shader's inputs.
+                std::set<uint32_t> registers = { 0, 1 };
+                // (Operands are decoded even where unused: look at what was emitted.)
+                bool scalarRegisters = m_structured && m_body.find("r[clamp(") == std::string::npos;
+                std::string body = CompactConstants(m_body);
+                if (scalarRegisters)
+                    body = ScalarRegisters(body, registers);
+                auto reg = [&](uint32_t i) { return scalarRegisters ? Format("r%u", i) : Format("r[%u]", i); };
+                if (scalarRegisters)
+                {
+                    for (uint32_t i : registers)
+                        out += !m_vertex && i < 16 ? Format("    vec4 r%u = xe_in[%u];\n", i, i) : Format("    vec4 r%u = vec4(0.0);\n", i);
+                }
+                else
+                    out += "    vec4 r[64];\n    for (int i = 0; i < 64; i++) r[i] = vec4(0.0);\n";
                 out += "    int a0 = 0;\n    int aL = 0;\n    bool p0 = false;\n    float ps = 0.0;\n";
                 out += "    int newA0 = 0;\n    bool newP0 = false;\n    bool kill = false;\n";
                 if (!m_debug.empty())
                     out += "    vec4 xe_debug = vec4(0.0);\n";
-                out += "    int loopDepth = -1;\n    int loopSavedAL[4];\n    int loopIteration[4];\n    uint loopConstant[4];\n";
-                out += "    int callDepth = -1;\n    int callStack[4];\n";
+                if (!m_structured)
+                {
+                    out += "    int loopDepth = -1;\n    int loopSavedAL[4];\n    int loopIteration[4];\n    uint loopConstant[4];\n";
+                    out += "    int callDepth = -1;\n    int callStack[4];\n";
+                }
                 if (m_vertex)
                 {
                     out += "    xe_position = vec4(0.0, 0.0, 0.0, 1.0);\n";
@@ -1954,28 +2211,43 @@ vec3 xe_cube_direction(vec3 stf)
                     // domain location and index instead of a vertex index
                     // (see kVertexMain).
                     out += "    if ((xe_sys.flags & 1024u) != 0u)\n    {\n"
-                           "        r[0].xyz = xe_domain.zyx;\n        r[1].x = float(xe_vertex_index);\n    }\n"
-                           "    else\n        r[0].x = float(xe_vertex_index);\n";
+                           "        " + reg(0) + ".xyz = xe_domain.zyx;\n        " + reg(1) + ".x = float(xe_vertex_index);\n    }\n"
+                           "    else\n        " + reg(0) + ".x = float(xe_vertex_index);\n";
                 }
                 else
                 {
-                    out += "    for (int i = 0; i < 16; i++) r[i] = xe_in[i];\n";
                     // The pixel position: samples of one guest pixel share
                     // it, but at a render scale above 1 it keeps steps of
                     // 1/scale so screen-space lookups stay sharp.
-                    out += "    if (xe_sys.ps_param_gen < 64u)\n"
-                           "        r[xe_sys.ps_param_gen] = vec4(floor(gl_FragCoord.xy * xe_sys.render_scale / vec2(xe_sys.pixel_scale_x, xe_sys.pixel_scale_y)) / xe_sys.render_scale, gl_FrontFacing ? 0.0 : -0.0, 0.0);\n";
+                    const char* position = "vec4(floor(gl_FragCoord.xy * xe_sys.render_scale / vec2(xe_sys.pixel_scale_x, xe_sys.pixel_scale_y)) / xe_sys.render_scale, gl_FrontFacing ? 0.0 : -0.0, 0.0)";
+                    if (scalarRegisters)
+                    {
+                        // Only registers the shader reads can matter.
+                        out += Format("    vec4 xe_param_gen = %s;\n", position);
+                        for (uint32_t i : registers)
+                            out += Format("    if (xe_sys.ps_param_gen == %uu) r%u = xe_param_gen;\n", i, i);
+                    }
+                    else
+                    {
+                        out += "    for (int i = 0; i < 16; i++) r[i] = xe_in[i];\n";
+                        out += Format("    if (xe_sys.ps_param_gen < 64u)\n        r[xe_sys.ps_param_gen] = %s;\n", position);
+                    }
                     for (uint32_t i = 0; i < 4; i++)
                         if (m_info.colorTargetMask & (1u << i))
                             out += Format("    vec4 xe_color%u = vec4(0.0);\n", i);
                     if (m_info.writesDepth)
                         out += "    vec4 xe_depth = vec4(gl_FragCoord.z);\n";
                 }
-                out += "    int pc = 0;\n    bool running = true;\n";
-                out += "    while (running)\n    {\n        switch (pc)\n        {\n";
-                out += CompactConstants(m_body);
-                out += "        default:\n            running = false;\n            break;\n";
-                out += "        }\n    }\n";
+                if (m_structured)
+                    out += body;
+                else
+                {
+                    out += "    int pc = 0;\n    bool running = true;\n";
+                    out += "    while (running)\n    {\n        switch (pc)\n        {\n";
+                    out += body;
+                    out += "        default:\n            running = false;\n            break;\n";
+                    out += "        }\n    }\n";
+                }
                 if (m_vertex)
                 {
                     if (m_compute)
