@@ -195,10 +195,8 @@ PPC_FUNC(sub_820983E0)
     if (logTicks)
     {
         uint32_t gameTime = GuestRef<uint32_t>(uint32_t(GuestRef<uint32_t>(ctx.r13.u32)) + kGameTimeSlot);
-        timespec now;
-        clock_gettime(CLOCK_REALTIME, &now);
-        fprintf(stderr, "[tick] %u wall %.4f\n", gameTime ? uint32_t(GuestRef<uint32_t>(gameTime + 12)) : 0u,
-            double(now.tv_sec) + now.tv_nsec * 1e-9);
+        double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+        fprintf(stderr, "[tick] %u wall %.4f\n", gameTime ? uint32_t(GuestRef<uint32_t>(gameTime + 12)) : 0u, now);
     }
     static size_t nextCapture = 0;
     static bool armed = false;

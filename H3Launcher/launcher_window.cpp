@@ -164,8 +164,13 @@ namespace h3::launcher
         // H3Recomp/ folder next to H3Launcher/, or on PATH.
         QString FindGameExecutable()
         {
+#ifdef _WIN32
+            const QString name = QStringLiteral("H3Recomp.exe");
+#else
+            const QString name = QStringLiteral("H3Recomp");
+#endif
             QDir dir(QCoreApplication::applicationDirPath());
-            for (const QString& candidate : { dir.filePath("H3Recomp"), dir.filePath("../H3Recomp/H3Recomp") })
+            for (const QString& candidate : { dir.filePath(name), dir.filePath("../H3Recomp/" + name) })
                 if (QFileInfo(candidate).isExecutable())
                     return QFileInfo(candidate).absoluteFilePath();
             return QStandardPaths::findExecutable(QStringLiteral("H3Recomp"));

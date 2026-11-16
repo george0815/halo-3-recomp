@@ -21,11 +21,16 @@
 #include <thread>
 #include <vector>
 
+// DumpHostBacktrace (stuck-thread reports) samples the thread through a
+// signal: Linux only. Elsewhere it says so.
+#if defined(__linux__)
+#define H3_HOST_BACKTRACE 1
 #include <execinfo.h>
 #include <pthread.h>
 #include <signal.h>
 
 extern "C" char __executable_start;
+#endif
 
 namespace h3::kernel
 {
@@ -33,6 +38,7 @@ namespace h3::kernel
     {
         thread_local GuestThread* t_currentThread = nullptr;
 
+#ifdef H3_HOST_BACKTRACE
         // Host thread of each guest thread (by KTHREAD), for
         // DumpHostBacktrace.
         std::mutex g_hostThreadMutex;
@@ -48,6 +54,7 @@ namespace h3::kernel
         {
             g_backtraceFrames.store(backtrace(g_backtrace, kMaxBacktraceFrames));
         }
+#endif
 
         std::mutex g_tlsMutex;
         std::vector<bool> g_tlsUsed;
@@ -124,12 +131,17 @@ namespace h3::kernel
         // the next inexact result), so start from the host's real value.
         ctx.fpscr.csr = ctx.fpscr.getcsr();
         t_currentThread = thread;
+#ifdef H3_HOST_BACKTRACE
         std::lock_guard lock(g_hostThreadMutex);
         g_hostThreads[thread->kthread] = pthread_self();
+#endif
     }
 
     void DumpHostBacktrace(uint32_t kthread)
     {
+#ifndef H3_HOST_BACKTRACE
+        fprintf(stderr, "[kernel]   thread %08X host stack: not available on this platform\n", kthread);
+#else
         pthread_t target;
         {
             std::lock_guard lock(g_hostThreadMutex);
@@ -161,6 +173,7 @@ namespace h3::kernel
         for (int i = 0; i < frames; i++)
             fprintf(stderr, " %lx", static_cast<unsigned long>(reinterpret_cast<uintptr_t>(g_backtrace[i]) - executable));
         fprintf(stderr, "\n");
+#endif
     }
 
     GuestThread* CurrentThread()

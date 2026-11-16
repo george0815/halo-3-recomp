@@ -160,7 +160,7 @@ PPC_FUNC(sub_8259FE40)
     if (current == target)
         return;
 
-    HostFiber& from = Lookup(current, true);
+    [[maybe_unused]] HostFiber& from = Lookup(current, true);  // Windows: converts the thread
     HostFiber& to = Lookup(target, false);
 
     // What the real switch leaves behind (via KeSetCurrentStackPointers).

@@ -26,7 +26,7 @@ using namespace h3::kernel;
 // DWORD KeTlsAlloc()
 PPC_FUNC(__imp__KeTlsAlloc)
 {
-    ctx.r3.u64 = TlsAlloc();
+    ctx.r3.u64 = h3::kernel::TlsAlloc();
 }
 
 // BOOL KeTlsFree(DWORD slot)
@@ -188,7 +188,13 @@ PPC_FUNC(__imp__RtlEnterCriticalSection)
             DumpHostBacktrace(uint32_t(GuestRef<uint32_t>(cs + kCsOwningThread)));
             static const bool trapOnStuck = EnvFlag("H3_TRAP_ON_STUCK");
             if (trapOnStuck)  // debugging: stop in an attached debugger
+            {
+#ifdef _WIN32
+                __debugbreak();
+#else
                 raise(SIGTRAP);
+#endif
+            }
             reported = true;
         }
     }

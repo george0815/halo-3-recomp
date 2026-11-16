@@ -21,6 +21,31 @@ endif()
 
 # Recompiler toolchain: XenonAnalyse, XenonRecomp, XenonUtils.
 add_subdirectory(thirdparty/XenonRecomp)
+if (MSVC)
+    # XenonRecomp asks for the static C runtime; everything else (SDL, Qt,
+    # shaderc) uses the DLL one, and the two can't be linked together.
+    function(h3_dll_runtime dir)
+        get_property(targets DIRECTORY ${dir} PROPERTY BUILDSYSTEM_TARGETS)
+        foreach (target ${targets})
+            get_target_property(type ${target} TYPE)
+            if (NOT type STREQUAL "INTERFACE_LIBRARY")
+                set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+            endif()
+        endforeach()
+        get_property(subdirs DIRECTORY ${dir} PROPERTY SUBDIRECTORIES)
+        foreach (sub ${subdirs})
+            h3_dll_runtime(${sub})
+        endforeach()
+    endfunction()
+    h3_dll_runtime(${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/XenonRecomp)
+endif()
+if (WIN32)
+    # windows.h in our code: no min/max macros (they break std::min and
+    # std::max), the lean set of headers, and no deprecation warnings for
+    # standard C functions (getenv, fopen...). After XenonRecomp, whose
+    # third-party code expects the full set.
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+endif()
 
 # Xenos shader microcode -> GLSL translator, used by the runtime and by
 # tools/h3shader (which needs no game build).
@@ -70,6 +95,9 @@ foreach (target ${H3_OWN_TARGETS})
         if (NOT type STREQUAL "INTERFACE_LIBRARY")
             if (MSVC)
                 target_compile_options(${target} PRIVATE /W4 /wd4100)
+                if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")  # clang-cl
+                    target_compile_options(${target} PRIVATE -Wno-unused-parameter -Wno-missing-field-initializers)
+                endif()
             else()
                 target_compile_options(${target} PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
             endif()

@@ -32,6 +32,10 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>  // GetThreadTimes
+#endif
+
 namespace h3::debug
 {
     void SetWallProfileThread();  // debug/profiler.cpp
@@ -885,10 +889,17 @@ namespace h3::gpu
             double wall = 0, cpu = 0;
             static CpTimes Now()
             {
-                timespec wall, cpu;
-                clock_gettime(CLOCK_MONOTONIC, &wall);
+                double wall = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+#ifdef _WIN32
+                FILETIME creation, exit, kernel, user;  // 100 ns units
+                GetThreadTimes(GetCurrentThread(), &creation, &exit, &kernel, &user);
+                auto seconds = [](const FILETIME& t) { return double((uint64_t(t.dwHighDateTime) << 32) | t.dwLowDateTime) * 1e-7; };
+                return { wall, seconds(kernel) + seconds(user) };
+#else
+                timespec cpu;
                 clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu);
-                return { wall.tv_sec + wall.tv_nsec * 1e-9, cpu.tv_sec + cpu.tv_nsec * 1e-9 };
+                return { wall, cpu.tv_sec + cpu.tv_nsec * 1e-9 };
+#endif
             }
         };
 

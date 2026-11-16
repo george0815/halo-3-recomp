@@ -337,7 +337,7 @@ void h3::debug::OnGameStateCopy(const uint8_t* state, uint32_t bytes, uint32_t a
 {
     static FILE* out = [] {
         const char* path = EnvString("H3_STATE_HASH");
-        return path ? fopen(path, "w") : nullptr;
+        return path ? fopen(path, "wb") : nullptr;  // "\n" on every platform: compared across builds
     }();
     if (!out)
         return;

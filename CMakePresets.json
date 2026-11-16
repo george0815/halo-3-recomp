@@ -14,22 +14,55 @@
         {
             "name": "debug",
             "inherits": "base",
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
         },
         {
             "name": "relwithdebinfo",
             "inherits": "base",
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+            }
         },
         {
             "name": "release",
             "inherits": "base",
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "windows-cross",
+            "displayName": "Windows x64, cross-compiled from Linux (clang-cl; tools/build_windows_deps.sh first)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "toolchainFile": "${sourceDir}/cmake/toolchains/windows-clang-cl.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_FIND_ROOT_PATH": "${sourceDir}/build/windows-deps;${sourceDir}/build/windows-deps/qt",
+                "CMAKE_PREFIX_PATH": "${sourceDir}/build/windows-deps;${sourceDir}/build/windows-deps/qt",
+                "H3_WINDOWS_DEPS": "${sourceDir}/build/windows-deps",
+                "QT_HOST_PATH": "/usr"
+            }
         }
     ],
     "buildPresets": [
-        { "name": "debug", "configurePreset": "debug" },
-        { "name": "relwithdebinfo", "configurePreset": "relwithdebinfo" },
-        { "name": "release", "configurePreset": "release" }
+        {
+            "name": "debug",
+            "configurePreset": "debug"
+        },
+        {
+            "name": "relwithdebinfo",
+            "configurePreset": "relwithdebinfo"
+        },
+        {
+            "name": "release",
+            "configurePreset": "release"
+        },
+        {
+            "name": "windows-cross",
+            "configurePreset": "windows-cross"
+        }
     ]
 }

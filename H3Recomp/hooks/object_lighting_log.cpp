@@ -8,6 +8,7 @@
 #include "config/env.h"
 #include "memory.h"
 
+#include <chrono>
 #include <ppc_recomp_shared.h>
 
 #include <cmath>
@@ -176,10 +177,8 @@ PPC_FUNC(sub_822B93B0)
     uint32_t r3 = ctx.r3.u32, r4 = ctx.r4.u32;
     if (LogRange().enabled)
     {
-        timespec now;
-        clock_gettime(CLOCK_REALTIME, &now);
-        fprintf(stderr, "[cinshot] tick %u init_for_shot r3 %08X r4 %08X lr %08X wall %.3f\n", GameTick(ctx), r3, r4, uint32_t(ctx.lr),
-            double(now.tv_sec) + now.tv_nsec * 1e-9);
+        double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+        fprintf(stderr, "[cinshot] tick %u init_for_shot r3 %08X r4 %08X lr %08X wall %.3f\n", GameTick(ctx), r3, r4, uint32_t(ctx.lr), now);
     }
     __imp__sub_822B93B0(ctx, base);
 }

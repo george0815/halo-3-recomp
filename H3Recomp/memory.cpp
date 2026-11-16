@@ -6,6 +6,7 @@
 #include "memory.h"
 
 #include <algorithm>
+#include <cstring>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -32,7 +33,35 @@ namespace h3
         constexpr uint32_t kPhysicalViewE = 0xE0000000;
         constexpr uint32_t kViewEOffset = 0x1000;
 
-#ifndef _WIN32
+#ifdef _WIN32
+        // Physical memory: a pagefile-backed section mapped at each view into
+        // placeholders (Windows 10 1803+). VirtualAlloc2 and MapViewOfFile3
+        // come from kernelbase.dll at run time, so no extra import library.
+        HANDLE g_physicalSection = nullptr;
+        using VirtualAlloc2Fn = PVOID(WINAPI*)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, void*, ULONG);
+        using MapViewOfFile3Fn = PVOID(WINAPI*)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, void*, ULONG);
+        VirtualAlloc2Fn g_virtualAlloc2 = nullptr;
+        MapViewOfFile3Fn g_mapViewOfFile3 = nullptr;
+        constexpr ULONG kMemReservePlaceholder = 0x00040000;  // MEM_RESERVE_PLACEHOLDER
+        constexpr ULONG kMemReplacePlaceholder = 0x00004000;  // MEM_REPLACE_PLACEHOLDER
+        constexpr ULONG kMemPreservePlaceholder = 0x00000002;  // MEM_PRESERVE_PLACEHOLDER
+
+        // The guest range in placeholders, split at the view boundaries:
+        // plain memory, the three physical views (physical offset), plain.
+        struct Region
+        {
+            uint64_t start, end;
+            int64_t physical;  // -1: plain memory
+        };
+        constexpr uint32_t kViewEEnd = kPhysicalViewE + (kPhysicalMemorySize - kViewEOffset);
+        constexpr Region kRegions[] = {
+            { 0, kPhysicalMemoryBase, -1 },
+            { kPhysicalMemoryBase, kPhysicalViewC, 0 },
+            { kPhysicalViewC, kPhysicalViewE, 0 },
+            { kPhysicalViewE, kViewEEnd, kViewEOffset },
+            { kViewEEnd, kGuestMemorySize, -1 },
+        };
+#else
         int g_physicalFd = -1;
 
         // Maps `size` bytes of the physical memory file, from `offset`, at guest
@@ -60,9 +89,39 @@ namespace h3
         // Pages are committed lazily by the OS, so reserving the whole range
         // up front costs nothing until the guest touches it.
 #ifdef _WIN32
-        // TODO: the physical views aren't aliased on Windows yet (needs a
-        // section mapped with MapViewOfFile3 into placeholders).
-        void* memory = VirtualAlloc(nullptr, kGuestMemorySize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        HMODULE kernelbase = GetModuleHandleW(L"kernelbase.dll");
+        if (kernelbase)
+        {
+            g_virtualAlloc2 = reinterpret_cast<VirtualAlloc2Fn>(GetProcAddress(kernelbase, "VirtualAlloc2"));
+            g_mapViewOfFile3 = reinterpret_cast<MapViewOfFile3Fn>(GetProcAddress(kernelbase, "MapViewOfFile3"));
+        }
+        if (!g_virtualAlloc2 || !g_mapViewOfFile3)
+            return false;  // older than Windows 10 1803
+        g_physicalSection = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, kPhysicalMemorySize, nullptr);
+        if (!g_physicalSection)
+            return false;
+        uint8_t* memory = static_cast<uint8_t*>(
+            g_virtualAlloc2(nullptr, nullptr, kGuestMemorySize, MEM_RESERVE | kMemReservePlaceholder, PAGE_NOACCESS, nullptr, 0));
+        if (!memory)
+            return false;
+        // Split the placeholder: releasing a piece of it with
+        // MEM_PRESERVE_PLACEHOLDER leaves that piece a placeholder of its own.
+        for (const Region& region : kRegions)
+            if (region.end != kGuestMemorySize &&
+                !VirtualFree(memory + region.start, region.end - region.start, MEM_RELEASE | kMemPreservePlaceholder))
+                return false;
+        // Pages are committed (charged) up front, but only become real
+        // memory when touched, as on Linux.
+        for (const Region& region : kRegions)
+        {
+            void* placed = region.physical < 0
+                ? g_virtualAlloc2(nullptr, memory + region.start, region.end - region.start,
+                      MEM_RESERVE | MEM_COMMIT | kMemReplacePlaceholder, PAGE_READWRITE, nullptr, 0)
+                : g_mapViewOfFile3(g_physicalSection, GetCurrentProcess(), memory + region.start, uint64_t(region.physical),
+                      region.end - region.start, kMemReplacePlaceholder, PAGE_READWRITE, nullptr, 0);
+            if (placed != memory + region.start)
+                return false;
+        }
 #else
         void* memory = mmap(nullptr, kGuestMemorySize, PROT_READ | PROT_WRITE,
             MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -88,9 +147,15 @@ namespace h3
     static void ZeroPages(uint32_t address, uint32_t size)
     {
 #ifdef _WIN32
+        // Section views can't be decommitted: clear physical pages in place.
         // Guest pages are at least 4 KiB, so this lines up with host pages.
-        VirtualFree(g_base + address, size, MEM_DECOMMIT);
-        VirtualAlloc(g_base + address, size, MEM_COMMIT, PAGE_READWRITE);
+        if (PhysicalOffset(address) >= 0)
+            memset(g_base + address, 0, size);
+        else
+        {
+            VirtualFree(g_base + address, size, MEM_DECOMMIT);
+            VirtualAlloc(g_base + address, size, MEM_COMMIT, PAGE_READWRITE);
+        }
 #else
         // Shared (physical) pages keep their contents after MADV_DONTNEED;
         // punching a hole in the memfd frees them and reads back zero.

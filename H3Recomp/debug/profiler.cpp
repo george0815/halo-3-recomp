@@ -11,8 +11,13 @@
 // blocked (in the GPU driver, on locks) shows up as samples in the blocking
 // call.
 
-#include <algorithm>
+// Linux only (SIGPROF, setitimer, ucontext); elsewhere the entry points do
+// nothing.
+
 #include "config/env.h"
+
+#if defined(__linux__)
+#include <algorithm>
 #include <atomic>
 #include <csignal>
 #include <cstdint>
@@ -175,3 +180,10 @@ namespace h3::debug
         }
     }
 }
+#else
+namespace h3::debug
+{
+    void SetWallProfileThread() {}
+    void UpdateProfiler(uint32_t) {}
+}
+#endif

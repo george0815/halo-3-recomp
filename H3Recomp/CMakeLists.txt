@@ -89,11 +89,31 @@ target_include_directories(H3Recomp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(H3Recomp PRIVATE ${PROJECT_SOURCE_DIR}/thirdparty/XenonRecomp/thirdparty/xxHash)
 # XXH3's AVX2 build, picked at runtime (ContentHash) so the executable
 # still runs on CPUs without AVX2.
-set_source_files_properties(gpu/renderer/content_hash_avx2.cpp PROPERTIES COMPILE_OPTIONS -mavx2)
+if (WIN32)
+    target_sources(H3Recomp PRIVATE platform/windows_compat.cpp)
+endif()
+
+if (MSVC)
+    set_source_files_properties(gpu/renderer/content_hash_avx2.cpp PROPERTIES COMPILE_OPTIONS /arch:AVX2)
+else()
+    set_source_files_properties(gpu/renderer/content_hash_avx2.cpp PROPERTIES COMPILE_OPTIONS -mavx2)
+endif()
 
 find_package(SDL3 REQUIRED CONFIG)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(SHADERC REQUIRED IMPORTED_TARGET shaderc)
+# shaderc (runtime GLSL -> SPIR-V): pkg-config on Linux; on Windows the
+# static shaderc_combined from tools/build_windows_deps.sh (H3_WINDOWS_DEPS).
+if (WIN32)
+    set(H3_WINDOWS_DEPS "${PROJECT_SOURCE_DIR}/build/windows-deps" CACHE PATH "Windows dependencies (tools/build_windows_deps.sh)")
+    find_library(H3_SHADERC_LIBRARY shaderc_combined PATHS "${H3_WINDOWS_DEPS}/lib" NO_DEFAULT_PATH REQUIRED)
+    add_library(H3Shaderc INTERFACE)
+    target_include_directories(H3Shaderc INTERFACE "${H3_WINDOWS_DEPS}/include")
+    target_link_libraries(H3Shaderc INTERFACE "${H3_SHADERC_LIBRARY}")
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(SHADERC REQUIRED IMPORTED_TARGET shaderc)
+    add_library(H3Shaderc INTERFACE)
+    target_link_libraries(H3Shaderc INTERFACE PkgConfig::SHADERC)
+endif()
 
 # Counts and samples calls into the statically linked D3D library (to name
 # its functions). Writes d3d_trace.txt at frame 150.
@@ -102,12 +122,31 @@ if (H3_TRACE_D3D)
     target_sources(H3Recomp PRIVATE debug/d3d_trace.cpp debug/d3d_trace_hooks.cpp)
 endif()
 
-target_link_libraries(H3Recomp PRIVATE H3RecompLib H3Shader H3Config H3NativeCache H3NativeTags PkgConfig::SHADERC SDL3::SDL3 ${H3_MODULES} ${H3_MODULE_STUBS})
+target_link_libraries(H3Recomp PRIVATE H3RecompLib H3Shader H3Config H3NativeCache H3NativeTags H3Shaderc SDL3::SDL3 ${H3_MODULES} ${H3_MODULE_STUBS})
 
-# FFmpeg with the xmaframes decoder (XMA audio), built by tools/build_ffmpeg.sh.
-set(H3_FFMPEG_DIR "${PROJECT_SOURCE_DIR}/build/ffmpeg")
+# FFmpeg with the xmaframes decoder (XMA audio), built by tools/build_ffmpeg.sh
+# (on Windows, tools/build_windows_deps.sh).
+if (WIN32)
+    set(H3_FFMPEG_DIR "${H3_WINDOWS_DEPS}/ffmpeg")
+    set(H3_FFMPEG_SCRIPT tools/build_windows_deps.sh)
+else()
+    set(H3_FFMPEG_DIR "${PROJECT_SOURCE_DIR}/build/ffmpeg")
+    set(H3_FFMPEG_SCRIPT tools/build_ffmpeg.sh)
+endif()
 if (NOT EXISTS "${H3_FFMPEG_DIR}/lib/libavcodec.a")
-    message(FATAL_ERROR "XMA audio needs FFmpeg with the xmaframes decoder: run tools/build_ffmpeg.sh first")
+    message(FATAL_ERROR "XMA audio needs FFmpeg with the xmaframes decoder: run ${H3_FFMPEG_SCRIPT} first")
 endif()
 target_include_directories(H3Recomp BEFORE PRIVATE "${H3_FFMPEG_DIR}/include")
-target_link_libraries(H3Recomp PRIVATE "${H3_FFMPEG_DIR}/lib/libavcodec.a" "${H3_FFMPEG_DIR}/lib/libavutil.a" m)
+target_link_libraries(H3Recomp PRIVATE "${H3_FFMPEG_DIR}/lib/libavcodec.a" "${H3_FFMPEG_DIR}/lib/libavutil.a")
+if (WIN32)
+    target_link_libraries(H3Recomp PRIVATE bcrypt)  # FFmpeg's random seeds
+else()
+    target_link_libraries(H3Recomp PRIVATE m)
+endif()
+
+# Windows: the DLLs it loads (SDL3) go next to the executable.
+if (WIN32)
+    add_custom_command(TARGET H3Recomp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:H3Recomp> $<TARGET_FILE_DIR:H3Recomp>
+        COMMAND_EXPAND_LISTS)
+endif()

@@ -10,6 +10,11 @@
 
 #include "config/env.h"
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#include <immintrin.h>
+#endif
+
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
@@ -129,11 +134,31 @@ namespace h3::gpu::renderer::internal
     // content_hash_avx2.cpp (compiled for AVX2).
     uint64_t ContentHashAvx2(const void* data, size_t size);
 
+    namespace
+    {
+        bool CpuHasAvx2()
+        {
+#if defined(_MSC_VER)
+            // __builtin_cpu_supports needs compiler-rt, which clang-cl
+            // doesn't link: CPUID leaf 7 (AVX2), plus the OS saving the
+            // YMM registers (OSXSAVE, XCR0 bits 1-2).
+            int info[4];
+            __cpuid(info, 1);
+            if (!(info[2] & (1 << 27)) || (_xgetbv(0) & 6) != 6)
+                return false;
+            __cpuidex(info, 7, 0);
+            return (info[1] & (1 << 5)) != 0;
+#else
+            return __builtin_cpu_supports("avx2");
+#endif
+        }
+    }
+
     uint64_t ContentHash(const void* data, size_t size)
     {
         // Both variants compute the same XXH3 value; the AVX2 one is
         // roughly twice as fast on large data.
-        static const bool avx2 = __builtin_cpu_supports("avx2");
+        static const bool avx2 = CpuHasAvx2();
         return avx2 ? ContentHashAvx2(data, size) : XXH3_64bits(data, size);
     }
 

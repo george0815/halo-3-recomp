@@ -25,7 +25,11 @@
 #include <string>
 #include <thread>
 
+#ifdef _WIN32
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 
 // The recompiler's function lookup table lives right after the image and
 // must fit inside the 4 GiB guest range.
@@ -70,12 +74,24 @@ int main(int argc, char* argv[])
             std::filesystem::path logPath = xexDir / h3::config::kLogFileName;
             if (freopen(logPath.string().c_str(), "w", stdout))
             {
+#ifdef _WIN32
+                _dup2(_fileno(stdout), _fileno(stderr));
+                setvbuf(stdout, nullptr, _IONBF, 0);  // the CRT has no line buffering
+#else
                 dup2(fileno(stdout), fileno(stderr));
                 setvbuf(stdout, nullptr, _IOLBF, 0);
+#endif
             }
         }
         for (const auto& [name, value] : settings.debug.environment)
+        {
+#ifdef _WIN32
+            if (!getenv(name.c_str()))
+                _putenv_s(name.c_str(), value.c_str());
+#else
             setenv(name.c_str(), value.c_str(), 0);
+#endif
+        }
         if (loaded)
             printf("Settings: %s\n", settingsPath.string().c_str());
         h3::config::SetActive(settings);
