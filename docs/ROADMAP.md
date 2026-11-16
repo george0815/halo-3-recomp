@@ -140,10 +140,11 @@ Rough phases. Each one is a large amount of work; that's fine.
       write anything skipped): the Sierra, Tsavo and Storm starts hold 60
       fps. Heavier scenes untested. Content tuned per tick misbehaves at 60
       (play-through 2026-10-22, private/BUGS.md): MCC's own fixes for it
-      (the `tps / 30` sites in H3EK's halo3_tag_test.exe) are being ported
+      (the `tps / 30` sites in H3EK's halo3_tag_test.exe) are ported
       behind `hooks::ContentFixes()` (weapon fire pacing, camera shake and
       impulses, first-person weapon timing, AI burst minimum, auto exposure
-      rate);
+      rate, biped ground push, Havok world step settings; every site checked
+      by 2026-11-16, the rest MCC-only or not needed at 60);
       30 fps cutscene animation under a 60 Hz follow camera makes objects
       jitter back and forth (Pelicans in Sierra 117's ending, The Ark's
       intro, The Covenant)
@@ -230,7 +231,9 @@ subsystems with the best references first.
 - [ ] Film library: a few films per mission covering combat, vehicles,
       cutscenes and multiplayer variants, played headless at maximum
       speed in CI-style batch runs (`tools/films/run_film.sh`; masks and
-      reference checksums per film)
+      reference checksums per film). So far one film per campaign mission
+      and one multiplayer film (Oddball, recorded with the 60 Hz fixes;
+      `tools/films/README.md`)
 - [ ] Function-level traces: record a function's calls in a real run
       (arguments, the guest memory it reads, its writes and result) and
       replay them against the replacement, so a mismatch points at the

@@ -180,15 +180,6 @@ namespace h3::gpu::renderer::internal
         return value;
     }
 
-    texture::FetchConstant ReadTextureFetch(uint32_t index)
-    {
-        constexpr uint32_t kTextureFetchDwords = 6;
-        uint32_t words[kTextureFetchDwords];
-        for (uint32_t i = 0; i < kTextureFetchDwords; i++)
-            words[i] = ReadRegister(kRegShaderConstantFetch + index * kTextureFetchDwords + i);
-        return texture::ParseFetchConstant(words);
-    }
-
     Shader* LoadShader(bool vertex, const uint32_t* dwords, uint32_t count)
     {
         // XXH3 for the lookup: the command stream loads shaders ~1,700 times

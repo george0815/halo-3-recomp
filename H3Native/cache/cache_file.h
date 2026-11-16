@@ -118,7 +118,7 @@ namespace h3::native::cache
 
     struct TagInstance
     {
-        uint16_t groupIndex = kEmptySlot;  // into CacheFile::Groups()
+        uint16_t groupIndex = kEmptySlot;  // into TagIndex::groups
         uint16_t salt = 0;
         uint32_t address = 0;  // virtual address of its data (0: not in this map)
 

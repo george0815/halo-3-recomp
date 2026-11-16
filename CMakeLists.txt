@@ -58,3 +58,21 @@ if (EXISTS ${H3_PPC_DIR}/ppc_config.h)
 else()
     message(STATUS "No recompiled code in H3RecompLib/ppc yet: building tools only. Run tools/recompile.sh.")
 endif()
+
+# Warnings for our own code (not the recompiler or the generated game code).
+# Left off: unused parameters (hook and callback signatures are fixed) and
+# missing field initializers (tables and GPU structs leave trailing fields
+# and padding at zero on purpose).
+set(H3_OWN_TARGETS H3Shader H3Config H3NativeCache h3xexinfo h3shader h3tags H3Launcher H3Recomp)
+foreach (target ${H3_OWN_TARGETS})
+    if (TARGET ${target})
+        get_target_property(type ${target} TYPE)
+        if (NOT type STREQUAL "INTERFACE_LIBRARY")
+            if (MSVC)
+                target_compile_options(${target} PRIVATE /W4 /wd4100)
+            else()
+                target_compile_options(${target} PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
+            endif()
+        endif()
+    endif()
+endforeach()

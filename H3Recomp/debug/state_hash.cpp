@@ -95,7 +95,7 @@ namespace
     constexpr uint32_t kArrayNameBytes = 32;
     constexpr uint32_t kArrayMaxCount = 0x20;
     constexpr uint32_t kArraySignature = 0x2C;
-    constexpr uint32_t kArrayElements = 0x44;
+    [[maybe_unused]] constexpr uint32_t kArrayElements = 0x44;  // layout (elements are found through the header size)
     constexpr uint32_t kArrayTotalBytes = 0x50;
     constexpr uint32_t kArrayHeaderBytes = 0x54;
     constexpr uint32_t kSignature = 0x64407440;  // "d@t@"

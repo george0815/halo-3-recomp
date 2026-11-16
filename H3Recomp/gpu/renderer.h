@@ -24,9 +24,6 @@ namespace h3::gpu::renderer
     // Where compiled SPIR-V is kept between runs (before Initialize).
     void SetShaderCacheDirectory(const std::filesystem::path& directory);
 
-    // H3_RENDER=0 turns host rendering off (the command processor still runs).
-    bool IsEnabled();
-
     // Shader microcode was loaded (host-endian dwords). type: 0 vertex, 1 pixel.
     void OnShaderLoad(uint32_t type, const uint32_t* dwords, uint32_t dwordCount);
 

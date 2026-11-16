@@ -17,8 +17,6 @@
 
 #include <ppc_recomp_shared.h>
 
-#include <cstdio>
-
 namespace
 {
     constexpr uint32_t kWorldCall = 0x821BB454;
@@ -33,7 +31,6 @@ PPC_FUNC(sub_82642058)
         {
             auto& field = h3::GuestRef<float>(ctx.r4.u32 + offset);
             field = float(field) / float(h3::hooks::TicksPerOriginalTick());
-            fprintf(stderr, "[havok] world info +%u scaled to %g\n", offset, double(float(field)));
         }
     __imp__sub_82642058(ctx, base);
 }

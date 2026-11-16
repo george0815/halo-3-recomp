@@ -303,7 +303,7 @@ namespace h3::gpu::renderer::internal
             info.num_samplers = samplers;
             // Vertex shaders: vertex memory, float constants (unless pushed
             // as uniforms), resident vertex memory; pixel shaders: float
-            // constants (unless pushed). Draw.cpp's Flush binds them in
+            // constants (unless pushed). draw.cpp's Flush binds them in
             // this order.
             info.num_storage_buffers = (vertex ? 2 : 0) + (g_uniformConstants ? 0 : 1);
             info.num_uniform_buffers = kShaderUniformBuffers;

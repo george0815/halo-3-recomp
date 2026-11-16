@@ -11,6 +11,10 @@
 //   textures.cpp  textures decoded from guest memory, samplers, binding
 //   draw.cpp      turning a draw packet into a recorded host draw; flushing
 //   memexport.cpp vertex shaders' memory exports, run as compute shaders
+//   queries.cpp   occlusion queries (sample count reports for light glows)
+//   postprocess.cpp  anti-aliasing (FXAA) on the finished frame
+//   content_hash_avx2.cpp  ContentHash's AVX2 variant (built with -mavx2)
+//   gpu_timing.cpp   H3_GPU_TIMING: GPU time per flush and labelled scope
 //   debug.cpp     PNG/memory dumps for debugging
 //   ../renderer.cpp  initialization, the public entry points, presentation
 //
@@ -232,9 +236,6 @@ namespace h3::gpu::renderer::internal
     VertexFetch ReadVertexFetch(uint32_t index);
     // Float `i` of a vertex buffer, byte-swapped as the fetch constant says.
     float VertexFloat(const VertexFetch& fetch, uint32_t i);
-
-    // Texture fetch constant `index` (0-31), parsed.
-    texture::FetchConstant ReadTextureFetch(uint32_t index);
 
     // ------------------------------------------------------------------
     // Shaders (shaders.cpp)
@@ -751,7 +752,14 @@ namespace h3::gpu::renderer::internal
     // anything that can't happen inside a render pass.
     void Flush();
 
-    // H3_GPU_TIMING=1 (diagnostic): the GPU time of the work recorded inside
+    // GPU timing (gpu_timing.cpp; H3_GPU_TIMING=<first frame>): whether it
+    // runs this frame; around each draw flush, Begin submits and waits for
+    // the work before it, End for the flush itself and books its time
+    // (draws, of them on 2x/4x surfaces).
+    bool GpuTimingActive();
+    void BeginTimedFlush();
+    void EndTimedFlush(uint32_t draws, uint32_t msaaDraws);
+    // H3_GPU_TIMING (diagnostic): the GPU time of the work recorded inside
     // the scope, under its label (the work is submitted and waited for at
     // both ends). Nested scopes take their part out of the outer one's.
     struct GpuTimedScope

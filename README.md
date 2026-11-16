@@ -226,6 +226,59 @@ Environment variables:
 | `H3_CHECK_NATIVE=1` | Run each decompiled replacement and its original, log differences (`[native]`); the game gets the original's result |
 | `H3_CHECK_TAGS=1` | Compare the loaded tag index with the native cache file reader's, log the tag cache, and ~10 s after a map loads report tag bytes the game changed at runtime (`[tags]`) |
 | `H3_STATE_RECORD=<file>` | With `H3_STATE_HASH`: record every tick's game state compactly (words changed since the previous tick; ~90 KB a tick) |
+| `H3_CAPTURE_LEVEL=<t>,...` / `H3_CAPTURE_LEVEL_TICK=<n>,...` | GPU frame capture (as F9, or F10 with `H3_CAPTURE_DEEP`) at those level times / game ticks |
+| `H3_CAPTURE_HOLD_TICKS=1` | With `H3_CAPTURE_LEVEL_TICK`: hold the game until each capture is written, so consecutive ticks land on their own frames |
+| `H3_CAPTURE_PS_CONST=<n>` | In captures, also log every write to pixel shader constant c<n> |
+| `H3_DEBUG_PS=<hash prefix>@<case>=<GLSL vec4>[;...]` | Debug variants of one pixel shader: deep captures (F10) replay each draw once per expression and save its value per pixel (`tools`: `pixtrace.py`) |
+| `H3_DUMP_ADDRESS=<hex>` / `H3_DUMP_TARGET=<0-3>` | With `H3_DUMP_FRAME`: dump the resolved texture at that address / that color target |
+| `H3_SNAPSHOT_LEVEL=<first>-<last>[/<every>]` | Save the presented frame at those level times (`level_<time>.png`; film screenshot A/Bs) |
+| `H3_STATE_RECORD_TICKS=<first>-<last>[,...]` | With `H3_STATE_RECORD`: record only those ticks |
+| `H3_NATIVE_SHADOW=1` | Run each decompiled replacement's original first, then the replacement on a copy, to find effects besides memory |
+| `H3_FRAME_DELAY_MS=<n>` | Sleep n ms per main loop iteration (simulates a slow machine: more than one tick per frame) |
+| `H3_POLY_SLOPE_SCALE=<factor>` | Scale the slope part of the polygon offset |
+| `H3_NO_DEPTH=1` / `H3_NO_STENCIL=1` / `H3_DEPTH_FLIP=1` | No depth and stencil tests / no stencil test / swap less and greater depth compares |
+| `H3_BORDER_CLAMP=1` | Emulate clamp-to-border in the shader (experiment) |
+| `H3_ALIAS_KEEP_HIGHER=<ps hash high 32 bits>` | For that pixel shader, the higher of two aliased color outputs wins (experiment) |
+| `H3_CHECK_TRIG=1` | Compare the game's sin and cos with the host's on every call; log each new worst error |
+| `H3_LOG_DEPTH=1` / `H3_LOG_SCISSOR=1` | Log each distinct depth state / window offsets and the scissors they give |
+| `H3_LOG_REG_WRITES=<first>-<last>` | Log writes to that GPU register range (hex indices) |
+| `H3_LOG_STREAMS_AT=<hex physical address>\|all` | Log each distinct memexport stream holding that address (shader, first frame) |
+| `H3_LOG_TEXTURE_DECODES=1` | Log every texture decode, and textures bound without their base level per frame |
+| `H3_LOG_TICKS=1` | Game tick and wall-clock time at each tick and presented frame |
+| `H3_LOG_WAITS=1` | Every 150 frames, the time threads spent blocked, by object |
+| `H3_LOG_TRYLOCK=1` | Failed critical section tries, with the caller |
+| `H3_LOG_XMA=1` | Per-context XMA diagnostics (loops, buffer swaps, bad frames, exactly repeated frames, fields changed mid-decode) |
+| `H3_LOG_XCONFIG=1` | Log console configuration queries |
+| `H3_LOG_EXPOSURE=1` / `H3_LOG_AI_BURST=1` / `H3_LOG_BARRELS=1` / `H3_LOG_DAMAGE=1` / `H3_LOG_CAMERA=1` | 60 Hz fix checks: exposure updates per tick / AI bursts the minimum raised / ticks between each weapon's rounds / every damage call / cinematic camera modes |
+| `H3_LOG_OBJLIGHT=<first>[-<last>]` / `H3_LOG_ATOC=<calls>` / `H3_LOG_EMOTION=1` / `H3_NO_EMOTION=1` | Object lighting calls in that tick range / alpha-to-coverage and blend mode calls / facial emotion calls / drop facial emotions |
+| `H3_LAUNCHER_SIZE=<w>x<h>` | The launcher's window size |
+
+#### Turning a fix off
+
+Each of these turns one fix or improvement back off. They're there for
+comparison and as escape hatches: if something looks or plays wrong, try the
+switch for the area it's in and report whether it changes.
+
+| Variable | Turns off |
+|---|---|
+| `H3_NO_60HZ_FIXES=1` | The 60 Hz content fixes (weapon fire rates, camera shake, exposure, physics step, AI bursts...); the tick rate stays |
+| `H3_NO_STRUCTURED_SHADERS=1` | Structured shader control flow (back to the slower-compiling state machine) |
+| `H3_NO_REGISTER_LOD=1` | Explicit texture LOD (shaders that pick their own mip level) |
+| `H3_NO_WEIGHTS_OFFSET=1` / `H3_NO_SNAP_WEIGHTED_TAPS=1` | The shadow filtering fixes (weights offset; taps snapped to guest texels at a render scale) |
+| `H3_NO_CLIP_PLANES=1` | User clip planes |
+| `H3_DEPTH_ONLY_PS=1` | Skipping the pixel shader's kills in depth-only passes (shadow maps) |
+| `H3_CTX1_LOW_R=1` | The CTX1 normal map channel order fix |
+| `H3_NO_DEPTH_RESTORE=1` | Restoring depth written as color |
+| `H3_NO_DEPTH_BYTES_SWIZZLE=1` | The byte order fix for depth read back as color |
+| `H3_KEEP_ALIASED_TARGETS=1` | Unbinding a color target bound to two slots |
+| `H3_NO_FORCED_FILTERS=1` | Filters forced by shader instructions (samplers follow the fetch constant only) |
+| `H3_NO_KEPT_BASES=1` | Drawing a demoted texture (base level evicted, being read back) at full size, as MCC does: back to the 360's half-resolution popping |
+| `H3_NO_STANDIN_MIPS=1` | Mips under a stand-in level (a texture whose base isn't resident yet draws its largest resident level alone) |
+| `H3_NO_GAMMA=1` | The display gamma ramp (front buffer shown as is) |
+| `H3_XMA_SUBFRAMES=0` | The XMA subframe model (music notes repeating) |
+| `H3_MEMEXPORT_FENCE_ASYNC=1` | Waiting for memexport fences (they land at once, as before) |
+| `H3_SYNC_WRITEBACK=1` | Asynchronous resolve write-back (waits instead) |
+| `H3_SPIN_WAITS=1` | Sleeping in long GPU waits (always spins) |
 
 CMake option `-DH3_TRACE_D3D=ON` counts and samples calls into the game's
 statically linked D3D library and writes `d3d_trace.txt` at frame 150 (or
