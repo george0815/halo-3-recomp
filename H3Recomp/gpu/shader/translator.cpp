@@ -27,6 +27,7 @@ namespace h3::gpu::shader
     bool g_weightsOffset = true;
     bool g_snapWeightedTaps = true;
     bool g_structuredControlFlow = true;
+    bool g_registerLod = true;
 
     using namespace ucode;
 
@@ -1821,9 +1822,18 @@ void main()
                         return volume ? Format("vec3(%s, %s.z)", snapped.c_str(), coords.c_str()) : snapped;
                     };
                     float bias = f.TextureLodBias();
+                    // The LOD: computed from the coordinates' derivatives
+                    // (pixel shaders), else explicit: the register LOD
+                    // (SetTextureLod, xe_lod) or 0, plus the instruction's
+                    // bias (as Xenia). These were all sampled with a
+                    // computed LOD before.
+                    // H3_NO_REGISTER_LOD=1: computed in every pixel shader fetch, as before.
+                    bool registerLod = g_registerLod && f.TextureUseRegisterLod();
+                    bool explicitLod = m_vertex || (g_registerLod && (!f.TextureUseComputedLod() || registerLod));
+                    std::string lod = registerLod ? Format("xe_lod + %.9g", bias) : Format("%.9g", m_vertex ? 0.0f : bias);
                     auto sampleOf = [&](const std::string& sampler, const std::string& coords) {
-                        if (m_vertex)
-                            return Format("textureLod(%s, %s, 0.0)", sampler.c_str(), coords.c_str());
+                        if (explicitLod)
+                            return Format("textureLod(%s, %s, %s)", sampler.c_str(), coords.c_str(), lod.c_str());
                         if (bias != 0.0f)
                             return Format("texture(%s, %s, %.9g)", sampler.c_str(), coords.c_str(), bias);
                         return Format("texture(%s, %s)", sampler.c_str(), coords.c_str());
@@ -1922,10 +1932,12 @@ void main()
                     return;
                 }
                 case FetchOpcode::SetTextureLod:
+                    Line(Format("xe_lod = %s;", coordinate(0).c_str()));
+                    return;
                 case FetchOpcode::SetTextureGradientsHorz:
                 case FetchOpcode::SetTextureGradientsVert:
                 case FetchOpcode::GetTextureBorderColorFrac:
-                    // Register LOD / gradients aren't used by the sampling above.
+                    // Register gradients aren't used by the sampling above.
                     return;
                 default:
                     Fail(Format("unknown fetch opcode %u", uint32_t(f.Opcode())));
@@ -2194,7 +2206,7 @@ vec3 xe_cube_direction(vec3 stf)
                 }
                 else
                     out += "    vec4 r[64];\n    for (int i = 0; i < 64; i++) r[i] = vec4(0.0);\n";
-                out += "    int a0 = 0;\n    int aL = 0;\n    bool p0 = false;\n    float ps = 0.0;\n";
+                out += "    int a0 = 0;\n    int aL = 0;\n    bool p0 = false;\n    float ps = 0.0;\n    float xe_lod = 0.0;\n";
                 out += "    int newA0 = 0;\n    bool newP0 = false;\n    bool kill = false;\n";
                 if (!m_debug.empty())
                     out += "    vec4 xe_debug = vec4(0.0);\n";

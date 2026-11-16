@@ -1208,12 +1208,14 @@ namespace h3::gpu::renderer::internal
             double gapSeconds = 0;  // the untracked work just before it
             uint32_t count = 0, draws = 0;
             uint32_t colorInfo = 0, depthInfo = 0;
+            uint32_t msaaDraws = 0;  // draws on a 2x/4x surface (sample space)
         };
         std::vector<FlushTiming> g_flushTimings;
         uint32_t g_flushIndex = 0, g_flushTimingFrame = ~0u, g_flushTimingStart = 0;
         double g_otherSeconds = 0;  // waits for untracked work between flushes
         uint32_t g_otherWaits = 0;  // ...and how many (each costs an empty submit's time)
         double g_gapSeconds = 0;    // the wait before the current flush
+        double g_msaaSeconds = 0;   // flushes with draws on 2x/4x surfaces
         std::vector<const char*> g_timedLabels;  // open GpuTimedScopes, innermost last
         std::map<std::string, double> g_labelSeconds;
 
@@ -1271,14 +1273,18 @@ namespace h3::gpu::renderer::internal
                 (total - flushes * floor) * 1000 / frames, (g_otherSeconds - g_otherWaits * floor) * 1000 / frames);
             g_otherSeconds = 0;
             g_otherWaits = 0;
+            // Flushes with draws on 2x/4x surfaces (in sample space, their
+            // pixels shade once per sample).
+            fprintf(stderr, " [msaa flushes %.2f ms]", g_msaaSeconds * 1000 / frames);
+            g_msaaSeconds = 0;
             for (const auto& [label, seconds] : g_labelSeconds)
                 fprintf(stderr, " [%s %.2f ms]", label.c_str(), seconds * 1000 / frames);
             g_labelSeconds.clear();
             for (uint32_t i = 0; i < std::min<size_t>(order.size(), 12); i++)
             {
                 const FlushTiming& t = g_flushTimings[order[i]];
-                fprintf(stderr, " #%u %.2fms/%ud (c%08X d%08X)", order[i], t.seconds * 1000 / frames, t.count ? t.draws / t.count : 0,
-                    t.colorInfo, t.depthInfo);
+                fprintf(stderr, " #%u %.2fms/%ud (c%08X d%08X msaa %u)", order[i], t.seconds * 1000 / frames, t.count ? t.draws / t.count : 0,
+                    t.colorInfo, t.depthInfo, t.count ? t.msaaDraws / t.count : 0);
             }
             // The longest waits for untracked work, by the flush they precede.
             std::sort(order.begin(), order.end(), [](uint32_t a, uint32_t b) { return g_flushTimings[a].gapSeconds > g_flushTimings[b].gapSeconds; });
@@ -1564,6 +1570,13 @@ namespace h3::gpu::renderer::internal
             entry.draws += timedDraws;
             entry.colorInfo = ReadRegister(kRegColorInfo[0]);
             entry.depthInfo = ReadRegister(kRegRbDepthInfo);
+            uint32_t msaaDraws = 0;
+            for (const std::unique_ptr<PendingDraw>& draw : g_pending)
+                if (draw->system.pixelScale[1] > draw->system.renderScale)
+                    msaaDraws++;
+            entry.msaaDraws += msaaDraws;
+            if (msaaDraws)
+                g_msaaSeconds += seconds;
             entry.gapSeconds += g_gapSeconds;
         }
 

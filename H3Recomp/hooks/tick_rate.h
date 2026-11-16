@@ -17,7 +17,8 @@ namespace h3::hooks
     // content tuned per tick (weapon fire rates: H3Native/weapons/
     // weapon_barrels.cpp; camera shake and impulses: hooks/player_effects.cpp;
     // first-person put-away and movement blend: hooks/first_person_weapons.cpp;
-    // AI burst minimum: hooks/ai_combat.cpp; auto exposure rate:
+    // AI burst minimum: hooks/ai_combat.cpp; Havok world step settings:
+    // hooks/havok_world.cpp; auto exposure rate:
     // hooks/exposure.cpp), plus cutscene cameras between 30 fps track frames
     // (hooks/cinematic_camera.cpp; not one of MCC's: MCC interpolates frames
     // instead). Saved films replay a

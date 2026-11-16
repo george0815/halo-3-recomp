@@ -164,6 +164,9 @@ namespace h3::gpu::shader
     // StructuredRegion in translator.cpp); false with
     // H3_NO_STRUCTURED_SHADERS=1: always the state machine (to compare).
     extern bool g_structuredControlFlow;
+    // Explicit-LOD texture fetches (SetTextureLod, LOD 0) sampled at their
+    // LOD; H3_NO_REGISTER_LOD=1: derivatives, as before.
+    extern bool g_registerLod;
 
     // Microcode disassembly, for debugging the translator.
     std::string Disassemble(bool isVertex, const uint32_t* dwords, uint32_t dwordCount);

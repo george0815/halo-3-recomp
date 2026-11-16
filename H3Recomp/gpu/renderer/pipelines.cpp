@@ -54,7 +54,8 @@ namespace h3::gpu::renderer::internal
         // 6: kills ignored in depth-only mode (kSystemFlagNoPixelKill).
         // 7: structured control flow and registers as variables
         //    (translator.cpp StructuredRegion, ScalarRegisters).
-        constexpr uint32_t kManifestVersion = 7;
+        // 8: explicit-LOD texture fetches (translator.cpp, xe_lod).
+        constexpr uint32_t kManifestVersion = 8;
         // Worker threads for shader and pipeline creation. The game itself
         // keeps about six host threads busy; drivers compile pipelines
         // single-threaded, so a few workers go a long way.

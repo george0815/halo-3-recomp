@@ -40,6 +40,7 @@ add_executable(H3Recomp
     hooks/exposure.cpp
     hooks/object_lighting_log.cpp
     hooks/fibers.cpp
+    hooks/havok_world.cpp
     hooks/first_person_weapons.cpp
     hooks/player_effects.cpp
     hooks/random_seed.cpp

@@ -17,6 +17,11 @@
 // kFallingCall); every path to the blend passes one of them. There the rate
 // in memory is divided for the rest of the update and put back when
 // sub_8216B4B8 returns.
+//
+// sub_8216BC40 (MCC FUN_1408bdf00, which MCC also divides) blends five more
+// exposure values the same way: (1 - rate) * current + rate * target, the
+// rate at +12 of its parameters (r3). Both run from sub_8216AE48, once per
+// rendered frame, which computes the scale for both.
 
 #include "hooks/tick_rate.h"
 #include "config/env.h"
@@ -60,8 +65,8 @@ namespace
     }
 }
 
-PPC_FUNC_IMPL(__imp__sub_8216B4B8);
-PPC_FUNC(sub_8216B4B8)
+PPC_FUNC_IMPL(__imp__sub_8216AE48);
+PPC_FUNC(sub_8216AE48)
 {
     uint32_t tick = GameTick(ctx);
     g_rateScale = 1.0f;
@@ -73,10 +78,17 @@ PPC_FUNC(sub_8216B4B8)
         int perTick = h3::hooks::TicksPerOriginalTick();
         g_rateScale = float(std::min<uint32_t>(ticks, uint32_t(perTick))) / float(perTick);
     }
+    __imp__sub_8216AE48(ctx, base);
+}
+
+PPC_FUNC_IMPL(__imp__sub_8216B4B8);
+PPC_FUNC(sub_8216B4B8)
+{
     // H3_LOG_EXPOSURE=1 (testing): updates per game tick.
     static const bool log = h3::EnvFlag("H3_LOG_EXPOSURE");
     if (log)
     {
+        uint32_t tick = GameTick(ctx);
         static uint32_t calls = 0, firstTick = 0;
         if (calls++ == 0 || tick < firstTick)
             firstTick = tick, calls = 1;
@@ -89,6 +101,21 @@ PPC_FUNC(sub_8216B4B8)
         h3::GuestRef<float>(g_patchedRate) = g_originalRate;
         g_patchedRate = 0;
     }
+}
+
+PPC_FUNC_IMPL(__imp__sub_8216BC40);
+PPC_FUNC(sub_8216BC40)
+{
+    if (g_rateScale >= 1.0f)
+    {
+        __imp__sub_8216BC40(ctx, base);
+        return;
+    }
+    auto& rate = h3::GuestRef<float>(ctx.r3.u32 + kParametersRate);
+    float original = rate;
+    rate = original * g_rateScale;
+    __imp__sub_8216BC40(ctx, base);
+    rate = original;
 }
 
 PPC_FUNC_IMPL(__imp__sub_8216BA68);

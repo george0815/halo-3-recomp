@@ -151,6 +151,7 @@ namespace h3::gpu::renderer
         shader::g_weightsOffset = !EnvFlag("H3_NO_WEIGHTS_OFFSET");
         shader::g_snapWeightedTaps = !EnvFlag("H3_NO_SNAP_WEIGHTED_TAPS");
         shader::g_structuredControlFlow = !EnvFlag("H3_NO_STRUCTURED_SHADERS");
+        shader::g_registerLod = !EnvFlag("H3_NO_REGISTER_LOD");
         CreatePlaceholders(device);
 
         // Shader compilation (pipelines.cpp): asynchronous if asked
