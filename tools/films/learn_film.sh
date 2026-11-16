@@ -4,7 +4,8 @@
 #
 # Usage: tools/films/learn_film.sh <name> <index> <film seconds> [options]
 #   <name>          the film's name in the library (private/films/<name>.*)
-#   <index>         its index in Theater's CAMPAIGN category (category 3)
+#   <index>         its index in its Theater category (CAMPAIGN unless
+#                   --category)
 #   <film seconds>  its length (Theater's LENGTH; bounds the full runs)
 #   --start <mask>  mask to start from (default private/films/generic.mask)
 #   --window <n>    level ticks recorded per round (default 600): the
@@ -17,6 +18,11 @@
 #                   first differ at the same tick (default 60): cosmetic
 #                   state comes in a few fields at a time, a burst means the
 #                   replays really diverged (or a broken record)
+#   --category <n>  run_film.sh --category: 3 campaign (default), 4
+#                   multiplayer
+#   --fixes         replay with the 60 Hz content fixes on
+#                   (H3_FILM_WITH_60HZ_FIXES=1): for a film recorded with
+#                   them (multiplayer films recorded at 60 Hz)
 #   --start-wait <n> run_film.sh --start-wait: frames the lobby needs to
 #                   load the film's map before START FILM (library.txt's
 #                   fourth column; default run_film.sh's)
@@ -63,7 +69,7 @@ MENU_SECONDS=90
 TICKS_PER_SECOND=30
 PARALLEL_TICKS_PER_SECOND=20
 
-usage() { sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,55p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 [[ $# -ge 3 ]] || usage
 NAME="$1" INDEX="$2" FILM_SECONDS="$3"; shift 3
 START="$ROOT/private/films/generic.mask" WINDOW=600 RECORDS=3 ROUNDS=10 FIRST="" MAX_NEW=60 DUMPS=4 JOBS=1
@@ -76,7 +82,9 @@ while [[ $# -gt 0 ]]; do
         --rounds) ROUNDS="$2"; shift 2 ;;
         --first) FIRST="$2"; shift 2 ;;
         --max-new) MAX_NEW="$2"; shift 2 ;;
-        --start-wait) WAIT=(--start-wait "$2"); shift 2 ;;
+        --start-wait) WAIT=(--start-wait "$2"); MENU_SECONDS=$(( MENU_SECONDS + $2 / 60 )); shift 2 ;;
+        --category) CATEGORY="$2"; shift 2 ;;
+        --fixes) export H3_FILM_WITH_60HZ_FIXES=1; shift ;;
         --dumps) DUMPS="$2"; shift 2 ;;
         --jobs) JOBS="$2"; shift 2 ;;
         *) usage ;;

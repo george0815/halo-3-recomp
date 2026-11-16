@@ -12,3 +12,6 @@ storm 5 1309
 floodgate 4 663 3000
 ark 3 1974
 covenant 2 2067
+# Multiplayer (Theater category 4), recorded 2026-11-16 at 60 Hz with the
+# 60 Hz fixes on: Oddball on Last Resort, 1 player.
+oddball_lr 0 78 3000 category=4 fixes

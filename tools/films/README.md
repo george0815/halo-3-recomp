@@ -32,6 +32,10 @@ fails at that tick.
 - `run_library.sh <out dir> [--native]`: every film in
   `private/films/library.txt` against its reference (and with
   `H3_CHECK_NATIVE`): the regression test for a changed build.
+- Multiplayer films: Theater category 4. A film recorded with the 60 Hz
+  content fixes on (any game played at 60 Hz) must replay with them:
+  `learn_film.sh --category 4 --fixes`, and `category=4 fixes` after the
+  film's line in `library.txt`.
 
 A snapshot of the references and masks is kept in `references/`.
 
