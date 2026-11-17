@@ -125,6 +125,11 @@ namespace h3::config
         // shipped at 30, so some content may misbehave.
         int frameRate = kOriginalTickRate;
         AntiAliasing antiAliasing = AntiAliasing::Fxaa;
+        // Skip the intro video at startup (kernel/vfs.cpp hides it).
+        bool skipIntro = false;
+        // Horizontal field of view in degrees, 60-120 (hooks/fov.cpp); the
+        // game's is 70.
+        float fov = 70.0f;
     };
 
     struct ProfileSettings
@@ -147,6 +152,7 @@ namespace h3::config
     {
         std::array<std::vector<std::string>, kActionCount> bindings;
         float mouseSensitivity = 1.0f;  // scales mouse look speed
+        float vehicleMouseSensitivity = 1.0f;  // native mouse look: times that in a seat (vehicles, turrets)
         bool invertMouse = false;       // mouse only; invertLook flips everything
         // Split screen: the keyboard and mouse are player 1 on their own and
         // the first gamepad is player 2 (otherwise the first gamepad is
@@ -155,6 +161,11 @@ namespace h3::config
         // The mouse turns the view directly, as in MCC's PC version, instead
         // of driving the right stick (hooks/mouse_look.cpp).
         bool nativeMouseLook = false;
+        // Keyboard and mouse: the crouch key toggles crouching (the game's is
+        // held), and zoom lasts while the zoom key is held (the game's
+        // toggles on each press).
+        bool toggleCrouch = false;
+        bool holdToZoom = false;
     };
 
     struct DebugSettings

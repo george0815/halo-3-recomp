@@ -110,6 +110,10 @@ namespace h3::config
                     video.asyncShaders = ParseBool(value);
                 else if (key == "frame_rate")
                     video.frameRate = atoi(value.c_str()) >= kUnlockedTickRate ? kUnlockedTickRate : kOriginalTickRate;
+                else if (key == "skip_intro")
+                    video.skipIntro = ParseBool(value);
+                else if (key == "fov")
+                    video.fov = std::clamp(float(atof(value.c_str())), 60.0f, 120.0f);
                 else if (key == "anti_aliasing")
                     video.antiAliasing = value == "off" ? AntiAliasing::Off : AntiAliasing::Fxaa;
             }
@@ -165,10 +169,16 @@ namespace h3::config
                     controls.mouseSensitivity = std::clamp(float(atof(value.c_str())), 0.05f, 20.0f);
                 else if (key == "invert_mouse")
                     controls.invertMouse = ParseBool(value);
+                else if (key == "vehicle_mouse_sensitivity")
+                    controls.vehicleMouseSensitivity = std::clamp(float(atof(value.c_str())), 0.1f, 5.0f);
                 else if (key == "keyboard_own_player")
                     controls.keyboardOwnPlayer = ParseBool(value);
                 else if (key == "native_mouse_look")
                     controls.nativeMouseLook = ParseBool(value);
+                else if (key == "toggle_crouch")
+                    controls.toggleCrouch = ParseBool(value);
+                else if (key == "hold_to_zoom")
+                    controls.holdToZoom = ParseBool(value);
                 else
                     for (size_t i = 0; i < kActionCount; i++)
                         if (key == kActions[i].key)
@@ -259,7 +269,9 @@ namespace h3::config
             << "precompile_shaders = " << BoolText(video.precompileShaders) << "\n"
             << "async_shaders = " << BoolText(video.asyncShaders) << "\n"
             << "frame_rate = " << video.frameRate << "\n"
-            << "anti_aliasing = " << (video.antiAliasing == AntiAliasing::Off ? "off" : "fxaa") << "\n\n";
+            << "anti_aliasing = " << (video.antiAliasing == AntiAliasing::Off ? "off" : "fxaa") << "\n"
+            << "skip_intro = " << BoolText(video.skipIntro) << "\n"
+            << "fov = " << video.fov << "\n\n";
 
         const ProfileSettings& profile = settings.profile;
         out << "[profile]\n"
@@ -278,8 +290,11 @@ namespace h3::config
             << "# Keys use SDL scancode names; mouse: Mouse Left/Right/Middle/X1/X2, Mouse Wheel.\n"
             << "mouse_sensitivity = " << controls.mouseSensitivity << "\n"
             << "invert_mouse = " << BoolText(controls.invertMouse) << "\n"
+            << "vehicle_mouse_sensitivity = " << controls.vehicleMouseSensitivity << "\n"
             << "keyboard_own_player = " << BoolText(controls.keyboardOwnPlayer) << "\n"
-            << "native_mouse_look = " << BoolText(controls.nativeMouseLook) << "\n";
+            << "native_mouse_look = " << BoolText(controls.nativeMouseLook) << "\n"
+            << "toggle_crouch = " << BoolText(controls.toggleCrouch) << "\n"
+            << "hold_to_zoom = " << BoolText(controls.holdToZoom) << "\n";
         for (size_t i = 0; i < kActionCount; i++)
         {
             out << kActions[i].key << " =";

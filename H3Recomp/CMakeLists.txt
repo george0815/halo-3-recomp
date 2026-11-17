@@ -33,6 +33,7 @@ add_executable(H3Recomp
     debug/profiler.cpp
     debug/state_hash.cpp
     debug/write_watch.cpp
+    debug/float_scan.cpp
     hooks/ai_combat.cpp
     hooks/biped_physics.cpp
     hooks/block_copy.cpp
@@ -45,6 +46,7 @@ add_executable(H3Recomp
     hooks/havok_world.cpp
     hooks/mouse_look.cpp
     hooks/pc_text.cpp
+    hooks/fov.cpp
     hooks/first_person_weapons.cpp
     hooks/player_effects.cpp
     hooks/random_seed.cpp

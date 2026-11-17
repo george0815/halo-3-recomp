@@ -2,6 +2,7 @@
 // case-insensitive lookup on the host (360 paths are case-insensitive).
 
 #include "vfs.h"
+#include "config/settings.h"
 
 #include <algorithm>
 #include <cctype>
@@ -173,6 +174,10 @@ namespace h3::kernel
             result.path = std::move(match);
         }
         result.exists = std::filesystem::exists(result.path, error);
+        // [video] skip_intro: the intro video isn't there, so the game goes
+        // straight to the main menu.
+        if (result.exists && config::Active().video.skipIntro && EqualsIgnoreCase(result.path.filename().string(), "intro_60.bik"))
+            result.exists = false;
         return result;
     }
 

@@ -10,6 +10,8 @@
 #include "gpu/frame_capture.h"
 #include "gpu/renderer.h"
 #include "input/input.h"
+#include "debug/float_scan.h"
+#include "hooks/fov.h"
 #include "hooks/pc_text.h"
 #include "kernel/imports.h"
 
@@ -330,10 +332,12 @@ namespace h3::video
         debug::UpdateTraceWindow(frame);
         debug::UpdateProfiler(frame);
         debug::UpdateWriteWatch(frame);
+        debug::UpdateFloatScan(frame);
         hooks::UpdateCampaignUnlock();
         hooks::LogTickRate();
         native::tags::CheckTagIndex();
         native::tags::RuntimeChangeReport();
         hooks::UpdatePcText();  // English text reworded for PC once a map loads it
+        hooks::UpdateFov();
     }
 }

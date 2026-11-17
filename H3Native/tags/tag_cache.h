@@ -83,6 +83,13 @@ namespace h3::native::tags
     // The game globals tag's own guest address (to change it in place), or 0.
     uint32_t GlobalGameGlobalsAddress();
 
+    // The loaded tag index: its slot count, a slot's tag data in guest
+    // memory (0 for an empty slot), and a value that changes with each map
+    // load (0 while none is loaded). For changing tags in place.
+    uint32_t TagSlotCount();
+    uint32_t TagSlotAddress(uint32_t slot);
+    uint32_t LoadedTagsIdentity();
+
     // Called once per presented frame: H3_CHECK_TAGS reports (tags.cpp).
     void RuntimeChangeReport();
 }

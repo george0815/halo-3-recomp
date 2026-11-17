@@ -142,6 +142,26 @@ namespace h3::native::tags
         return datum == host::kNone ? nullptr : TagBySlotOf<host::globals_tag>(datum & 0xFFFF);
     }
 
+    uint32_t TagSlotCount()
+    {
+        uint32_t header = LoadedIndexHeader();
+        return header ? uint32_t(GuestRef<uint32_t>(header + kHeaderTagCount)) : 0;
+    }
+
+    uint32_t TagSlotAddress(uint32_t slot)
+    {
+        uint32_t table = GuestRef<uint32_t>(kTagInstances);
+        if (table == 0 || slot >= TagSlotCount() || SlotGroup(slot) == 0)
+            return 0;
+        return GuestRef<uint32_t>(table + slot * kInstanceBytes + kInstanceAddress);
+    }
+
+    uint32_t LoadedTagsIdentity()
+    {
+        uint32_t header = LoadedIndexHeader();
+        return header ? header ^ LoadedIndexChecksum() : 0;
+    }
+
     uint32_t GlobalGameGlobalsAddress()
     {
         uint32_t datum = GuestRef<uint32_t>(kGlobalsDatum);

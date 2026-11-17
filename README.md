@@ -127,6 +127,16 @@ defaults:
 
 `H3_MOUSE_SENSITIVITY=<factor>` overrides the launcher's mouse sensitivity.
 
+Crouch can be a toggle and zoom a hold on the keyboard and mouse (launcher,
+Controls; `toggle_crouch`, `hold_to_zoom`): the game's own are hold to
+crouch and press to zoom in or out. Hold to zoom clicks zoom as the key goes
+down, and again as it comes up if the game still has you zoomed (it unzooms
+by itself when you switch weapons or take a hit). "Skip intro video" (Video;
+`skip_intro`) goes straight to the main menu. "Field of view" (Video; `fov`,
+60-120, the game's 70) widens the view by scaling every biped's and
+vehicle's camera FOV as a map loads; with more than one player on the PC
+the game's own FOV stays, as in MCC.
+
 While you play on the keyboard and mouse, the button icons in English menus
 and prompts show the keys bound to them ("[Space] Select"); with a gamepad,
 the buttons. Screens already open switch the next time they're opened. The
@@ -156,7 +166,9 @@ player's game profile (controls, emblem) is saved to
 turns the view straight from the mouse, as MCC's PC version does, instead of
 driving the right stick (which brings the controller's response curve and
 acceleration). Mouse sensitivity is 0.022 degrees per count at 1.0, the
-usual PC shooter scale. Still to come: slower turning when zoomed.
+usual PC shooter scale. Zoomed weapons turn slower, by their own turn rate
+cap as in MCC, and "Vehicle mouse sensitivity" (`vehicle_mouse_sensitivity`)
+scales it in vehicles and turrets.
 
 #### System link
 
@@ -302,6 +314,8 @@ Environment variables:
 | `H3_LOG_EXPOSURE=1` / `H3_LOG_AI_BURST=1` / `H3_LOG_BARRELS=1` / `H3_LOG_DAMAGE=1` / `H3_LOG_CAMERA=1` | 60 Hz fix checks: exposure updates per tick / AI bursts the minimum raised / ticks between each weapon's rounds / every damage call / cinematic camera modes |
 | `H3_LOG_OBJLIGHT=<first>[-<last>]` / `H3_LOG_ATOC=<calls>` / `H3_LOG_EMOTION=1` / `H3_NO_EMOTION=1` | Object lighting calls in that tick range / alpha-to-coverage and blend mode calls / facial emotion calls / drop facial emotions |
 | `H3_LAUNCHER_SIZE=<w>x<h>` | The launcher's window size |
+| `H3_SCAN_FLOAT=<frame>:<value>[,...]` / `H3_POKE_FLOAT=<frame>:<hex address>=<value>[,...]` | Log every guest address holding a float near those values at that frame / write floats from that frame on (finding game state by value: the FOV) |
+| `H3_FOV=<degrees>` / `H3_LOG_FOV=1` | Override the FOV setting / log the unit FOVs scaled per map |
 | `H3_LOG_PC_TEXT=1` / `H3_LOG_NET=1` / `H3_LOG_LOOK=<calls>` / `H3_LOG_MOUSE=1` | How many English strings were reworded / system link calls and datagrams / what player 1's look function changed at those calls (research) / native mouse look per tick (movement, weapon rate, zoom scale) |
 
 #### Turning a fix off

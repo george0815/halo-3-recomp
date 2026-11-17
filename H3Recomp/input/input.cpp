@@ -7,6 +7,7 @@
 #include "input/input.h"
 #include "config/env.h"
 #include "config/settings.h"
+#include "hooks/mouse_look.h"
 
 #include <SDL3/SDL.h>
 
@@ -220,6 +221,12 @@ namespace h3::input
         std::vector<MouseMotion> g_mouseMotion;  // window thread only
         // Native mouse look: counts since the game last took them.
         bool g_nativeMouse = false;
+        // Toggle crouch / hold to zoom (settings.h): window thread only.
+        bool g_toggleCrouch = false, g_holdToZoom = false;
+        bool g_crouchHeld = false, g_crouched = false;  // the key last frame; the toggled state
+        bool g_zoomHeld = false;
+        uint64_t g_zoomClickUntilNs = 0;  // the zoom click being sent
+        constexpr uint64_t kClickNs = 50'000'000;  // long enough for the game to see it (a tick or more)
         std::mutex g_lookMutex;
         float g_lookDx = 0, g_lookDy = 0;
         // The common PC shooter scale: 0.022 degrees per count at
@@ -357,6 +364,8 @@ namespace h3::input
             ParseScript(script);
         g_keyboardOwnPlayer = controls.keyboardOwnPlayer;
         g_nativeMouse = controls.nativeMouseLook || EnvFlag("H3_NATIVE_MOUSE");
+        g_toggleCrouch = controls.toggleCrouch;
+        g_holdToZoom = controls.holdToZoom;
         if (const char* pads = EnvString("H3_VIRTUAL_PADS"))
             for (uint32_t player = 1; player <= std::min<uint32_t>(uint32_t(atoi(pads)), kMaxPlayers - 1); player++)
                 g_virtualPads |= 1u << player;
@@ -490,6 +499,30 @@ namespace h3::input
         for (size_t action = 0; action < config::kActionCount; action++)
             if (uint16_t button = ButtonFor(Action(action)); button && held(Action(action)))
                 state.buttons |= button;
+
+        // Toggle crouch: each press of the crouch key flips it.
+        if (g_toggleCrouch)
+        {
+            bool down = held(Action::Crouch);
+            if (down && !g_crouchHeld)
+                g_crouched = !g_crouched;
+            g_crouchHeld = down;
+            state.buttons = uint16_t(g_crouched ? state.buttons | kLeftThumb : state.buttons & ~kLeftThumb);
+        }
+        // Hold to zoom: the game zooms in on one click and out on the next,
+        // so the key going down sends a click, and coming back up another,
+        // unless the game has already unzoomed (switching weapons, taking
+        // a hit) or never zoomed: that click would zoom back in.
+        if (g_holdToZoom)
+        {
+            bool down = held(Action::Zoom);
+            if (down && !g_zoomHeld)
+                g_zoomClickUntilNs = now + kClickNs;
+            else if (!down && g_zoomHeld && hooks::Player1Zoomed())
+                g_zoomClickUntilNs = now + kClickNs;
+            g_zoomHeld = down;
+            state.buttons = uint16_t(now < g_zoomClickUntilNs ? state.buttons | kRightThumb : state.buttons & ~kRightThumb);
+        }
         state.leftTrigger = held(Action::Grenade) ? kTriggerMax : 0;
         state.rightTrigger = held(Action::Fire) ? kTriggerMax : 0;
         state.thumbLX = Axis(held(Action::MoveLeft), held(Action::MoveRight));

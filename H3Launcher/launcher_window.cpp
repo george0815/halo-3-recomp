@@ -408,6 +408,18 @@ namespace h3::launcher
         };
         page.items.push_back(frameRate);
 
+        MenuItem fov{ MenuItem::Kind::Choice, QStringLiteral("Field of view"),
+            QStringLiteral("Horizontal field of view in degrees (the game's is 70). Not used in split screen.") };
+        fov.value = [&video] { return QStringLiteral("%1").arg(int(video.fov + 0.5f)); };
+        fov.step = [&video](int delta) { video.fov = std::clamp(video.fov + 5.0f * float(delta), 60.0f, 120.0f); };
+        page.items.push_back(fov);
+
+        MenuItem skipIntro{ MenuItem::Kind::Choice, QStringLiteral("Skip intro video"),
+            QStringLiteral("Go straight to the main menu at startup.") };
+        skipIntro.value = [&video] { return OnOff(video.skipIntro); };
+        skipIntro.step = [&video](int) { video.skipIntro = !video.skipIntro; };
+        page.items.push_back(skipIntro);
+
         MenuItem antiAliasing{ MenuItem::Kind::Choice, QStringLiteral("Anti-aliasing"),
             QStringLiteral("Smooth jagged edges with FXAA on the finished picture (Halo 3 has no anti-aliasing of its "
                            "own). Cheap; a higher render resolution smooths further.") };
@@ -455,12 +467,33 @@ namespace h3::launcher
         invert.step = [&controls](int) { controls.invertMouse = !controls.invertMouse; };
         page.items.push_back(invert);
 
+        MenuItem vehicleSensitivity{ MenuItem::Kind::Choice, QStringLiteral("Vehicle mouse sensitivity"),
+            QStringLiteral("Native mouse look: how fast the mouse turns in vehicles and turrets, times the mouse sensitivity.") };
+        vehicleSensitivity.value = [&controls] { return QString::number(controls.vehicleMouseSensitivity, 'f', 2); };
+        vehicleSensitivity.step = [&controls](int delta)
+        {
+            controls.vehicleMouseSensitivity = std::clamp(std::round(controls.vehicleMouseSensitivity * 20.0f + float(delta)) / 20.0f, 0.1f, 5.0f);
+        };
+        page.items.push_back(vehicleSensitivity);
+
         MenuItem nativeMouse{ MenuItem::Kind::Choice, QStringLiteral("Mouse look"),
             QStringLiteral("Native: the mouse turns the view directly, like MCC's PC version. Stick: the mouse drives the "
                            "right stick, with the controller's acceleration.") };
         nativeMouse.value = [&controls] { return controls.nativeMouseLook ? QStringLiteral("Native") : QStringLiteral("Stick"); };
         nativeMouse.step = [&controls](int) { controls.nativeMouseLook = !controls.nativeMouseLook; };
         page.items.push_back(nativeMouse);
+
+        MenuItem toggleCrouch{ MenuItem::Kind::Choice, QStringLiteral("Crouch"),
+            QStringLiteral("Hold: crouch while the key is held, as on a controller. Toggle: each press crouches or stands.") };
+        toggleCrouch.value = [&controls] { return controls.toggleCrouch ? QStringLiteral("Toggle") : QStringLiteral("Hold"); };
+        toggleCrouch.step = [&controls](int) { controls.toggleCrouch = !controls.toggleCrouch; };
+        page.items.push_back(toggleCrouch);
+
+        MenuItem holdZoom{ MenuItem::Kind::Choice, QStringLiteral("Zoom"),
+            QStringLiteral("Toggle: each press zooms in or out, as on a controller. Hold: zoomed while the key is held.") };
+        holdZoom.value = [&controls] { return controls.holdToZoom ? QStringLiteral("Hold") : QStringLiteral("Toggle"); };
+        holdZoom.step = [&controls](int) { controls.holdToZoom = !controls.holdToZoom; };
+        page.items.push_back(holdZoom);
 
         MenuItem ownPlayer{ MenuItem::Kind::Choice, QStringLiteral("Keyboard is its own player"),
             QStringLiteral("Split screen: on, the keyboard and mouse are player 1 and the first controller is player 2. "
@@ -1033,7 +1066,14 @@ namespace h3::launcher
         if (event->button() != Qt::LeftButton)
             return;
         if (item.kind == MenuItem::Kind::Choice)
-            Step(point.x() < rect.right() - rect.width() / 4 ? -1 : 1);  // left of the value steps back
+        {
+            // Left of the value's middle steps back, right of it forward:
+            // the value sits right-aligned between ‹ and › (paintEvent), so
+            // a short value ("70") puts ‹ near the right edge.
+            int valueRight = rect.right() - kTextInset - 22;
+            int middle = valueRight - TextWidth(Style::Small, item.value()) / 2;
+            Step(point.x() < middle ? -1 : 1);
+        }
         else if (item.kind != MenuItem::Kind::Binding)
             Activate();
         update();

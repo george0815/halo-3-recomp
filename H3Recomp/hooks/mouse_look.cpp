@@ -19,7 +19,9 @@
 // reach through its pointer arguments at those calls (one per tick, counted
 // from the first) and logs the words that changed.
 
+#include "hooks/mouse_look.h"
 #include "config/env.h"
+#include "config/settings.h"
 #include "input/input.h"
 #include "memory.h"
 
@@ -27,6 +29,7 @@
 
 #include <cstdio>
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <map>
 #include <sstream>
@@ -40,10 +43,83 @@ namespace
     constexpr float kDefaultYawRate = 2.0943951f;    // 120 degrees a second
     constexpr float kDefaultPitchRate = 1.0471976f;  // 60
 
+    // Whether a player sits in a vehicle or turret, as the look function
+    // itself tells (it reads the seat's turn rates then): the player's
+    // unit (player control record: r13's game-state globals +120, 236 bytes
+    // a player, +16; the unit at +0) has a parent object (+16) and a seat
+    // (+582, halfword) in the object table (globals +168: data at +68,
+    // 16-byte entries, the object at +12).
+    bool Seated(const PPCContext& ctx, uint32_t user)
+    {
+        using h3::GuestRef;
+        uint32_t globals = GuestRef<uint32_t>(ctx.r13.u32);
+        if (globals == 0)
+            return false;
+        uint32_t controls = GuestRef<uint32_t>(globals + 120);
+        uint32_t objects = GuestRef<uint32_t>(globals + 168);
+        if (controls == 0 || objects == 0)
+            return false;
+        uint32_t unit = GuestRef<uint32_t>(controls + user * 236 + 16);
+        if (unit == 0xFFFFFFFF)
+            return false;
+        uint32_t data = GuestRef<uint32_t>(objects + 68);
+        uint32_t object = data ? uint32_t(GuestRef<uint32_t>(data + (unit & 0xFFFF) * 16 + 12)) : 0;
+        if (object == 0)
+            return false;
+        static const bool log = h3::EnvFlag("H3_LOG_MOUSE");
+        static uint32_t logged = 0;
+        if (log && logged++ % 120 == 0)
+            fprintf(stderr, "[mouse] player %u unit %08X object %08X parent %08X seat %d\n", user, unit, object,
+                uint32_t(GuestRef<uint32_t>(object + 16)), int(int16_t(GuestRef<uint16_t>(object + 582))));
+                return GuestRef<uint32_t>(object + 16) != 0xFFFFFFFF && int16_t(GuestRef<uint16_t>(object + 582)) != -1;
+    }
+
+    // Player 1's unit object (0 if none), by the same chain as Seated.
+    uint32_t UnitObject(const PPCContext& ctx, uint32_t user)
+    {
+        using h3::GuestRef;
+        uint32_t globals = GuestRef<uint32_t>(ctx.r13.u32);
+        uint32_t controls = globals ? uint32_t(GuestRef<uint32_t>(globals + 120)) : 0;
+        uint32_t objects = globals ? uint32_t(GuestRef<uint32_t>(globals + 168)) : 0;
+        if (controls == 0 || objects == 0)
+            return 0;
+        uint32_t unit = GuestRef<uint32_t>(controls + user * 236 + 16);
+        uint32_t data = GuestRef<uint32_t>(objects + 68);
+        return unit == 0xFFFFFFFF || data == 0 ? 0 : uint32_t(GuestRef<uint32_t>(data + (unit & 0xFFFF) * 16 + 12));
+    }
+
+    // H3_LOG_UNIT (research): player 1's unit object, the halfwords and bytes
+    // that switch between -1 and 0..7, when they do (looking for zoom).
+    void LogUnitFlips(const PPCContext& ctx, uint32_t calls)
+    {
+        static const bool log = h3::EnvFlag("H3_LOG_UNIT");
+        static std::vector<uint8_t> last;
+        if (!log)
+            return;
+        constexpr uint32_t kSpan = 0x800;
+        uint32_t object = UnitObject(ctx, 0);
+        if (object < 0x40000000 || object > 0xC0000000 - kSpan)
+            return;  // no unit (menus): the chain gives junk
+        std::vector<uint8_t> now(h3::GuestPtr<uint8_t>(object), h3::GuestPtr<uint8_t>(object) + kSpan);
+        if (last.size() == kSpan)
+            for (uint32_t i = 0; i + 1 < kSpan; i++)
+            {
+                int a = int8_t(last[i]), b = int8_t(now[i]);
+                if (a != b && ((a == -1 && b >= 0 && b < 8) || (b == -1 && a >= 0 && a < 8)))
+                    fprintf(stderr, "[unit] call %u byte +%03X %d -> %d\n", calls, i, a, b);
+            }
+        last = std::move(now);
+    }
+
     // The lowest weapon turn rate returned during the current look call
     // (only player 1's call collects).
     thread_local bool t_collecting = false;
     thread_local float t_weaponRate = 0;
+    // A unit's zoom level: int16 at +0x290 of its object, -1 unzoomed, 0..
+    // the weapon's zoom levels (found by diffing the object across scripted
+    // zooms, private/re/mouse_look.md).
+    constexpr uint32_t kUnitZoomLevel = 0x290;
+    std::atomic<bool> g_player1Zoomed{ false };
 
     constexpr uint32_t kSpan = 0x400;  // bytes snapshot behind each pointer
 
@@ -61,6 +137,11 @@ namespace
                 s.words[i] = h3::GuestRef<uint32_t>(address + i * 4);
         return s;
     }
+}
+
+bool h3::hooks::Player1Zoomed()
+{
+    return g_player1Zoomed.load();
 }
 
 PPC_FUNC_IMPL(__imp__sub_82211EA8);
@@ -83,22 +164,47 @@ PPC_FUNC(sub_82211EA8)
     uint32_t user = ctx.r3.u32;
     uint32_t args[3] = { ctx.r4.u32, ctx.r7.u32, ctx.r8.u32 };
     bool mouse = user == 0 && args[2] != 0 && h3::input::NativeMouseLook();
-    t_collecting = mouse;
+    t_collecting = user == 0;  // player 1's weapon rate: the mouse's zoom scale, and Player1Zoomed
     t_weaponRate = 1e9f;
     __imp__sub_82211EA8(ctx, base);
     t_collecting = false;
+    if (user == 0)
+    {
+        uint32_t object = UnitObject(ctx, 0);
+        g_player1Zoomed.store(object >= 0x40000000 && object < 0xC0000000 &&
+            int16_t(h3::GuestRef<uint16_t>(object + kUnitZoomLevel)) != -1);
+        // H3_LOG_WEAPON_RATE: player 1's weapon turn cap whenever it
+        // changes (weapon switches, zoom levels), with the look call count.
+        static const bool logRate = h3::EnvFlag("H3_LOG_WEAPON_RATE");
+        static float lastRate = -1;
+        static uint32_t calls = 0;
+        calls++;
+        LogUnitFlips(ctx, calls);
+        static bool lastZoomed = false;
+        if (logRate && g_player1Zoomed.load() != lastZoomed)
+        {
+            lastZoomed = g_player1Zoomed.load();
+            fprintf(stderr, "[weapon] call %u %s\n", calls, lastZoomed ? "zoomed in" : "zoomed out");
+        }
+        if (logRate && t_weaponRate != lastRate)
+        {
+            fprintf(stderr, "[weapon] call %u rate %.4f%s\n", calls, t_weaponRate, g_player1Zoomed.load() ? " (zoomed)" : "");
+            lastRate = t_weaponRate;
+        }
+    }
     if (mouse)
     {
         float yaw, pitch;
         h3::input::TakeMouseLook(yaw, pitch);
         if (yaw != 0 || pitch != 0)
         {
-            float yawScale = std::min(1.0f, 2 * t_weaponRate / kDefaultYawRate);
-            float pitchScale = std::min(1.0f, t_weaponRate / kDefaultPitchRate);
+            float vehicle = Seated(ctx, user) ? h3::config::Active().controls.vehicleMouseSensitivity : 1.0f;
+            float yawScale = std::min(1.0f, 2 * t_weaponRate / kDefaultYawRate) * vehicle;
+            float pitchScale = std::min(1.0f, t_weaponRate / kDefaultPitchRate) * vehicle;
             static const bool log = h3::EnvFlag("H3_LOG_MOUSE");
             if (log)
-                fprintf(stderr, "[mouse] yaw %.5f pitch %.5f, weapon rate %.4f -> scale %.3f / %.3f\n", yaw, pitch, t_weaponRate,
-                    yawScale, pitchScale);
+                fprintf(stderr, "[mouse] yaw %.5f pitch %.5f, weapon rate %.4f%s -> scale %.3f / %.3f\n", yaw, pitch,
+                    t_weaponRate, vehicle != 1.0f ? " (seated)" : "", yawScale, pitchScale);
             h3::GuestRef<float>(args[2] + kOutputYaw) = float(h3::GuestRef<float>(args[2] + kOutputYaw)) + yaw * yawScale;
             h3::GuestRef<float>(args[2] + kOutputPitch) = float(h3::GuestRef<float>(args[2] + kOutputPitch)) + pitch * pitchScale;
         }
