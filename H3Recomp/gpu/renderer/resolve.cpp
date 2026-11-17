@@ -349,9 +349,11 @@ namespace h3::gpu::renderer::internal
         }
 
         // The resolved texture for a destination, created (or recreated at a
-        // new size/format) as needed. Null on failure.
+        // new size/format) as needed. Null on failure. rebased: the resolve
+        // was moved to a texture further on (Resolve), whose own pitch
+        // stands.
         ResolvedTexture* DestinationTexture(uint32_t destBase, uint32_t destPitchReg, uint32_t destFormat, uint32_t bpp,
-            SDL_GPUTextureFormat hostFormat, uint32_t minHeight)
+            SDL_GPUTextureFormat hostFormat, uint32_t minHeight, bool rebased)
         {
             ResolvedTexture* texture = FindResolved(destBase);
             // Color formats of one size share a texture (the copy converts);
@@ -366,6 +368,19 @@ namespace h3::gpu::renderer::internal
             // PERF: the ripple ping-pong recreates the 800x800 texture twice
             // a frame; a texture per channel layout would avoid that.
             bool channelMismatch = texture && HostChannels(hostFormat) != HostChannels(texture->hostFormat);
+            // A resolve inside another texture at a pitch of its own is a
+            // surface of its own, not part of that texture: split screen
+            // resolves the players' 864x320 views to 04830000 and 049F2000,
+            // inside the 1152x640 texture an earlier full-screen frame left
+            // at 04830000. Taken for a corner of it, the second view was
+            // clipped to 576x256 and drew shrunken. It gets a texture at
+            // its own base (FindResolved prefers an exact base), and the
+            // old one stays for whatever else lies in its range. (Strips
+            // resolved inside a texture at its pitch, 1152x160 at 048E4000
+            // in 04830000 every frame, are parts of it.)
+            uint32_t destPitch = AlignUp(destPitchReg & 0x3FFF, kMacroTileSize);
+            if (texture && !rebased && destPitch && texture->base != GuestToPhysical(destBase) && texture->pitch != destPitch)
+                texture = nullptr;
             if (texture && texture->bpp == bpp && !depthMismatch && !channelMismatch)
                 return texture;
 
@@ -449,11 +464,19 @@ namespace h3::gpu::renderer::internal
         // constant); compare physical.
         // PERF: linear search over every resolved texture, several times
         // per draw (BindTextures); an interval map would scale better.
+        // A texture starting at the address wins over one whose range
+        // merely covers it (a surface resolved inside an older, larger one:
+        // DestinationTexture).
         address = GuestToPhysical(address);
+        ResolvedTexture* containing = nullptr;
         for (ResolvedTexture& texture : g_resolved)
-            if (address >= texture.base && address < texture.base + texture.size)
+        {
+            if (address == texture.base)
                 return &texture;
-        return nullptr;
+            if (!containing && address > texture.base && address < texture.base + texture.size)
+                containing = &texture;
+        }
+        return containing;
     }
 
     void InvalidateResolved(uint32_t begin, uint32_t end)
@@ -722,7 +745,8 @@ namespace h3::gpu::renderer::internal
             textureBase = destBase + (rectY / kMacroTileSize) * macroRowBytes + (rectX / kMacroTileSize) * macroTileBytes;
             rectX %= kMacroTileSize, rectY %= kMacroTileSize;
         }
-        ResolvedTexture* texture = DestinationTexture(textureBase, destPitchReg, destFormat, bpp, hostFormat, uint32_t(y1 - y0));
+        ResolvedTexture* texture =
+            DestinationTexture(textureBase, destPitchReg, destFormat, bpp, hostFormat, uint32_t(y1 - y0), textureBase != destBase);
         if (!texture)
             return;
 

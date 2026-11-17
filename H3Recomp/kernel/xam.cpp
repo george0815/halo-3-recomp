@@ -61,18 +61,25 @@ PPC_FUNC(__imp__XamLoaderLaunchTitle)
 
 // --- Input -------------------------------------------------------------------
 //
-// One controller, user 0, from the keyboard and the first SDL gamepad
-// (input/input.cpp). Other users stay unplugged: answering success without
+// Controllers 0-3 (input/input.cpp; 0 is the keyboard and mouse, always
+// connected). Unconnected ones answer "not connected": success without
 // filling in the state lets the game read stack garbage as button presses.
 
 constexpr uint32_t kErrorSuccess = 0;
 constexpr uint32_t kErrorDeviceNotConnected = 0x48F;
 constexpr uint32_t kUserIndexAny = 0xFF;
 
-// True for the controller slots that have a pad (keyboard/mouse counts as pad 0).
+// "Any user" reads controller 0.
+static uint32_t ControllerOf(uint32_t userIndex)
+{
+    return userIndex == kUserIndexAny ? 0 : userIndex;
+}
+
+// True for the controllers that are connected (keyboard/mouse counts as 0).
 static bool IsConnectedUser(uint32_t userIndex)
 {
-    return userIndex == 0 || userIndex == kUserIndexAny;
+    uint32_t controller = ControllerOf(userIndex);
+    return controller < input::kMaxPlayers && (input::ConnectedMask() & (1u << controller));
 }
 
 // XINPUT_GAMEPAD, 12 bytes big-endian.
@@ -136,7 +143,7 @@ PPC_FUNC(__imp__XamInputGetState)
     }
     if (ctx.r5.u32 != 0)
     {
-        input::GamepadState state = input::GetState();
+        input::GamepadState state = input::GetState(ControllerOf(ctx.r3.u32));
         GuestRef<uint32_t>(ctx.r5.u32) = state.packetNumber;
         WriteGamepad(ctx.r5.u32 + 4, state);
     }

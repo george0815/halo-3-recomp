@@ -142,6 +142,15 @@ namespace h3::native::tags
         return datum == host::kNone ? nullptr : TagBySlotOf<host::globals_tag>(datum & 0xFFFF);
     }
 
+    uint32_t GlobalGameGlobalsAddress()
+    {
+        uint32_t datum = GuestRef<uint32_t>(kGlobalsDatum);
+        uint32_t table = GuestRef<uint32_t>(kTagInstances);
+        if (datum == host::kNone || table == 0)
+            return 0;
+        return GuestRef<uint32_t>(table + (datum & 0xFFFF) * kInstanceBytes + kInstanceAddress);
+    }
+
     // A map's tags just loaded (cache/cache_file_tags.cpp): convert them all
     // now, once, rather than as they're first used.
     void OnTagsLoaded()

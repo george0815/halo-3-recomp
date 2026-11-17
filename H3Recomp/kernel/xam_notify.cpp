@@ -2,7 +2,7 @@
 // Reference: Xenia's src/xenia/kernel/xam/xam_notify.cc.
 //
 // A listener is a kernel object, signaled while it has notifications
-// queued. New listeners get the console's current state: user 0 signed in
+// queued. New listeners get the console's current state: who is signed in
 // and the system UI closed. Titles track sign-in through these (Halo keeps
 // its controller -> user map from XN_SYS_SIGNINCHANGED).
 
@@ -16,6 +16,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <memory>
+#include <mutex>
+#include <vector>
 
 using namespace h3;
 using namespace h3::kernel;
@@ -44,6 +47,10 @@ namespace
         std::deque<Notification> queue;  // guarded by DispatcherLock()
     };
 
+    // Every listener created, for BroadcastNotification.
+    std::mutex g_listenersMutex;
+    std::vector<std::weak_ptr<Listener>> g_listeners;
+
     // H3_LOG_NOTIFY=1: log notification listener calls.
     bool LogNotify()
     {
@@ -59,15 +66,41 @@ PPC_FUNC(__imp__XamNotifyCreateListener)
     auto listener = std::make_shared<Listener>(mask);
     {
         auto lock = DispatcherLock();
-        for (Listener::Notification n : { Listener::Notification{ kXnSysUi, 0 }, Listener::Notification{ kXnSysSigninChanged, 1 } })
+        for (Listener::Notification n : { Listener::Notification{ kXnSysUi, 0 }, Listener::Notification{ kXnSysSigninChanged, SignedInUsers() } })
             if (mask & AreaBit(n.id))
                 listener->queue.push_back(n);
         listener->SyncHeader();
         NotifyDispatcher();
     }
+    {
+        std::lock_guard lock(g_listenersMutex);
+        std::erase_if(g_listeners, [](const std::weak_ptr<Listener>& l) { return l.expired(); });
+        g_listeners.push_back(listener);
+    }
     if (LogNotify())
         fprintf(stderr, "[xam] XamNotifyCreateListener areas %llX\n", static_cast<unsigned long long>(mask));
     ctx.r3.u64 = CreateHandle(listener);
+}
+
+void h3::kernel::BroadcastNotification(uint32_t id, uint32_t param)
+{
+    std::vector<std::shared_ptr<Listener>> listeners;
+    {
+        std::lock_guard lock(g_listenersMutex);
+        for (const std::weak_ptr<Listener>& weak : g_listeners)
+            if (auto listener = weak.lock())
+                listeners.push_back(listener);
+    }
+    auto lock = DispatcherLock();
+    for (const auto& listener : listeners)
+        if (listener->mask & AreaBit(id))
+        {
+            listener->queue.push_back({ id, param });
+            listener->SyncHeader();
+        }
+    NotifyDispatcher();
+    if (LogNotify())
+        fprintf(stderr, "[xam] notification %08X (%08X) to %zu listeners\n", id, param, listeners.size());
 }
 
 // BOOL XNotifyGetNext(HANDLE listener, DWORD matchId, PDWORD id, PULONG_PTR param)

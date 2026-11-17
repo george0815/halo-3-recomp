@@ -5,9 +5,11 @@
 # build/windows-deps/: SDL3, shaderc and FFmpeg with the xmaframes decoder
 # (as tools/build_ffmpeg.sh), and Qt 6 for the launcher (official MSVC
 # binaries via aqtinstall; the Linux Qt of the same version provides moc,
-# uic and rcc). Run once before configuring the "windows-cross" preset.
+# uic and rcc), and the Visual C++ runtime DLLs (from Microsoft's
+# vc_redist.x64.exe, shipped next to the executables). Run once before
+# configuring the "windows-cross" preset.
 #
-# Usage: tools/build_windows_deps.sh [sdl3|shaderc|ffmpeg|qt ...] (default: all)
+# Usage: tools/build_windows_deps.sh [sdl3|shaderc|ffmpeg|qt|vcredist ...] (default: all)
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 XWIN="${H3_XWIN_DIR:-$HOME/tools/xwin-sdk}"
@@ -18,6 +20,9 @@ JOBS="$(nproc)"
 mkdir -p "$WORK" "$PREFIX"
 
 [[ -d "$XWIN/crt" ]] || { echo "No MSVC CRT/SDK in $XWIN (xwin --accept-license --arch x86_64 splat --output $XWIN)"; exit 1; }
+for tool in curl 7z cabextract; do
+    command -v "$tool" >/dev/null || { echo "needs $tool"; exit 1; }
+done
 
 fetch() {  # fetch <url> <file> <sha256>
     local url=$1 file=$2 sum=$3
@@ -108,14 +113,40 @@ build_qt() {
     7z x -y -o"$PREFIX/qt" "$file" >/dev/null
 }
 
+# aka.ms always serves the newest runtime: when Microsoft updates it the
+# checksum fails; check the new version installs and runs, then update both.
+VCREDIST_VERSION=14.44.35211
+VCREDIST_SHA256=cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b
+VCREDIST_DLLS=(msvcp140 msvcp140_1 msvcp140_2 msvcp140_atomic_wait vcruntime140 vcruntime140_1)
+build_vcredist() {
+    echo "== Visual C++ runtime $VCREDIST_VERSION"
+    local file="$WORK/vc_redist-$VCREDIST_VERSION.x64.exe" cabs="$WORK/vcredist-cabs" cab="" c dll
+    fetch "https://aka.ms/vs/17/release/vc_redist.x64.exe" "$file" "$VCREDIST_SHA256"
+    # The installer's payload cabinets are appended to the exe; the x64
+    # runtime is the one holding msvcp140.dll_amd64.
+    rm -rf "$cabs" && mkdir -p "$cabs"
+    cabextract -q -d "$cabs" "$file" 2>/dev/null || true
+    for c in "$cabs"/*; do
+        if cabextract -l "$c" 2>/dev/null | grep -q ' msvcp140.dll_amd64$'; then cab=$c; break; fi
+    done
+    [[ -n "$cab" ]] || { echo "no x64 runtime cabinet in $file"; exit 1; }
+    rm -rf "$PREFIX/vcredist" && mkdir -p "$PREFIX/vcredist"
+    for dll in "${VCREDIST_DLLS[@]}"; do
+        cabextract -q -F "$dll.dll_amd64" -d "$cabs/x64" "$cab" 2>/dev/null
+        mv "$cabs/x64/$dll.dll_amd64" "$PREFIX/vcredist/$dll.dll"
+    done
+    rm -rf "$cabs"
+}
+
 steps=("$@")
-(( ${#steps[@]} )) || steps=(sdl3 shaderc ffmpeg qt)
+(( ${#steps[@]} )) || steps=(sdl3 shaderc ffmpeg qt vcredist)
 for step in "${steps[@]}"; do
     case "$step" in
         sdl3) build_sdl3 ;;
         shaderc) build_shaderc ;;
         ffmpeg) build_ffmpeg ;;
         qt) build_qt ;;
+        vcredist) build_vcredist ;;
         *) echo "unknown step $step"; exit 1 ;;
     esac
 done

@@ -100,7 +100,7 @@ and emblem) persists in `private/hdd/profile_settings.bin`.
 
 ### Controls
 
-Controller 0 is the keyboard and mouse merged with the first gamepad SDL
+Controller 1 is the keyboard and mouse merged with the first gamepad SDL
 finds. The keyboard and mouse bindings are set in the launcher; the
 defaults:
 
@@ -127,11 +127,57 @@ defaults:
 
 `H3_MOUSE_SENSITIVITY=<factor>` overrides the launcher's mouse sensitivity.
 
+While you play on the keyboard and mouse, the button icons in English menus
+and prompts show the keys bound to them ("[Space] Select"); with a gamepad,
+the buttons. Screens already open switch the next time they're opened. The
+text also says "PC" where it said "Xbox 360 console" (`H3_NO_PC_TEXT=1`
+keeps the original wording).
+
+#### Split screen
+
+Up to four players, as on the 360: two in campaign co-op, four in
+multiplayer (Custom Games, Forge). Gamepads after the first are controllers
+2-4 in the order they connect; a controller's player joins by pressing
+START (until then the game doesn't see it, so a spare gamepad or Steam's
+virtual copy of one adds no player) and is signed in with the profile
+named in the launcher ("Player 2 gamertag", `gamertag_2` to `gamertag_4` in
+`[profile]`). Signed-in players are in every lobby. With "Keyboard is its
+own player" (`keyboard_own_player` in `[controls]`) the keyboard and mouse
+are player 1 alone and the first gamepad is player 2. A player whose
+controller is unplugged stays signed in: the game pauses with its
+reconnect message and goes on when it's back. Holding BACK and START
+together for two seconds signs a player out (START joins again). Each
+player's game profile (controls, emblem) is saved to
+`profile_settings_2.bin` to `_4.bin` next to player 1's.
+
+#### Mouse look
+
+"Mouse look: Native" in the launcher (`native_mouse_look` in `[controls]`)
+turns the view straight from the mouse, as MCC's PC version does, instead of
+driving the right stick (which brings the controller's response curve and
+acceleration). Mouse sensitivity is 0.022 degrees per count at 1.0, the
+usual PC shooter scale. Still to come: slower turning when zoomed.
+
+#### System link
+
+With System link on (launcher, Network; `[network]` in settings.ini) Custom
+Games and Forge can host and find System Link games. Each game uses one UDP
+port (41001 by default): on a LAN that's all; over the internet, list
+friends' addresses (`host` or `host:port`) and have the host forward the
+port. Everyone needs the same build (the git commit it was built from) and
+the same frame rate setting; packets from other builds are ignored and
+logged. Joining a game found this way doesn't work yet.
+
 `H3_INPUT_SCRIPT="40-40.4:down,f900-905:a"` holds buttons between two
 times (seconds since start, or presented frames with `f`) for testing
 without a keyboard (names: a b x y start
 back up down left right lb rb ls rs; sticks and triggers: lup ldown lleft
-lright rup rdown rleft rright lt rt). `H3_LOG_INPUT=1` logs state changes.
+lright rup rdown rleft rright lt rt). A `p2.` to `p4.` prefix presses it
+on another controller (`f2300-2306:p2.start` joins player 2), and `unplug`
+disconnects that controller while held. `H3_VIRTUAL_PADS=<n>` connects
+controllers 2 to n+1 with no gamepad behind them, for split screen tests.
+`H3_LOG_INPUT=1` logs state changes; `H3_LOG_USER=1` sign-ins and profile
+calls.
 
 ### Debugging
 
@@ -252,6 +298,7 @@ Environment variables:
 | `H3_LOG_EXPOSURE=1` / `H3_LOG_AI_BURST=1` / `H3_LOG_BARRELS=1` / `H3_LOG_DAMAGE=1` / `H3_LOG_CAMERA=1` | 60 Hz fix checks: exposure updates per tick / AI bursts the minimum raised / ticks between each weapon's rounds / every damage call / cinematic camera modes |
 | `H3_LOG_OBJLIGHT=<first>[-<last>]` / `H3_LOG_ATOC=<calls>` / `H3_LOG_EMOTION=1` / `H3_NO_EMOTION=1` | Object lighting calls in that tick range / alpha-to-coverage and blend mode calls / facial emotion calls / drop facial emotions |
 | `H3_LAUNCHER_SIZE=<w>x<h>` | The launcher's window size |
+| `H3_LOG_PC_TEXT=1` / `H3_LOG_NET=1` / `H3_LOG_LOOK=<calls>` / `H3_LOG_MOUSE=1` | How many English strings were reworded / system link calls and datagrams / what player 1's look function changed at those calls (research) / native mouse look per tick (movement, weapon rate, zoom scale) |
 
 #### Turning a fix off
 
@@ -276,6 +323,7 @@ switch for the area it's in and report whether it changes.
 | `H3_NO_STANDIN_MIPS=1` | Mips under a stand-in level (a texture whose base isn't resident yet draws its largest resident level alone) |
 | `H3_NO_GAMMA=1` | The display gamma ramp (front buffer shown as is) |
 | `H3_XMA_SUBFRAMES=0` | The XMA subframe model (music notes repeating) |
+| `H3_NO_PC_TEXT=1` | PC wording in the English text ("this PC" for "this Xbox 360 console", the controller, sign-out tips) |
 | `H3_MEMEXPORT_FENCE_ASYNC=1` | Waiting for memexport fences (they land at once, as before) |
 | `H3_SYNC_WRITEBACK=1` | Asynchronous resolve write-back (waits instead) |
 | `H3_SPIN_WAITS=1` | Sleeping in long GPU waits (always spins) |

@@ -1,8 +1,8 @@
 // XInput emulation (input.h). Keyboard and mouse bindings come from the
 // [controls] section of settings.ini (config/settings.h, edited with the
-// launcher; the defaults are listed in the README, "Controls"). The
-// keyboard, the mouse and a gamepad are merged: buttons OR together, sticks
-// take the larger deflection.
+// launcher; the defaults are listed in the README, "Controls"). Controller
+// 0 merges the keyboard, the mouse and (unless keyboard_own_player) the
+// first gamepad: buttons OR together, sticks take the larger deflection.
 
 #include "input/input.h"
 #include "config/env.h"
@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -108,18 +109,26 @@ namespace h3::input
         // H3_INPUT_SCRIPT="20-20.2:down,f900-905:a": buttons (or stick
         // directions and triggers) held between two times, in seconds since
         // start or (with f) presented frames, for testing without a keyboard.
+        // A "p2." prefix (p1-p4) presses it on another controller
+        // ("f900-905:p2.start"); H3_VIRTUAL_PADS=<n> connects controllers
+        // 2 to n+1 with no gamepad behind them, for split screen tests, and
+        // "unplug" disconnects one while it's held ("f5000-6000:p2.unplug").
         // Analog controls a script can hold (full deflection or pull), by
         // name: left/right stick directions and the triggers.
         enum class ScriptedAnalog : uint8_t
         {
             None, LeftUp, LeftDown, LeftLeft, LeftRight, RightUp, RightDown, RightLeft, RightRight, LeftTrigger, RightTrigger,
+            MouseUp, MouseDown, MouseLeft, MouseRight,  // native mouse look: kScriptedMouseCounts a frame
         };
+        constexpr float kScriptedMouseCounts = 10;
         struct ScriptedPress
         {
             double start, end;
             uint16_t button;  // 0 for an analog control
             bool frames;
             ScriptedAnalog analog = ScriptedAnalog::None;
+            uint32_t player = 0;
+            bool unplug = false;
         };
 
         // The analog control for a name in H3_INPUT_SCRIPT ("rup", "lt"...).
@@ -133,7 +142,8 @@ namespace h3::input
                 { "lup", ScriptedAnalog::LeftUp }, { "ldown", ScriptedAnalog::LeftDown }, { "lleft", ScriptedAnalog::LeftLeft },
                 { "lright", ScriptedAnalog::LeftRight }, { "rup", ScriptedAnalog::RightUp }, { "rdown", ScriptedAnalog::RightDown },
                 { "rleft", ScriptedAnalog::RightLeft }, { "rright", ScriptedAnalog::RightRight }, { "lt", ScriptedAnalog::LeftTrigger },
-                { "rt", ScriptedAnalog::RightTrigger },
+                { "rt", ScriptedAnalog::RightTrigger }, { "mup", ScriptedAnalog::MouseUp }, { "mdown", ScriptedAnalog::MouseDown },
+                { "mleft", ScriptedAnalog::MouseLeft }, { "mright", ScriptedAnalog::MouseRight },
             };
             for (const auto& entry : kNames)
                 if (name == entry.name)
@@ -181,8 +191,15 @@ namespace h3::input
                 if (!end.empty() && end[0] == 'f')
                     end = end.substr(1);
                 std::string name = item.substr(colon + 1);
-                ScriptedPress press{ atof(start.c_str()), atof(end.c_str()), ButtonNamed(name), frames, AnalogNamed(name) };
-                if (press.button || press.analog != ScriptedAnalog::None)
+                uint32_t player = 0;
+                if (name.size() > 3 && name[0] == 'p' && name[1] >= '1' && name[1] <= '4' && name[2] == '.')
+                {
+                    player = uint32_t(name[1] - '1');
+                    name = name.substr(3);
+                }
+                ScriptedPress press{ atof(start.c_str()), atof(end.c_str()), ButtonNamed(name), frames, AnalogNamed(name), player,
+                    name == "unplug" };
+                if (press.button || press.analog != ScriptedAnalog::None || press.unplug)
                     g_script.push_back(press);
                 else
                     fprintf(stderr, "[input] unknown button in H3_INPUT_SCRIPT: %s\n", item.c_str());
@@ -201,6 +218,13 @@ namespace h3::input
         };
         constexpr uint64_t kMouseWindowNs = 50'000'000;
         std::vector<MouseMotion> g_mouseMotion;  // window thread only
+        // Native mouse look: counts since the game last took them.
+        bool g_nativeMouse = false;
+        std::mutex g_lookMutex;
+        float g_lookDx = 0, g_lookDy = 0;
+        // The common PC shooter scale: 0.022 degrees per count at
+        // sensitivity 1.
+        constexpr float kRadiansPerCount = 0.022f * 3.14159265f / 180.0f;
         float g_mouseSensitivity = 1.0f;
         float g_mouseInvertY = 1.0f;    // -1 to invert vertical mouse look
         int g_mouseWheel = 0;           // whole notches since the last Update
@@ -224,8 +248,25 @@ namespace h3::input
         }
 
         std::mutex g_mutex;
-        GamepadState g_state;
-        SDL_Gamepad* g_gamepad = nullptr;
+        std::array<GamepadState, kMaxPlayers> g_states;  // guarded by g_mutex
+        std::atomic<uint32_t> g_connected{ 1 };
+        std::atomic<uint32_t> g_signedIn{ 1 };
+        std::atomic<bool> g_keyboardLast{ true };
+        // Controllers 2-4 join (their player signs in) by pressing START;
+        // until then the game doesn't see them, so a gamepad nobody plays
+        // with (a spare one, Steam's virtual copy of a real one) adds no
+        // player. The joining press is swallowed. Window thread only.
+        uint32_t g_joined = 1;
+        uint32_t g_swallow = 0;  // controllers whose buttons are held back until released
+        // Holding BACK and START together for kLeaveHoldNs signs a player
+        // out (the 360's guide menu did that). The two buttons are kept
+        // from the game while held together, so the hold doesn't pause.
+        constexpr uint64_t kLeaveHoldNs = 2'000'000'000;
+        std::array<uint64_t, kMaxPlayers> g_leaveHeldSinceNs{};
+        // The gamepad on each controller (window thread only).
+        std::array<SDL_Gamepad*, kMaxPlayers> g_pads{};
+        uint32_t g_virtualPads = 0;      // H3_VIRTUAL_PADS: bits of controllers with no gamepad
+        bool g_keyboardOwnPlayer = false;  // the first gamepad is controller 1, not merged into 0
         bool g_log = false;
 
         // A stick axis from two keys (full deflection either way).
@@ -237,20 +278,68 @@ namespace h3::input
         // The larger deflection of keyboard and gamepad.
         int16_t Merge(int16_t a, int16_t b) { return std::abs(int32_t(a)) >= std::abs(int32_t(b)) ? a : b; }
 
-        // Opens the first connected gamepad if none is open.
-        void OpenFirstGamepad()
+        // Gives every connected gamepad that has no controller yet the
+        // lowest free one. A controller keeps its gamepad until it's
+        // unplugged, so players don't swap when someone else's drops out.
+        void AssignGamepads()
         {
-            if (g_gamepad)
-                return;
             int count = 0;
             SDL_JoystickID* ids = SDL_GetGamepads(&count);
-            if (ids && count > 0)
+            for (int i = 0; ids && i < count; i++)
             {
-                g_gamepad = SDL_OpenGamepad(ids[0]);
-                if (g_gamepad)
-                    fprintf(stderr, "[input] gamepad: %s\n", SDL_GetGamepadName(g_gamepad));
+                bool assigned = std::any_of(g_pads.begin(), g_pads.end(),
+                    [&](SDL_Gamepad* pad) { return pad && SDL_GetGamepadID(pad) == ids[i]; });
+                if (assigned)
+                    continue;
+                for (uint32_t player = g_keyboardOwnPlayer ? 1 : 0; player < kMaxPlayers; player++)
+                {
+                    if (g_pads[player] || (g_virtualPads & (1u << player)))
+                        continue;
+                    if ((g_pads[player] = SDL_OpenGamepad(ids[i])))
+                        fprintf(stderr, "[input] controller %u: %s\n", player + 1, SDL_GetGamepadName(g_pads[player]));
+                    break;
+                }
             }
             SDL_free(ids);
+        }
+
+        // Adds a gamepad's buttons, triggers and sticks to a state.
+        void AddGamepad(GamepadState& state, SDL_Gamepad* pad)
+        {
+            struct PadButton
+            {
+                SDL_GamepadButton button;
+                uint16_t bit;
+            };
+            static constexpr PadButton kPadButtons[] = {
+                { SDL_GAMEPAD_BUTTON_SOUTH, kA },
+                { SDL_GAMEPAD_BUTTON_EAST, kB },
+                { SDL_GAMEPAD_BUTTON_WEST, kX },
+                { SDL_GAMEPAD_BUTTON_NORTH, kY },
+                { SDL_GAMEPAD_BUTTON_BACK, kBack },
+                { SDL_GAMEPAD_BUTTON_START, kStart },
+                { SDL_GAMEPAD_BUTTON_LEFT_STICK, kLeftThumb },
+                { SDL_GAMEPAD_BUTTON_RIGHT_STICK, kRightThumb },
+                { SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, kLeftShoulder },
+                { SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, kRightShoulder },
+                { SDL_GAMEPAD_BUTTON_DPAD_UP, kDpadUp },
+                { SDL_GAMEPAD_BUTTON_DPAD_DOWN, kDpadDown },
+                { SDL_GAMEPAD_BUTTON_DPAD_LEFT, kDpadLeft },
+                { SDL_GAMEPAD_BUTTON_DPAD_RIGHT, kDpadRight },
+            };
+            for (const PadButton& mapping : kPadButtons)
+                if (SDL_GetGamepadButton(pad, mapping.button))
+                    state.buttons |= mapping.bit;
+            // SDL triggers are 0..32767; sticks are Y-down, XInput's Y-up.
+            static constexpr int32_t kSdlAxisMax = 32767;
+            auto trigger = [](int16_t value) { return uint8_t(std::clamp(int32_t(value), 0, kSdlAxisMax) * kTriggerMax / kSdlAxisMax); };
+            auto invert = [](int16_t value) { return int16_t(std::clamp(-int32_t(value), -32768, 32767)); };
+            state.leftTrigger = std::max(state.leftTrigger, trigger(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)));
+            state.rightTrigger = std::max(state.rightTrigger, trigger(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)));
+            state.thumbLX = Merge(state.thumbLX, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX));
+            state.thumbLY = Merge(state.thumbLY, invert(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY)));
+            state.thumbRX = Merge(state.thumbRX, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX));
+            state.thumbRY = Merge(state.thumbRY, invert(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY)));
         }
     }
 
@@ -266,11 +355,32 @@ namespace h3::input
             g_mouseSensitivity = std::max(float(atof(sensitivity)), 0.01f);
         if (const char* script = EnvString("H3_INPUT_SCRIPT"))
             ParseScript(script);
-        OpenFirstGamepad();
+        g_keyboardOwnPlayer = controls.keyboardOwnPlayer;
+        g_nativeMouse = controls.nativeMouseLook || EnvFlag("H3_NATIVE_MOUSE");
+        if (const char* pads = EnvString("H3_VIRTUAL_PADS"))
+            for (uint32_t player = 1; player <= std::min<uint32_t>(uint32_t(atoi(pads)), kMaxPlayers - 1); player++)
+                g_virtualPads |= 1u << player;
+        AssignGamepads();
     }
 
     void HandleEvent(const SDL_Event& event)
     {
+        // Which device player 1 used last (gamepads on other controllers
+        // don't count, nor does mouse motion that isn't looking).
+        switch (event.type)
+        {
+        case SDL_EVENT_KEY_DOWN:
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            g_keyboardLast.store(true);
+            break;
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            if (!g_keyboardOwnPlayer && g_pads[0] && SDL_GetGamepadID(g_pads[0]) == event.gbutton.which)
+                g_keyboardLast.store(false);
+            break;
+        default:
+            break;
+        }
+
         switch (event.type)
         {
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -295,7 +405,16 @@ namespace h3::input
             break;
         case SDL_EVENT_MOUSE_MOTION:
             if (SDL_Window* window = EventWindow(event); window && SDL_GetWindowRelativeMouseMode(window))
-                g_mouseMotion.push_back({ SDL_GetTicksNS(), event.motion.xrel, event.motion.yrel });
+            {
+                if (g_nativeMouse)
+                {
+                    std::lock_guard lock(g_lookMutex);
+                    g_lookDx += event.motion.xrel;
+                    g_lookDy += event.motion.yrel;
+                }
+                else
+                    g_mouseMotion.push_back({ SDL_GetTicksNS(), event.motion.xrel, event.motion.yrel });
+            }
             break;
         case SDL_EVENT_MOUSE_WHEEL:
             // Whole notches only: a high-resolution wheel (or smooth
@@ -310,19 +429,24 @@ namespace h3::input
         }
 
         if (event.type == SDL_EVENT_GAMEPAD_ADDED)
-            OpenFirstGamepad();
-        else if (event.type == SDL_EVENT_GAMEPAD_REMOVED && g_gamepad &&
-            SDL_GetGamepadID(g_gamepad) == event.gdevice.which)
+            AssignGamepads();
+        else if (event.type == SDL_EVENT_GAMEPAD_REMOVED)
         {
-            SDL_CloseGamepad(g_gamepad);
-            g_gamepad = nullptr;
-            OpenFirstGamepad();
+            for (uint32_t player = 0; player < kMaxPlayers; player++)
+                if (g_pads[player] && SDL_GetGamepadID(g_pads[player]) == event.gdevice.which)
+                {
+                    fprintf(stderr, "[input] controller %u disconnected\n", player + 1);
+                    SDL_CloseGamepad(g_pads[player]);
+                    g_pads[player] = nullptr;
+                }
+            AssignGamepads();  // a gamepad left over (a fifth) takes the free controller
         }
     }
 
     void Update(uint32_t frame)
     {
-        GamepadState state;
+        std::array<GamepadState, kMaxPlayers> states;
+        GamepadState& state = states[0];  // the keyboard and mouse are controller 1
         const bool* keys = SDL_GetKeyboardState(nullptr);
         uint64_t now = SDL_GetTicksNS();
 
@@ -366,21 +490,12 @@ namespace h3::input
         for (size_t action = 0; action < config::kActionCount; action++)
             if (uint16_t button = ButtonFor(Action(action)); button && held(Action(action)))
                 state.buttons |= button;
-        double seconds = double(SDL_GetTicks() - g_startTicks) / 1000.0;
-        bool scripted[size_t(ScriptedAnalog::RightTrigger) + 1] = {};
-        for (const ScriptedPress& press : g_script)
-            if ((press.frames ? double(frame) : seconds) >= press.start && (press.frames ? double(frame) : seconds) < press.end)
-            {
-                state.buttons |= press.button;
-                scripted[size_t(press.analog)] = true;
-            }
-        auto analog = [&](ScriptedAnalog control) { return scripted[size_t(control)]; };
-        state.leftTrigger = held(Action::Grenade) || analog(ScriptedAnalog::LeftTrigger) ? kTriggerMax : 0;
-        state.rightTrigger = held(Action::Fire) || analog(ScriptedAnalog::RightTrigger) ? kTriggerMax : 0;
-        state.thumbLX = Axis(held(Action::MoveLeft) || analog(ScriptedAnalog::LeftLeft), held(Action::MoveRight) || analog(ScriptedAnalog::LeftRight));
-        state.thumbLY = Axis(held(Action::MoveBack) || analog(ScriptedAnalog::LeftDown), held(Action::MoveForward) || analog(ScriptedAnalog::LeftUp));
-        state.thumbRX = Axis(held(Action::LookLeft) || analog(ScriptedAnalog::RightLeft), held(Action::LookRight) || analog(ScriptedAnalog::RightRight));
-        state.thumbRY = Axis(held(Action::LookDown) || analog(ScriptedAnalog::RightDown), held(Action::LookUp) || analog(ScriptedAnalog::RightUp));
+        state.leftTrigger = held(Action::Grenade) ? kTriggerMax : 0;
+        state.rightTrigger = held(Action::Fire) ? kTriggerMax : 0;
+        state.thumbLX = Axis(held(Action::MoveLeft), held(Action::MoveRight));
+        state.thumbLY = Axis(held(Action::MoveBack), held(Action::MoveForward));
+        state.thumbRX = Axis(held(Action::LookLeft), held(Action::LookRight));
+        state.thumbRY = Axis(held(Action::LookDown), held(Action::LookUp));
 
         // Mouse movement (captured) adds to the look stick.
         std::erase_if(g_mouseMotion, [&](const MouseMotion& m) { return now - m.ticksNs > kMouseWindowNs; });
@@ -391,61 +506,177 @@ namespace h3::input
         state.thumbRX = Merge(state.thumbRX, MouseAxis(dx / kWindowSeconds));
         state.thumbRY = Merge(state.thumbRY, MouseAxis(-dy * g_mouseInvertY / kWindowSeconds));
 
-        if (g_gamepad)
+        // Scripted presses, on whichever controller they name.
+        double seconds = double(SDL_GetTicks() - g_startTicks) / 1000.0;
+        uint32_t unplugged = 0;
+        for (const ScriptedPress& press : g_script)
         {
-            struct PadButton
+            double at = press.frames ? double(frame) : seconds;
+            if (at < press.start || at >= press.end)
+                continue;
+            if (press.unplug)
+                unplugged |= 1u << press.player;
+            GamepadState& target = states[press.player];
+            target.buttons |= press.button;
+            switch (press.analog)
             {
-                SDL_GamepadButton button;
-                uint16_t bit;
-            };
-            static constexpr PadButton kPadButtons[] = {
-                { SDL_GAMEPAD_BUTTON_SOUTH, kA },
-                { SDL_GAMEPAD_BUTTON_EAST, kB },
-                { SDL_GAMEPAD_BUTTON_WEST, kX },
-                { SDL_GAMEPAD_BUTTON_NORTH, kY },
-                { SDL_GAMEPAD_BUTTON_BACK, kBack },
-                { SDL_GAMEPAD_BUTTON_START, kStart },
-                { SDL_GAMEPAD_BUTTON_LEFT_STICK, kLeftThumb },
-                { SDL_GAMEPAD_BUTTON_RIGHT_STICK, kRightThumb },
-                { SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, kLeftShoulder },
-                { SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, kRightShoulder },
-                { SDL_GAMEPAD_BUTTON_DPAD_UP, kDpadUp },
-                { SDL_GAMEPAD_BUTTON_DPAD_DOWN, kDpadDown },
-                { SDL_GAMEPAD_BUTTON_DPAD_LEFT, kDpadLeft },
-                { SDL_GAMEPAD_BUTTON_DPAD_RIGHT, kDpadRight },
-            };
-            for (const PadButton& mapping : kPadButtons)
-                if (SDL_GetGamepadButton(g_gamepad, mapping.button))
-                    state.buttons |= mapping.bit;
-            // SDL triggers are 0..32767; sticks are Y-down, XInput's Y-up.
-            static constexpr int32_t kSdlAxisMax = 32767;
-            auto trigger = [](int16_t value) { return uint8_t(std::clamp(int32_t(value), 0, kSdlAxisMax) * kTriggerMax / kSdlAxisMax); };
-            auto invert = [](int16_t value) { return int16_t(std::clamp(-int32_t(value), -32768, 32767)); };
-            state.leftTrigger = std::max(state.leftTrigger, trigger(SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)));
-            state.rightTrigger = std::max(state.rightTrigger, trigger(SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)));
-            state.thumbLX = Merge(state.thumbLX, SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFTX));
-            state.thumbLY = Merge(state.thumbLY, invert(SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFTY)));
-            state.thumbRX = Merge(state.thumbRX, SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHTX));
-            state.thumbRY = Merge(state.thumbRY, invert(SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHTY)));
+            case ScriptedAnalog::LeftTrigger: target.leftTrigger = kTriggerMax; break;
+            case ScriptedAnalog::RightTrigger: target.rightTrigger = kTriggerMax; break;
+            case ScriptedAnalog::LeftLeft: target.thumbLX = -kStickMax; break;
+            case ScriptedAnalog::LeftRight: target.thumbLX = kStickMax; break;
+            case ScriptedAnalog::LeftDown: target.thumbLY = -kStickMax; break;
+            case ScriptedAnalog::LeftUp: target.thumbLY = kStickMax; break;
+            case ScriptedAnalog::RightLeft: target.thumbRX = -kStickMax; break;
+            case ScriptedAnalog::RightRight: target.thumbRX = kStickMax; break;
+            case ScriptedAnalog::RightDown: target.thumbRY = -kStickMax; break;
+            case ScriptedAnalog::RightUp: target.thumbRY = kStickMax; break;
+            case ScriptedAnalog::MouseUp:
+            case ScriptedAnalog::MouseDown:
+            case ScriptedAnalog::MouseLeft:
+            case ScriptedAnalog::MouseRight:
+                if (g_nativeMouse)
+                {
+                    std::lock_guard lock(g_lookMutex);
+                    g_lookDx += press.analog == ScriptedAnalog::MouseLeft ? -kScriptedMouseCounts
+                        : press.analog == ScriptedAnalog::MouseRight      ? kScriptedMouseCounts
+                                                                          : 0;
+                    g_lookDy += press.analog == ScriptedAnalog::MouseUp ? -kScriptedMouseCounts
+                        : press.analog == ScriptedAnalog::MouseDown     ? kScriptedMouseCounts
+                                                                        : 0;
+                }
+                break;
+            case ScriptedAnalog::None: break;
+            }
         }
 
-        std::lock_guard lock(g_mutex);
-        bool changed = state.buttons != g_state.buttons || state.leftTrigger != g_state.leftTrigger ||
-            state.rightTrigger != g_state.rightTrigger || state.thumbLX != g_state.thumbLX || state.thumbLY != g_state.thumbLY ||
-            state.thumbRX != g_state.thumbRX || state.thumbRY != g_state.thumbRY;
-        if (changed)
+        uint32_t present = 1 | g_virtualPads;
+        for (uint32_t player = 0; player < kMaxPlayers; player++)
+            if (g_pads[player])
+            {
+                AddGamepad(states[player], g_pads[player]);
+                present |= 1u << player;
+            }
+        present &= ~unplugged | 1u;
+        for (uint32_t player = 1; player < kMaxPlayers; player++)
         {
-            state.packetNumber = g_state.packetNumber + 1;
-            g_state = state;
+            uint32_t bit = 1u << player;
+            if (!(present & bit))
+            {
+                states[player] = {};
+                continue;
+            }
+            // What the controller holds, before any of it is kept from the game.
+            const GamepadState held = states[player];
+            constexpr uint16_t kLeaveButtons = kBack | kStart;
+            if ((g_joined & bit) && (held.buttons & kLeaveButtons) == kLeaveButtons)
+            {
+                states[player].buttons &= uint16_t(~kLeaveButtons);
+                if (!g_leaveHeldSinceNs[player])
+                    g_leaveHeldSinceNs[player] = now;
+                else if (now - g_leaveHeldSinceNs[player] >= kLeaveHoldNs)
+                {
+                    g_joined &= ~bit;
+                    g_swallow |= bit;
+                    g_leaveHeldSinceNs[player] = 0;
+                    fprintf(stderr, "[input] controller %u left\n", player + 1);
+                }
+            }
+            else
+                g_leaveHeldSinceNs[player] = 0;
+            if (!(g_joined & bit) && !(g_swallow & bit) && (held.buttons & kStart))
+            {
+                g_joined |= bit;
+                g_swallow |= bit;
+                fprintf(stderr, "[input] controller %u joined\n", player + 1);
+            }
+            if (g_swallow & bit)
+            {
+                bool idle = held.buttons == 0 && !held.leftTrigger && !held.rightTrigger;
+                if (idle)
+                    g_swallow &= ~bit;
+                else
+                    states[player] = {};
+            }
+        }
+        // A player whose controller is unplugged stays signed in, as on the
+        // 360: the game pauses with its own "reconnect your controller"
+        // message and goes on when it's back.
+        g_connected.store(g_joined & present);
+        g_signedIn.store(g_joined);
+
+        std::lock_guard lock(g_mutex);
+        for (uint32_t player = 0; player < kMaxPlayers; player++)
+        {
+            GamepadState& next = states[player];
+            GamepadState& last = g_states[player];
+            bool changed = next.buttons != last.buttons || next.leftTrigger != last.leftTrigger ||
+                next.rightTrigger != last.rightTrigger || next.thumbLX != last.thumbLX || next.thumbLY != last.thumbLY ||
+                next.thumbRX != last.thumbRX || next.thumbRY != last.thumbRY;
+            if (!changed)
+                continue;
+            next.packetNumber = last.packetNumber + 1;
+            last = next;
             if (g_log)
-                fprintf(stderr, "[input] frame %u buttons %04X triggers %u %u left %d %d right %d %d\n", frame, state.buttons,
-                    state.leftTrigger, state.rightTrigger, state.thumbLX, state.thumbLY, state.thumbRX, state.thumbRY);
+                fprintf(stderr, "[input] frame %u controller %u buttons %04X triggers %u %u left %d %d right %d %d\n", frame,
+                    player + 1, next.buttons, next.leftTrigger, next.rightTrigger, next.thumbLX, next.thumbLY, next.thumbRX,
+                    next.thumbRY);
         }
     }
 
-    GamepadState GetState()
+    GamepadState GetState(uint32_t player)
     {
+        if (player >= kMaxPlayers)
+            return {};
         std::lock_guard lock(g_mutex);
-        return g_state;
+        return g_states[player];
+    }
+
+    uint32_t ConnectedMask()
+    {
+        return g_connected.load();
+    }
+
+    uint32_t JoinedMask()
+    {
+        return g_signedIn.load();
+    }
+
+    bool KeyboardLastUsed()
+    {
+        return g_keyboardLast.load();
+    }
+
+    std::string KeyNameFor(uint16_t button)
+    {
+        Action action;
+        if (button == kLeftTriggerKey)
+            action = Action::Grenade;
+        else if (button == kRightTriggerKey)
+            action = Action::Fire;
+        else
+        {
+            size_t found = config::kActionCount;
+            for (size_t a = 0; a < config::kActionCount && found == config::kActionCount; a++)
+                if (ButtonFor(Action(a)) == button)
+                    found = a;
+            if (found == config::kActionCount)
+                return {};
+            action = Action(found);
+        }
+        const std::vector<std::string>& names = config::Active().controls.bindings[size_t(action)];
+        return names.empty() ? std::string() : names.front();
+    }
+
+    bool NativeMouseLook()
+    {
+        return g_nativeMouse;
+    }
+
+    void TakeMouseLook(float& yaw, float& pitch)
+    {
+        std::lock_guard lock(g_lookMutex);
+        yaw = -g_lookDx * kRadiansPerCount * g_mouseSensitivity;  // the game's yaw grows to the left
+        pitch = -g_lookDy * kRadiansPerCount * g_mouseSensitivity * g_mouseInvertY;
+        g_lookDx = g_lookDy = 0;
     }
 }

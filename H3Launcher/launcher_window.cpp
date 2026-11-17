@@ -273,6 +273,26 @@ namespace h3::launcher
 
     void LauncherWindow::Save()
     {
+        if (networkText_)
+        {
+            int port = atoi(portText_.c_str());
+            if (port > 0 && port < 65536)
+                settings_.network.port = uint16_t(port);
+            settings_.network.peers.clear();
+            std::string list = peersText_;
+            for (size_t start = 0; start <= list.size();)
+            {
+                size_t comma = list.find(',', start);
+                std::string item = list.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+                item.erase(0, item.find_first_not_of(' '));
+                item.erase(item.find_last_not_of(' ') + 1);
+                if (!item.empty())
+                    settings_.network.peers.push_back(item);
+                if (comma == std::string::npos)
+                    break;
+                start = comma + 1;
+            }
+        }
         if (xexPath_.isEmpty())
             return;  // nowhere to put it yet; kept in memory until the XEX is found
         if (!config::Save(SettingsPath().toStdString(), settings_))
@@ -319,6 +339,8 @@ namespace h3::launcher
             open(&LauncherWindow::ControlsPage) });
         page.items.push_back({ MenuItem::Kind::Action, QStringLiteral("PROFILE"),
             QStringLiteral("Gamertag, gamer picture and profile options."), open(&LauncherWindow::ProfilePage) });
+        page.items.push_back({ MenuItem::Kind::Action, QStringLiteral("NETWORK"),
+            QStringLiteral("System link: LAN games, and games with friends over the internet."), open(&LauncherWindow::NetworkPage) });
         page.items.push_back({ MenuItem::Kind::Action, QStringLiteral("DEBUG"),
             QStringLiteral("Logging and tracing options, and unlocking every campaign mission."), open(&LauncherWindow::DebugPage) });
         page.items.push_back({ MenuItem::Kind::Action, QStringLiteral("GAME LOCATION"),
@@ -433,6 +455,20 @@ namespace h3::launcher
         invert.step = [&controls](int) { controls.invertMouse = !controls.invertMouse; };
         page.items.push_back(invert);
 
+        MenuItem nativeMouse{ MenuItem::Kind::Choice, QStringLiteral("Mouse look"),
+            QStringLiteral("Native: the mouse turns the view directly, like MCC's PC version. Stick: the mouse drives the "
+                           "right stick, with the controller's acceleration.") };
+        nativeMouse.value = [&controls] { return controls.nativeMouseLook ? QStringLiteral("Native") : QStringLiteral("Stick"); };
+        nativeMouse.step = [&controls](int) { controls.nativeMouseLook = !controls.nativeMouseLook; };
+        page.items.push_back(nativeMouse);
+
+        MenuItem ownPlayer{ MenuItem::Kind::Choice, QStringLiteral("Keyboard is its own player"),
+            QStringLiteral("Split screen: on, the keyboard and mouse are player 1 and the first controller is player 2. "
+                           "Off, the first controller is player 1 too. Other controllers join with START; holding BACK and START leaves.") };
+        ownPlayer.value = [&controls] { return OnOff(controls.keyboardOwnPlayer); };
+        ownPlayer.step = [&controls](int) { controls.keyboardOwnPlayer = !controls.keyboardOwnPlayer; };
+        page.items.push_back(ownPlayer);
+
         for (size_t action = 0; action < config::kActionCount; action++)
         {
             const config::ActionInfo& info = config::Describe(config::Action(action));
@@ -492,6 +528,16 @@ namespace h3::launcher
         toggle(QStringLiteral("Vibration"), QStringLiteral("Controller rumble.") + note, profile.vibration);
         toggle(QStringLiteral("Auto-aim"), QStringLiteral("Aim assist.") + note, profile.autoAim);
         toggle(QStringLiteral("Auto-center"), QStringLiteral("Level the view while moving.") + note, profile.autoCenter);
+
+        // Split screen: the profiles players 2-4 sign in with.
+        for (size_t i = 0; i < profile.otherGamertags.size(); i++)
+        {
+            MenuItem other{ MenuItem::Kind::Text, QStringLiteral("Player %1 gamertag").arg(i + 2),
+                QStringLiteral("Split screen: player %1's name. They join by pressing START on their controller.").arg(i + 2) };
+            other.text = &profile.otherGamertags[i];
+            other.maxLength = config::kMaxGamertag;
+            page.items.push_back(other);
+        }
         return page;
     }
 
@@ -538,6 +584,38 @@ namespace h3::launcher
             { "H3_SNAPSHOT_EVERY", "Snapshot every", "Save every n-th presented frame as frame_<n>.png in the working directory.",
                 { "", "30", "150", "600", nullptr } },
         };
+    }
+
+    LauncherWindow::Page LauncherWindow::NetworkPage()
+    {
+        Page page{ QStringLiteral("NETWORK") };
+        config::NetworkSettings& network = settings_.network;
+        portText_ = std::to_string(network.port);
+        peersText_.clear();
+        for (size_t i = 0; i < network.peers.size(); i++)
+            peersText_ += (i ? ", " : "") + network.peers[i];
+        networkText_ = true;
+
+        MenuItem link{ MenuItem::Kind::Choice, QStringLiteral("System link"),
+            QStringLiteral("On: Custom Games and Forge can host or find System Link games on your network and with the friends "
+                           "below. Off: no network, as before.") };
+        link.value = [&network] { return OnOff(network.systemLink); };
+        link.step = [&network](int) { network.systemLink = !network.systemLink; };
+        page.items.push_back(link);
+
+        MenuItem port{ MenuItem::Kind::Text, QStringLiteral("Port"),
+            QStringLiteral("The UDP port this game uses (default 41001). Over the internet, the host forwards it on their router.") };
+        port.text = &portText_;
+        port.maxLength = 5;
+        page.items.push_back(port);
+
+        MenuItem peers{ MenuItem::Kind::Text, QStringLiteral("Friends"),
+            QStringLiteral("Friends to play with over the internet: their addresses, comma-separated, as host or host:port. "
+                           "Everyone in a game needs the same build.") };
+        peers.text = &peersText_;
+        peers.maxLength = 400;
+        page.items.push_back(peers);
+        return page;
     }
 
     LauncherWindow::Page LauncherWindow::DebugPage()

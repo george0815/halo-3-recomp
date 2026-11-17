@@ -118,6 +118,7 @@ namespace h3::launcher
         Page ControlsPage();
         Page ProfilePage();
         Page DebugPage();
+        Page NetworkPage();
         void Push(Page page);
         void Back();
         Page& Current() { return pages_.back(); }
@@ -161,6 +162,10 @@ namespace h3::launcher
 
         QString xexPath_;
         config::Settings settings_;
+        // The Network page's text fields, parsed back into settings_ on Save
+        // (port: a number; friends: comma-separated addresses).
+        bool networkText_ = false;
+        std::string portText_, peersText_;
         FontPackage fonts_;
         bool haveFonts_ = false;
         std::vector<Page> pages_;

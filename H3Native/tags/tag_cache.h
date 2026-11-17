@@ -80,6 +80,8 @@ namespace h3::native::tags
     // the tag load published them), or nullptr.
     const host::scenario_tag* GlobalScenario();
     const host::globals_tag* GlobalGameGlobals();
+    // The game globals tag's own guest address (to change it in place), or 0.
+    uint32_t GlobalGameGlobalsAddress();
 
     // Called once per presented frame: H3_CHECK_TAGS reports (tags.cpp).
     void RuntimeChangeReport();

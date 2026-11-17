@@ -63,21 +63,29 @@ namespace h3::config
 
         // "Space, Left Ctrl" -> {"Space", "Left Ctrl"}. Empty items dropped,
         // at most kMaxBindings kept.
-        std::vector<std::string> ParseBindings(std::string_view value)
+        // A comma-separated list, items trimmed, at most `limit` of them.
+        std::vector<std::string> ParseList(std::string_view value, size_t limit)
         {
-            std::vector<std::string> bindings;
-            while (!value.empty() && bindings.size() < kMaxBindings)
+            std::vector<std::string> items;
+            while (!value.empty() && items.size() < limit)
             {
                 size_t comma = value.find(',');
                 std::string item = Trim(value.substr(0, comma));
                 if (!item.empty())
-                    bindings.push_back(std::move(item));
+                    items.push_back(std::move(item));
                 if (comma == std::string_view::npos)
                     break;
                 value.remove_prefix(comma + 1);
             }
-            return bindings;
+            return items;
         }
+
+        std::vector<std::string> ParseBindings(std::string_view value)
+        {
+            return ParseList(value, kMaxBindings);
+        }
+
+        constexpr size_t kMaxPeers = 15;  // a 16-player game
 
         // Applies one "key = value" line from section to settings. Unknown
         // keys are ignored.
@@ -110,6 +118,8 @@ namespace h3::config
                 ProfileSettings& profile = settings.profile;
                 if (key == "gamertag")
                     profile.gamertag = value.substr(0, kMaxGamertag);
+                else if (key.size() == 10 && key.rfind("gamertag_", 0) == 0 && key[9] >= '2' && key[9] <= '4')
+                    profile.otherGamertags[size_t(key[9] - '2')] = value.substr(0, kMaxGamertag);
                 else if (key == "picture")
                     profile.picture = value;
                 else if (key == "invert_look")
@@ -120,6 +130,20 @@ namespace h3::config
                     profile.autoAim = ParseBool(value);
                 else if (key == "auto_center")
                     profile.autoCenter = ParseBool(value);
+            }
+            else if (section == "network")
+            {
+                NetworkSettings& network = settings.network;
+                if (key == "system_link")
+                    network.systemLink = ParseBool(value);
+                else if (key == "port")
+                {
+                    int port = atoi(value.c_str());
+                    if (port > 0 && port < 65536)
+                        network.port = uint16_t(port);
+                }
+                else if (key == "peers")
+                    network.peers = ParseList(value, kMaxPeers);
             }
             else if (section == "debug")
             {
@@ -141,6 +165,10 @@ namespace h3::config
                     controls.mouseSensitivity = std::clamp(float(atof(value.c_str())), 0.05f, 20.0f);
                 else if (key == "invert_mouse")
                     controls.invertMouse = ParseBool(value);
+                else if (key == "keyboard_own_player")
+                    controls.keyboardOwnPlayer = ParseBool(value);
+                else if (key == "native_mouse_look")
+                    controls.nativeMouseLook = ParseBool(value);
                 else
                     for (size_t i = 0; i < kActionCount; i++)
                         if (key == kActions[i].key)
@@ -236,6 +264,9 @@ namespace h3::config
         const ProfileSettings& profile = settings.profile;
         out << "[profile]\n"
             << "gamertag = " << profile.gamertag << "\n"
+            << "gamertag_2 = " << profile.otherGamertags[0] << "\n"
+            << "gamertag_3 = " << profile.otherGamertags[1] << "\n"
+            << "gamertag_4 = " << profile.otherGamertags[2] << "\n"
             << "picture = " << profile.picture << "\n"
             << "invert_look = " << BoolText(profile.invertLook) << "\n"
             << "vibration = " << BoolText(profile.vibration) << "\n"
@@ -246,7 +277,9 @@ namespace h3::config
         out << "[controls]\n"
             << "# Keys use SDL scancode names; mouse: Mouse Left/Right/Middle/X1/X2, Mouse Wheel.\n"
             << "mouse_sensitivity = " << controls.mouseSensitivity << "\n"
-            << "invert_mouse = " << BoolText(controls.invertMouse) << "\n";
+            << "invert_mouse = " << BoolText(controls.invertMouse) << "\n"
+            << "keyboard_own_player = " << BoolText(controls.keyboardOwnPlayer) << "\n"
+            << "native_mouse_look = " << BoolText(controls.nativeMouseLook) << "\n";
         for (size_t i = 0; i < kActionCount; i++)
         {
             out << kActions[i].key << " =";
@@ -255,6 +288,16 @@ namespace h3::config
                 out << (b ? ", " : " ") << bindings[b];
             out << "\n";
         }
+
+        const NetworkSettings& network = settings.network;
+        out << "\n[network]\n"
+            << "# System link: LAN games, and over the internet with friends' addresses (host or host:port).\n"
+            << "system_link = " << BoolText(network.systemLink) << "\n"
+            << "port = " << network.port << "\n"
+            << "peers =";
+        for (size_t i = 0; i < network.peers.size(); i++)
+            out << (i ? ", " : " ") << network.peers[i];
+        out << "\n";
 
         const DebugSettings& debug = settings.debug;
         out << "\n[debug]\n"

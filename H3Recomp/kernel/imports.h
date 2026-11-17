@@ -48,8 +48,20 @@ namespace h3::kernel
     constexpr uint32_t HresultFromWin32(uint32_t error) { return error == 0 ? 0 : 0x80070000 | (error & 0xFFFF); }
 
     // The local profile signed in on user 0 (xam_user.cpp); offline XUIDs
-    // start with 0xE.
+    // start with 0xE. Users 1-3 (split screen) follow it.
     constexpr uint64_t kLocalUserXuid = 0xE000000048330001ull;
+    constexpr uint64_t UserXuid(uint32_t userIndex) { return kLocalUserXuid + userIndex; }
+
+    // Split screen (xam_user.cpp): a user is signed in once their
+    // controller has joined (input::JoinedMask; user 0 always). One bit
+    // per signed-in user.
+    uint32_t SignedInUsers();
+    // Window thread, after input::Update: signs users in and out as
+    // players join and leave, telling the game (XN_SYS_SIGNINCHANGED).
+    void UpdateSignins(uint32_t joinedMask);
+    // Queues a notification on every listener whose areas include it
+    // (xam_notify.cpp).
+    void BroadcastNotification(uint32_t id, uint32_t param);
 
     // NTSTATUS values returned to the guest.
     constexpr uint32_t kStatusSuccess = 0x00000000;

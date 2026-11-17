@@ -45,6 +45,13 @@ if (WIN32)
     # standard C functions (getenv, fopen...). After XenonRecomp, whose
     # third-party code expects the full set.
     add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+    set(H3_WINDOWS_DEPS "${PROJECT_SOURCE_DIR}/build/windows-deps" CACHE PATH "Windows dependencies (tools/build_windows_deps.sh)")
+    # The Visual C++ runtime DLLs, shipped next to each executable so players
+    # needn't install the redistributable (tools/build_windows_deps.sh vcredist).
+    file(GLOB H3_VCREDIST_DLLS "${H3_WINDOWS_DEPS}/vcredist/*.dll")
+    if (NOT H3_VCREDIST_DLLS)
+        message(WARNING "No Visual C++ runtime DLLs in ${H3_WINDOWS_DEPS}/vcredist: run tools/build_windows_deps.sh vcredist")
+    endif()
 endif()
 
 # Xenos shader microcode -> GLSL translator, used by the runtime and by

@@ -28,6 +28,7 @@ add_executable(H3Recomp
     gpu/renderer/textures.cpp
     gpu/texture.cpp
     input/input.cpp
+    net/link.cpp
     debug/first_calls.cpp
     debug/profiler.cpp
     debug/state_hash.cpp
@@ -42,6 +43,8 @@ add_executable(H3Recomp
     hooks/object_lighting_log.cpp
     hooks/fibers.cpp
     hooks/havok_world.cpp
+    hooks/mouse_look.cpp
+    hooks/pc_text.cpp
     hooks/first_person_weapons.cpp
     hooks/player_effects.cpp
     hooks/random_seed.cpp
@@ -103,7 +106,6 @@ find_package(SDL3 REQUIRED CONFIG)
 # shaderc (runtime GLSL -> SPIR-V): pkg-config on Linux; on Windows the
 # static shaderc_combined from tools/build_windows_deps.sh (H3_WINDOWS_DEPS).
 if (WIN32)
-    set(H3_WINDOWS_DEPS "${PROJECT_SOURCE_DIR}/build/windows-deps" CACHE PATH "Windows dependencies (tools/build_windows_deps.sh)")
     find_library(H3_SHADERC_LIBRARY shaderc_combined PATHS "${H3_WINDOWS_DEPS}/lib" NO_DEFAULT_PATH REQUIRED)
     add_library(H3Shaderc INTERFACE)
     target_include_directories(H3Shaderc INTERFACE "${H3_WINDOWS_DEPS}/include")
@@ -139,14 +141,23 @@ endif()
 target_include_directories(H3Recomp BEFORE PRIVATE "${H3_FFMPEG_DIR}/include")
 target_link_libraries(H3Recomp PRIVATE "${H3_FFMPEG_DIR}/lib/libavcodec.a" "${H3_FFMPEG_DIR}/lib/libavutil.a")
 if (WIN32)
-    target_link_libraries(H3Recomp PRIVATE bcrypt)  # FFmpeg's random seeds
+    target_link_libraries(H3Recomp PRIVATE bcrypt ws2_32)  # FFmpeg's random seeds; system link's socket
 else()
     target_link_libraries(H3Recomp PRIVATE m)
 endif()
 
-# Windows: the DLLs it loads (SDL3) go next to the executable.
+# Windows: the DLLs it loads (SDL3, the C++ runtime) go next to the executable.
 if (WIN32)
     add_custom_command(TARGET H3Recomp POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:H3Recomp> $<TARGET_FILE_DIR:H3Recomp>
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:H3Recomp> ${H3_VCREDIST_DLLS} $<TARGET_FILE_DIR:H3Recomp>
         COMMAND_EXPAND_LISTS)
 endif()
+
+# The commit this is built from: system link only plays with the same build
+# (net/link.cpp). A build with local changes is marked "-dirty".
+execute_process(COMMAND git describe --always --dirty --abbrev=12 WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    OUTPUT_VARIABLE H3_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if (NOT H3_GIT_COMMIT)
+    set(H3_GIT_COMMIT unknown)
+endif()
+set_source_files_properties(net/link.cpp PROPERTIES COMPILE_DEFINITIONS "H3_GIT_COMMIT=\"${H3_GIT_COMMIT}\"")

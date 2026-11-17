@@ -10,6 +10,8 @@
 #include "gpu/frame_capture.h"
 #include "gpu/renderer.h"
 #include "input/input.h"
+#include "hooks/pc_text.h"
+#include "kernel/imports.h"
 
 #include <SDL3/SDL.h>
 
@@ -261,6 +263,7 @@ namespace h3::video
                 input::HandleEvent(event);
             }
             input::Update(g_framesPresented.load());
+            kernel::UpdateSignins(input::JoinedMask());  // split screen: players who pressed START are signed in
 
             // Twice a second: frames presented and the rate since last time.
             auto now = Clock::now();
@@ -331,5 +334,6 @@ namespace h3::video
         hooks::LogTickRate();
         native::tags::CheckTagIndex();
         native::tags::RuntimeChangeReport();
+        hooks::UpdatePcText();  // English text reworded for PC once a map loads it
     }
 }

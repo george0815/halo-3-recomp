@@ -1,12 +1,14 @@
-// xam.xex user and profile exports (one local profile, signed in on user 0)
-// and messages to the system apps (XMsg*). Reference: Xenia's
-// src/xenia/kernel/xam/xam_user.cc and apps/.
+// xam.xex user and profile exports and messages to the system apps (XMsg*).
+// Reference: Xenia's src/xenia/kernel/xam/xam_user.cc and apps/.
 //
-// The profile's gamertag and standard options come from settings.ini
+// One local profile per controller: user 0 is always signed in, users 1-3
+// (split screen) once their controller joins with START (UpdateSignins). The
+// gamertags and user 0's standard options come from settings.ini
 // ([profile], edited with the launcher). Profile settings the game writes
 // (Halo 3 keeps its whole player profile, controls and emblem included, in
-// the title-specific settings) are saved to hdd/profile_settings.bin and
-// read back on later runs.
+// the title-specific settings) are saved per user to
+// hdd/profile_settings.bin (user 0) and profile_settings_2.bin to _4.bin,
+// and read back on later runs.
 
 #include <ppc_recomp_shared.h>
 
@@ -18,6 +20,8 @@
 #include "../memory.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -42,9 +46,30 @@ namespace
     constexpr uint32_t kHresultNoSuchUser = 0x80070525;
 
     constexpr uint32_t kUserIndexAny = 0xFF;
+    constexpr uint32_t kMaxUsers = 4;
+    constexpr uint32_t kXnSysSigninChanged = 0x0000000A;
+
+    // A user index the game passed: "any user" means user 0.
+    uint32_t UserOf(uint32_t userIndex) { return userIndex == kUserIndexAny ? 0 : userIndex; }
 
     // The gamertag from settings.ini.
-    const char* Gamertag() { return config::Active().profile.gamertag.c_str(); }
+    const char* Gamertag(uint32_t user)
+    {
+        const config::ProfileSettings& profile = config::Active().profile;
+        return user == 0 ? profile.gamertag.c_str() : profile.otherGamertags[user - 1].c_str();
+    }
+
+    // Bit n: user n is signed in.
+    std::atomic<uint32_t> g_signedIn{ 1 };
+
+    // The local user an XUID belongs to, or kMaxUsers.
+    uint32_t UserWithXuid(uint64_t xuid)
+    {
+        for (uint32_t user = 0; user < kMaxUsers; user++)
+            if (xuid == UserXuid(user))
+                return user;
+        return kMaxUsers;
+    }
 
     enum : uint32_t
     {
@@ -52,16 +77,21 @@ namespace
         kSigninStateSignedInLocally = 1,
     };
 
-    bool IsSignedIn(uint32_t userIndex) { return userIndex == 0 || userIndex == kUserIndexAny; }
+    bool IsSignedIn(uint32_t userIndex)
+    {
+        uint32_t user = UserOf(userIndex);
+        return user < kMaxUsers && (g_signedIn.load() & (1u << user));
+    }
 
     // Standard profile settings and their defaults (XSOURCE_DEFAULT), as a
     // new profile has them. Title-specific settings (the title's own
     // blobs) start without a value.
     // The options the launcher sets (invert look, vibration, auto-aim and
-    // auto-center) come from settings.ini.
-    bool DefaultSetting(uint32_t id, uint32_t& value)
+    // auto-center) come from settings.ini, for user 0; the other users get
+    // a new profile's.
+    bool DefaultSetting(uint32_t user, uint32_t id, uint32_t& value)
     {
-        const config::ProfileSettings& profile = config::Active().profile;
+        const config::ProfileSettings& profile = user == 0 ? config::Active().profile : config::ProfileSettings{};
         switch (id)
         {
         case 0x10040002: value = profile.invertLook; return true;        // XPROFILE_GAMER_YAXIS_INVERSION
@@ -131,27 +161,38 @@ namespace
     constexpr const char* kStoreFile = "profile_settings.bin";
 
     std::mutex g_storeMutex;
-    std::map<uint32_t, StoredSetting> g_store;  // by setting id
-    bool g_storeLoaded = false;
-
-    std::filesystem::path StorePath() { return UserDataRoot() / kStoreFile; }
-
-    // Loads the saved settings the first time they're needed. Caller holds
-    // g_storeMutex.
-    void LoadStore()
+    struct Store
     {
-        if (g_storeLoaded)
-            return;
-        g_storeLoaded = true;
-        std::ifstream file(StorePath(), std::ios::binary);
+        std::map<uint32_t, StoredSetting> settings;  // by setting id
+        bool loaded = false;
+    };
+    std::array<Store, kMaxUsers> g_stores;  // per user
+
+    std::filesystem::path StorePath(uint32_t user)
+    {
+        if (user == 0)
+            return UserDataRoot() / kStoreFile;
+        return UserDataRoot() / ("profile_settings_" + std::to_string(user + 1) + ".bin");
+    }
+
+    // Loads a user's saved settings the first time they're needed and
+    // returns them. Caller holds g_storeMutex.
+    std::map<uint32_t, StoredSetting>& LoadStore(uint32_t user)
+    {
+        Store& store = g_stores[user];
+        std::map<uint32_t, StoredSetting>& settings = store.settings;
+        if (store.loaded)
+            return settings;
+        store.loaded = true;
+        std::ifstream file(StorePath(user), std::ios::binary);
         if (!file)
-            return;
+            return settings;
         auto read32 = [&](uint32_t& value) { return bool(file.read(reinterpret_cast<char*>(&value), 4)); };
         uint32_t magic = 0, version = 0, count = 0;
         if (!read32(magic) || !read32(version) || !read32(count) || magic != kStoreMagic || version != kStoreVersion)
         {
-            fprintf(stderr, "[xam] ignoring unreadable %s\n", StorePath().string().c_str());
-            return;
+            fprintf(stderr, "[xam] ignoring unreadable %s\n", StorePath(user).string().c_str());
+            return settings;
         }
         for (uint32_t i = 0; i < count; i++)
         {
@@ -161,23 +202,25 @@ namespace
             StoredSetting setting{ uint8_t(type), std::vector<uint8_t>(size) };
             if (!file.read(reinterpret_cast<char*>(setting.bytes.data()), size))
                 break;
-            g_store[id] = std::move(setting);
+            settings[id] = std::move(setting);
         }
+        return settings;
     }
 
-    // Writes g_store to disk (through a temporary file, so a crash never
-    // leaves half a file). Caller holds g_storeMutex.
-    void SaveStore()
+    // Writes a user's settings to disk (through a temporary file, so a
+    // crash never leaves half a file). Caller holds g_storeMutex.
+    void SaveStore(uint32_t user)
     {
-        std::filesystem::path path = StorePath(), temporary = path;
+        const std::map<uint32_t, StoredSetting>& settings = g_stores[user].settings;
+        std::filesystem::path path = StorePath(user), temporary = path;
         temporary += ".tmp";
         {
             std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
             auto write32 = [&](uint32_t value) { file.write(reinterpret_cast<const char*>(&value), 4); };
             write32(kStoreMagic);
             write32(kStoreVersion);
-            write32(uint32_t(g_store.size()));
-            for (const auto& [id, setting] : g_store)
+            write32(uint32_t(settings.size()));
+            for (const auto& [id, setting] : settings)
             {
                 write32(id);
                 write32(setting.type);
@@ -248,7 +291,7 @@ PPC_FUNC(__imp__XamUserGetXUID)
         return;
     }
     if (ctx.r5.u32 != 0)
-        GuestRef<uint64_t>(ctx.r5.u32) = kLocalUserXuid;
+        GuestRef<uint64_t>(ctx.r5.u32) = UserXuid(UserOf(ctx.r3.u32));
     ctx.r3.u64 = kErrorSuccess;
 }
 
@@ -271,9 +314,9 @@ PPC_FUNC(__imp__XamUserGetSigninInfo)
         ctx.r3.u64 = kHresultNoSuchUser;
         return;
     }
-    GuestRef<uint64_t>(info) = kLocalUserXuid;
+    GuestRef<uint64_t>(info) = UserXuid(UserOf(ctx.r3.u32));
     GuestRef<uint32_t>(info + 0xC) = kSigninStateSignedInLocally;
-    strncpy(GuestPtr<char>(info + 0x18), Gamertag(), config::kMaxGamertag);
+    strncpy(GuestPtr<char>(info + 0x18), Gamertag(UserOf(ctx.r3.u32)), config::kMaxGamertag);
     ctx.r3.u64 = kErrorSuccess;
 }
 
@@ -289,7 +332,7 @@ PPC_FUNC(__imp__XamUserGetName)
     if (buffer != 0 && size != 0)
     {
         char* out = GuestPtr<char>(buffer);
-        strncpy(out, Gamertag(), size);
+        strncpy(out, Gamertag(UserOf(ctx.r3.u32)), size);
         out[size - 1] = '\0';
     }
     ctx.r3.u64 = kErrorSuccess;
@@ -316,10 +359,10 @@ PPC_FUNC(__imp__XamUserAreUsersFriends)
 //     DWORD settingCount, PDWORD settingIds, PDWORD bufferSize, PXUSER_READ_PROFILE_SETTING_RESULT buffer,
 //     PXOVERLAPPED overlapped)
 //
-// For the local profile, settings the game saved come back as it wrote
-// them (source 2); standard settings come back with their defaults (source
-// 1); anything else has no value (source 0), so the game uses its own
-// defaults. Other XUIDs (remote players) get defaults only. The result is
+// For a local profile, settings the game saved come back as it wrote them
+// (source 2); standard settings come back with their defaults (source 1);
+// anything else has no value (source 0), so the game uses its own defaults.
+// Other XUIDs (remote players) get defaults only. The result is
 // the X_USER_READ_PROFILE_SETTINGS header, the 0x28-byte settings, then the
 // binary/unicode data they point to.
 PPC_FUNC(__imp__XamUserReadProfileSettings)
@@ -339,17 +382,18 @@ PPC_FUNC(__imp__XamUserReadProfileSettings)
     }
 
     std::lock_guard lock(g_storeMutex);
-    LoadStore();
 
-    // Which users are asking: the local profile gets its saved settings.
+    // Which users are asking: local profiles get their saved settings.
     uint32_t users = xuidCount != 0 ? xuidCount : 1;
-    auto isLocal = [&](uint32_t u) { return xuidCount == 0 || uint64_t(GuestRef<uint64_t>(xuids + u * 8)) == kLocalUserXuid; };
+    auto localUser = [&](uint32_t u) { return xuidCount == 0 ? UserOf(userIndex) : UserWithXuid(GuestRef<uint64_t>(xuids + u * 8)); };
     auto stored = [&](uint32_t u, uint32_t id) -> const StoredSetting*
     {
-        if (!isLocal(u))
+        uint32_t user = localUser(u);
+        if (user >= kMaxUsers)
             return nullptr;
-        auto found = g_store.find(id);
-        return found != g_store.end() ? &found->second : nullptr;
+        std::map<uint32_t, StoredSetting>& store = LoadStore(user);
+        auto found = store.find(id);
+        return found != store.end() ? &found->second : nullptr;
     };
 
     // The size needed: header, settings, then the external data.
@@ -401,7 +445,7 @@ PPC_FUNC(__imp__XamUserReadProfileSettings)
                 else
                     memcpy(GuestPtr<uint8_t>(setting + kSettingValue), saved->bytes.data(), std::min<size_t>(saved->bytes.size(), 8));
             }
-            else if (DefaultSetting(id, value))
+            else if (DefaultSetting(std::min(localUser(u), kMaxUsers - 1), id, value))
             {
                 GuestRef<uint32_t>(setting + kSettingSource) = kSourceDefault;
                 GuestRef<uint32_t>(setting + kSettingValue) = value;  // int32 settings
@@ -436,8 +480,9 @@ PPC_FUNC(__imp__XamUserWriteProfileSettings)
         return;
     }
     {
+        uint32_t user = UserOf(ctx.r4.u32);
         std::lock_guard lock(g_storeMutex);
-        LoadStore();
+        std::map<uint32_t, StoredSetting>& store = LoadStore(user);
         for (uint32_t i = 0; i < settingCount; i++)
         {
             uint32_t setting = settings + i * kSettingSize;
@@ -454,20 +499,37 @@ PPC_FUNC(__imp__XamUserWriteProfileSettings)
                 saved.bytes.assign(GuestPtr<uint8_t>(setting + kSettingValue), GuestPtr<uint8_t>(setting + kSettingValue) + 8);
             if (LogUser())
                 fprintf(stderr, "[xam]   save %08X type %u, %zu bytes\n", id, saved.type, saved.bytes.size());
-            g_store[id] = std::move(saved);
+            store[id] = std::move(saved);
         }
-        SaveStore();
+        SaveStore(user);
     }
     ctx.r3.u64 = CompleteOverlapped(ctx.r7.u32, kErrorSuccess);
 }
 
 // DWORD XamShowSigninUI(DWORD panes, DWORD flags)
-// User 0 is always signed in; nothing to show.
+// Controllers sign in by pressing START (input.cpp); nothing to show.
 PPC_FUNC(__imp__XamShowSigninUI)
 {
     if (LogUser())
         fprintf(stderr, "[xam] XamShowSigninUI panes %u flags %08X\n", ctx.r3.u32, ctx.r4.u32);
     ctx.r3.u64 = kErrorSuccess;
+}
+
+uint32_t h3::kernel::SignedInUsers()
+{
+    return g_signedIn.load();
+}
+
+void h3::kernel::UpdateSignins(uint32_t joinedMask)
+{
+    uint32_t signedIn = (joinedMask | 1u) & ((1u << kMaxUsers) - 1);
+    uint32_t previous = g_signedIn.exchange(signedIn);
+    if (signedIn == previous)
+        return;
+    for (uint32_t user = 1; user < kMaxUsers; user++)
+        if ((signedIn ^ previous) & (1u << user))
+            fprintf(stderr, "[xam] user %u (%s) signed %s\n", user, Gamertag(user), signedIn & (1u << user) ? "in" : "out");
+    BroadcastNotification(kXnSysSigninChanged, signedIn);
 }
 
 // --- System app messages -----------------------------------------------------

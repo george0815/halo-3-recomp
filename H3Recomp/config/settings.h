@@ -130,6 +130,8 @@ namespace h3::config
     struct ProfileSettings
     {
         std::string gamertag = "Player";
+        // The profiles signed in on controllers 2-4 (split screen).
+        std::array<std::string, 3> otherGamertags = { "Player 2", "Player 3", "Player 4" };
         // Gamer picture (an image file path). Shown by the launcher; the game
         // never asks for it (Halo 3 shows emblems, which are set in game).
         std::string picture;
@@ -146,6 +148,13 @@ namespace h3::config
         std::array<std::vector<std::string>, kActionCount> bindings;
         float mouseSensitivity = 1.0f;  // scales mouse look speed
         bool invertMouse = false;       // mouse only; invertLook flips everything
+        // Split screen: the keyboard and mouse are player 1 on their own and
+        // the first gamepad is player 2 (otherwise the first gamepad is
+        // player 1 too).
+        bool keyboardOwnPlayer = false;
+        // The mouse turns the view directly, as in MCC's PC version, instead
+        // of driving the right stick (hooks/mouse_look.cpp).
+        bool nativeMouseLook = false;
     };
 
     struct DebugSettings
@@ -161,11 +170,24 @@ namespace h3::config
         bool unlockAllLevels = false;
     };
 
+    // System link (net/link.cpp): the game's LAN traffic carried over one
+    // UDP port, to the LAN and to friends' addresses.
+    constexpr uint16_t kDefaultLinkPort = 41001;
+    struct NetworkSettings
+    {
+        bool systemLink = false;          // off: no network cable, as before
+        uint16_t port = kDefaultLinkPort;  // the UDP port this game listens on
+        // Friends to play with over the internet: "host" or "host:port"
+        // (their port, if not the default).
+        std::vector<std::string> peers;
+    };
+
     struct Settings
     {
         VideoSettings video;
         ProfileSettings profile;
         ControlSettings controls;
+        NetworkSettings network;
         DebugSettings debug;
     };
 
