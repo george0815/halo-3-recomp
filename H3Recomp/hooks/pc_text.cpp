@@ -96,7 +96,8 @@ namespace h3::hooks
             { 0xE106, { input::kLeftTriggerKey } },
             { 0xE107, { input::kRightTriggerKey } },
             { 0xE108, { input::kDpadUp, input::kDpadDown, input::kDpadLeft, input::kDpadRight } },
-            { 0xE10C, { input::kBack } },
+            { 0xE10C, { input::kStart } },  // "Settings" in lobbies
+            { 0xE10D, { input::kBack } },   // "Prior Game Stats"
         };
 
         // "[Space]" for an icon, or empty to keep the icon (nothing bound).

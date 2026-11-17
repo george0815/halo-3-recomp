@@ -164,9 +164,13 @@ With System link on (launcher, Network; `[network]` in settings.ini) Custom
 Games and Forge can host and find System Link games. Each game uses one UDP
 port (41001 by default): on a LAN that's all; over the internet, list
 friends' addresses (`host` or `host:port`) and have the host forward the
-port. Everyone needs the same build (the git commit it was built from) and
-the same frame rate setting; packets from other builds are ignored and
-logged. Joining a game found this way doesn't work yet.
+port (only the host needs a reachable port: other players reach each
+other through the games they know). Everyone needs the same build (the git
+commit it was built from) and the same frame rate setting; packets from
+other builds are ignored and logged. Finding, joining and playing work
+(tested with three games on one PC). Keep shaders precompiled (launcher,
+Video): a map loading with an empty shader cache can stall long enough to
+drop the others.
 
 `H3_INPUT_SCRIPT="40-40.4:down,f900-905:a"` holds buttons between two
 times (seconds since start, or presented frames with `f`) for testing

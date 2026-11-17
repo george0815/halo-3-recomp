@@ -158,6 +158,16 @@ Rough phases. Each one is a large amount of work; that's fine.
       refresh). Would replace the 60 Hz tick option and the ContentFixes
       workarounds; the film library (recorded at 60 Hz ticks) would need
       films recorded at 30
+- [x] Split screen, up to four players (controllers 2-4 join with START)
+- [~] System link: LAN games and internet games by friends' addresses,
+      over one UDP port (`net/link.cpp`, `kernel/xnet.cpp`); finding,
+      joining and full matches work between two games on one PC
+- [x] Native mouse look (MCC's approach: no stick curve or acceleration)
+- [x] PC wording and key names in the English text
+- [ ] PC options: skip intro videos, FOV slider, centered crosshair,
+      vehicle mouse sensitivity, toggle crouch/zoom
+- [ ] Mouse in menus: a cursor that focuses and clicks menu items, wheel
+      and right-click
 - [ ] Replace hot recompiled functions with hand-written source (started:
       the 4 MB per-tick game state copy, `hooks/block_copy.cpp`); this
       continues as phase 6

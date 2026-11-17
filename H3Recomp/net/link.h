@@ -10,8 +10,10 @@
 // plus the real LAN's broadcast address. So a LAN needs no setup, the
 // internet needs one forwarded UDP port (or both sides listing each other,
 // which opens most NATs), and two games run side by side on one PC.
-// Packets from another build or tick rate are dropped: the games would
-// fall out of sync.
+// A game passes on a packet meant for another game it knows (once), so
+// joiners who know only the host still reach each other (Halo's sessions
+// connect every game to every other). Packets from another build or tick
+// rate are dropped: the games would fall out of sync.
 
 #pragma once
 

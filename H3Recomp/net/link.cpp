@@ -55,7 +55,8 @@ namespace h3::net
         constexpr size_t kMaxDatagram = 1500;  // the game's own datagrams fit an Ethernet frame
         constexpr size_t kMaxQueued = 512;     // per port; the oldest go first
 
-        constexpr uint8_t kFlagSecure = 1;  // sent to the destination's secure address
+        constexpr uint8_t kFlagSecure = 1;   // sent to the destination's secure address
+        constexpr uint8_t kFlagRelayed = 2;  // forwarded by a game in between (not again)
 
         struct Header
         {
@@ -195,10 +196,29 @@ namespace h3::net
                             Describe(from).c_str(), header.build, header.tickRate, g_build, g_tickRate);
                     continue;
                 }
-                if (header.destIp != g_localIp && header.destIp != kBroadcast)
-                    continue;
                 std::lock_guard lock(g_mutex);
-                auto [learned, isNew] = g_learned.insert_or_assign(header.sourceIp, Endpoint{ from });
+                // A packet for another game: Halo's sessions are a mesh,
+                // and over the internet joiners often know only the host.
+                // A game that knows where the destination is forwards it
+                // there once; the destination learns the sender at the
+                // forwarder, so replies come back the same way.
+                if (header.destIp != g_localIp && header.destIp != kBroadcast)
+                {
+                    auto destination = g_learned.find(header.destIp);
+                    if (!(header.flags & kFlagRelayed) && destination != g_learned.end())
+                    {
+                        packet[5] = uint8_t(header.flags | kFlagRelayed);
+                        SendTo(destination->second, packet, size_t(size));
+                        g_learned.try_emplace(header.sourceIp, Endpoint{ from });
+                    }
+                    continue;
+                }
+                // A relayed packet doesn't replace a direct route.
+                bool isNew = false;
+                if (!(header.flags & kFlagRelayed))
+                    isNew = g_learned.insert_or_assign(header.sourceIp, Endpoint{ from }).second;
+                else
+                    isNew = g_learned.try_emplace(header.sourceIp, Endpoint{ from }).second;
                 if (isNew)
                     fprintf(stderr, "[net] game %u.%u.%u.%u is at %s\n", header.sourceIp >> 24, (header.sourceIp >> 16) & 0xFF,
                         (header.sourceIp >> 8) & 0xFF, header.sourceIp & 0xFF, Describe(from).c_str());
