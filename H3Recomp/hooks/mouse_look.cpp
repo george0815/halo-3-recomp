@@ -97,7 +97,15 @@ namespace
         if (!log)
             return;
         constexpr uint32_t kSpan = 0x800;
+        // H3_LOG_UNIT=control: player 1's player control record instead.
+        static const bool control = h3::EnvString("H3_LOG_UNIT") && strcmp(h3::EnvString("H3_LOG_UNIT"), "control") == 0;
         uint32_t object = UnitObject(ctx, 0);
+        if (control)
+        {
+            uint32_t globals = h3::GuestRef<uint32_t>(ctx.r13.u32);
+            uint32_t controls = globals ? uint32_t(h3::GuestRef<uint32_t>(globals + 120)) : 0;
+            object = controls ? controls + 16 : 0;  // player 1's record, and the next ones
+        }
         if (object < 0x40000000 || object > 0xC0000000 - kSpan)
             return;  // no unit (menus): the chain gives junk
         std::vector<uint8_t> now(h3::GuestPtr<uint8_t>(object), h3::GuestPtr<uint8_t>(object) + kSpan);
@@ -120,6 +128,11 @@ namespace
     // zooms, private/re/mouse_look.md).
     constexpr uint32_t kUnitZoomLevel = 0x290;
     std::atomic<bool> g_player1Zoomed{ false };
+    // The requested zoom level in a player's player control record
+    // (int16; globals +120, 236 bytes a player, record at +16): what zoom
+    // presses step through, and the unit follows. Found the same way.
+    constexpr uint32_t kControlZoomLevel = 0x2A;
+    std::atomic<bool> g_unzoomRequested{ false };
 
     constexpr uint32_t kSpan = 0x400;  // bytes snapshot behind each pointer
 
@@ -144,6 +157,11 @@ bool h3::hooks::Player1Zoomed()
     return g_player1Zoomed.load();
 }
 
+void h3::hooks::RequestPlayer1Unzoom()
+{
+    g_unzoomRequested.store(true);
+}
+
 PPC_FUNC_IMPL(__imp__sub_82211EA8);
 PPC_FUNC(sub_82211EA8)
 {
@@ -163,6 +181,17 @@ PPC_FUNC(sub_82211EA8)
     }
     uint32_t user = ctx.r3.u32;
     uint32_t args[3] = { ctx.r4.u32, ctx.r7.u32, ctx.r8.u32 };
+    // Hold to zoom's release (and H3_TEST_UNZOOM_AT=<call>, for testing):
+    // player 1's requested zoom level straight to none.
+    static const uint32_t testUnzoomAt = h3::EnvNumber("H3_TEST_UNZOOM_AT");
+    static uint32_t lookCalls = 0;
+    if (user == 0 && (++lookCalls == testUnzoomAt || g_unzoomRequested.exchange(false)))
+    {
+        uint32_t globals = h3::GuestRef<uint32_t>(ctx.r13.u32);
+        uint32_t controls = globals ? uint32_t(h3::GuestRef<uint32_t>(globals + 120)) : 0;
+        if (controls >= 0x40000000 && controls < 0xC0000000)
+            h3::GuestRef<uint16_t>(controls + 16 + kControlZoomLevel) = 0xFFFF;
+    }
     bool mouse = user == 0 && args[2] != 0 && h3::input::NativeMouseLook();
     t_collecting = user == 0;  // player 1's weapon rate: the mouse's zoom scale, and Player1Zoomed
     t_weaponRate = 1e9f;
@@ -180,6 +209,14 @@ PPC_FUNC(sub_82211EA8)
         static uint32_t calls = 0;
         calls++;
         LogUnitFlips(ctx, calls);
+        // Research: the look function's output halfword +32 (zoom level?).
+        static int lastOut32 = 99;
+        int out32 = args[2] ? int(int16_t(h3::GuestRef<uint16_t>(args[2] + 32))) : 99;
+        if (logRate && out32 != lastOut32)
+        {
+            fprintf(stderr, "[weapon] call %u output +32 = %d\n", calls, out32);
+            lastOut32 = out32;
+        }
         static bool lastZoomed = false;
         if (logRate && g_player1Zoomed.load() != lastZoomed)
         {

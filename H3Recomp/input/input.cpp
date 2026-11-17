@@ -227,6 +227,15 @@ namespace h3::input
         bool g_zoomHeld = false;
         uint64_t g_zoomClickUntilNs = 0;  // the zoom click being sent
         constexpr uint64_t kClickNs = 50'000'000;  // long enough for the game to see it (a tick or more)
+        // Unzooming after the key comes up: once the game has taken the
+        // last click (kSettleNs), asked again while it's still zoomed, up to
+        // kMaxUnzoomClicks times.
+        constexpr uint64_t kSettleNs = 100'000'000;
+        constexpr int kMaxUnzoomClicks = 3;
+        int g_zoomKeys = 0;  // zoom keys held last frame
+        bool g_unzoomPending = false;
+        uint64_t g_unzoomCheckNs = 0;
+        int g_unzoomClicks = 0;
         std::mutex g_lookMutex;
         float g_lookDx = 0, g_lookDy = 0;
         // The common PC shooter scale: 0.022 degrees per count at
@@ -509,17 +518,45 @@ namespace h3::input
             g_crouchHeld = down;
             state.buttons = uint16_t(g_crouched ? state.buttons | kLeftThumb : state.buttons & ~kLeftThumb);
         }
-        // Hold to zoom: the game zooms in on one click and out on the next,
-        // so the key going down sends a click, and coming back up another,
-        // unless the game has already unzoomed (switching weapons, taking
-        // a hit) or never zoomed: that click would zoom back in.
+        // Hold to zoom. The key going down clicks zoom (the weapon's first
+        // level); another zoom key pressed while one is held clicks again
+        // (a sniper rifle's second level). The key coming up asks the game
+        // to unzoom outright (hooks::RequestPlayer1Unzoom: the requested
+        // zoom level to none, no stepping through levels), once the game
+        // has taken the last click, and again while it's still zoomed.
         if (g_holdToZoom)
         {
-            bool down = held(Action::Zoom);
+            int zoomKeys = 0;
+            for (const Binding& binding : g_bindings[size_t(Action::Zoom)])
+                if ((binding.kind == Binding::Kind::Key && keys[binding.key]) ||
+                    (binding.kind == Binding::Kind::MouseButton && (mouse & binding.mouseMask)))
+                    zoomKeys++;
+            bool down = zoomKeys > 0;
             if (down && !g_zoomHeld)
+            {
                 g_zoomClickUntilNs = now + kClickNs;
-            else if (!down && g_zoomHeld && hooks::Player1Zoomed())
-                g_zoomClickUntilNs = now + kClickNs;
+                g_unzoomPending = false;
+            }
+            else if (down && zoomKeys > g_zoomKeys && now >= g_zoomClickUntilNs)
+                g_zoomClickUntilNs = now + kClickNs;  // the next zoom level
+            else if (!down && g_zoomHeld)
+            {
+                g_unzoomPending = true;
+                g_unzoomClicks = 0;
+                g_unzoomCheckNs = std::max(now, g_zoomClickUntilNs) + kSettleNs;
+            }
+            g_zoomKeys = zoomKeys;
+            if (g_unzoomPending && now >= g_unzoomCheckNs)
+            {
+                if (hooks::Player1Zoomed() && g_unzoomClicks < kMaxUnzoomClicks)
+                {
+                    hooks::RequestPlayer1Unzoom();
+                    g_unzoomClicks++;
+                    g_unzoomCheckNs = now + kSettleNs;
+                }
+                else
+                    g_unzoomPending = false;
+            }
             g_zoomHeld = down;
             state.buttons = uint16_t(now < g_zoomClickUntilNs ? state.buttons | kRightThumb : state.buttons & ~kRightThumb);
         }

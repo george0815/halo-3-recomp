@@ -127,6 +127,11 @@ namespace h3::config
         AntiAliasing antiAliasing = AntiAliasing::Fxaa;
         // Skip the intro video at startup (kernel/vfs.cpp hides it).
         bool skipIntro = false;
+        // English text (hooks/pc_text.cpp): "PC" for "Xbox 360 console" and
+        // the like, and the keys bound to buttons in prompts while playing
+        // on the keyboard. Off: the 360's text and button icons.
+        bool pcWording = true;
+        bool pcKeyNames = true;
         // Horizontal field of view in degrees, 60-120 (hooks/fov.cpp); the
         // game's is 70.
         float fov = 70.0f;

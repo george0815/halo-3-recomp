@@ -414,6 +414,18 @@ namespace h3::launcher
         fov.step = [&video](int delta) { video.fov = std::clamp(video.fov + 5.0f * float(delta), 60.0f, 120.0f); };
         page.items.push_back(fov);
 
+        MenuItem wording{ MenuItem::Kind::Choice, QStringLiteral("PC wording"),
+            QStringLiteral("On: English text says \"PC\" for \"Xbox 360 console\" and explains PC controls. Off: the 360's text.") };
+        wording.value = [&video] { return OnOff(video.pcWording); };
+        wording.step = [&video](int) { video.pcWording = !video.pcWording; };
+        page.items.push_back(wording);
+
+        MenuItem keyNames{ MenuItem::Kind::Choice, QStringLiteral("Keys in prompts"),
+            QStringLiteral("On: playing on the keyboard, prompts show your keys (\"[Space] Select\"). Off: the 360's button icons.") };
+        keyNames.value = [&video] { return OnOff(video.pcKeyNames); };
+        keyNames.step = [&video](int) { video.pcKeyNames = !video.pcKeyNames; };
+        page.items.push_back(keyNames);
+
         MenuItem skipIntro{ MenuItem::Kind::Choice, QStringLiteral("Skip intro video"),
             QStringLiteral("Go straight to the main menu at startup.") };
         skipIntro.value = [&video] { return OnOff(video.skipIntro); };

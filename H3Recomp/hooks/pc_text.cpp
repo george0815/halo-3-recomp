@@ -19,6 +19,7 @@
 
 #include "hooks/pc_text.h"
 #include "config/env.h"
+#include "config/settings.h"
 #include "input/input.h"
 #include "memory.h"
 
@@ -100,6 +101,23 @@ namespace h3::hooks
             { 0xE10D, { input::kBack } },   // "Prior Game Stats"
         };
 
+        // The short name a key goes by in game text: the full SDL names
+        // ("Mouse Middle") ran past menu footers built for button icons.
+        std::string ShortKeyName(const std::string& name)
+        {
+            static const std::pair<const char*, const char*> kShort[] = {
+                { "Mouse Left", "LMB" }, { "Mouse Right", "RMB" }, { "Mouse Middle", "MMB" }, { "Mouse X1", "M4" },
+                { "Mouse X2", "M5" }, { "Mouse Wheel", "Wheel" }, { "Escape", "Esc" }, { "Return", "Enter" },
+                { "Backspace", "Bksp" }, { "Left Shift", "LShift" }, { "Right Shift", "RShift" }, { "Left Ctrl", "LCtrl" },
+                { "Right Ctrl", "RCtrl" }, { "Left Alt", "LAlt" }, { "Right Alt", "RAlt" }, { "CapsLock", "Caps" },
+                { "PageUp", "PgUp" }, { "PageDown", "PgDn" }, { "Delete", "Del" }, { "Insert", "Ins" },
+            };
+            for (const auto& [full, abbreviated] : kShort)
+                if (name == full)
+                    return abbreviated;
+            return name;
+        }
+
         // "[Space]" for an icon, or empty to keep the icon (nothing bound).
         std::string KeyLabel(const Icon& icon)
         {
@@ -111,7 +129,7 @@ namespace h3::hooks
                 std::string name = input::KeyNameFor(button);
                 if (name.empty())
                     return {};
-                names += (names.empty() ? "" : "/") + name;
+                names += (names.empty() ? "" : "/") + ShortKeyName(name);
             }
             return "[" + names + "]";
         }
@@ -121,20 +139,24 @@ namespace h3::hooks
             return { char(0xE0 | (c >> 12)), char(0x80 | ((c >> 6) & 0x3F)), char(0x80 | (c & 0x3F)) };
         }
 
-        // The rewrite of a string, or empty if it stays.
+        // The rewrite of a string, or empty if it stays. [video] pc_wording
+        // and pc_key_names turn each part off.
         std::string Rewrite(const char* text, bool keys)
         {
+            const bool wording = config::Active().video.pcWording;
+            keys = keys && config::Active().video.pcKeyNames;
             std::string result = text;
             bool changed = false;
             bool whole = false;
-            for (const auto& [from, to] : kWholeStrings)
-                if (result == from)
-                {
-                    result = to;
-                    changed = whole = true;
-                    break;
-                }
-            if (!whole)
+            if (wording)
+                for (const auto& [from, to] : kWholeStrings)
+                    if (result == from)
+                    {
+                        result = to;
+                        changed = whole = true;
+                        break;
+                    }
+            if (wording && !whole)
                 for (const auto& [from, to] : kPhrases)
                     for (size_t at = result.find(from); at != std::string::npos; at = result.find(from, at + strlen(to)))
                     {
@@ -210,8 +232,8 @@ namespace h3::hooks
     {
         static const bool off = EnvFlag("H3_NO_PC_TEXT");
         static const bool log = EnvFlag("H3_LOG_PC_TEXT");
-        if (off)
-            return;
+        if (off || (!config::Active().video.pcWording && !config::Active().video.pcKeyNames))
+            return;  // the game's own text
         uint32_t globals = native::tags::GlobalGameGlobalsAddress();
         if (globals == 0 || GuestRef<uint32_t>(globals + kGlobalsLanguage) != kEnglish)
             return;

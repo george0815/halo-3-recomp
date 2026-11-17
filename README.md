@@ -129,9 +129,13 @@ defaults:
 
 Crouch can be a toggle and zoom a hold on the keyboard and mouse (launcher,
 Controls; `toggle_crouch`, `hold_to_zoom`): the game's own are hold to
-crouch and press to zoom in or out. Hold to zoom clicks zoom as the key goes
-down, and again as it comes up if the game still has you zoomed (it unzooms
-by itself when you switch weapons or take a hit). "Skip intro video" (Video;
+crouch and press to step through a weapon's zoom levels and out. Hold to
+zoom zooms to the first level while the key is held and straight out when
+it's let go; pressing a second zoom key while holding one (Mouse Right and
+Z by default) steps to the next level (a sniper rifle's 10x).
+Keys in English prompts use short names ("[Esc]", "[MMB]"). For the 360's
+own text and button icons, turn off "PC wording" and "Keys in prompts"
+(launcher, Video; `pc_wording`, `pc_key_names`). "Skip intro video" (Video;
 `skip_intro`) goes straight to the main menu. "Field of view" (Video; `fov`,
 60-120, the game's 70) widens the view by scaling every biped's and
 vehicle's camera FOV as a map loads; with more than one player on the PC

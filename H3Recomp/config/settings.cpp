@@ -112,6 +112,10 @@ namespace h3::config
                     video.frameRate = atoi(value.c_str()) >= kUnlockedTickRate ? kUnlockedTickRate : kOriginalTickRate;
                 else if (key == "skip_intro")
                     video.skipIntro = ParseBool(value);
+                else if (key == "pc_wording")
+                    video.pcWording = ParseBool(value);
+                else if (key == "pc_key_names")
+                    video.pcKeyNames = ParseBool(value);
                 else if (key == "fov")
                     video.fov = std::clamp(float(atof(value.c_str())), 60.0f, 120.0f);
                 else if (key == "anti_aliasing")
@@ -271,6 +275,8 @@ namespace h3::config
             << "frame_rate = " << video.frameRate << "\n"
             << "anti_aliasing = " << (video.antiAliasing == AntiAliasing::Off ? "off" : "fxaa") << "\n"
             << "skip_intro = " << BoolText(video.skipIntro) << "\n"
+            << "pc_wording = " << BoolText(video.pcWording) << "\n"
+            << "pc_key_names = " << BoolText(video.pcKeyNames) << "\n"
             << "fov = " << video.fov << "\n\n";
 
         const ProfileSettings& profile = settings.profile;
