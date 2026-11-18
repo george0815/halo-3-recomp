@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">
+  <!-- Our own backdrop for the site: a ring seen edge-on, in the launcher's blues. -->
+  <defs>
+    <linearGradient id="band" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#cfe6ff" stop-opacity="0"/>
+      <stop offset="0.35" stop-color="#cfe6ff" stop-opacity="0.22"/>
+      <stop offset="0.6" stop-color="#ffffff" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#cfe6ff" stop-opacity="0.05"/>
+    </linearGradient>
+    <filter id="soft"><feGaussianBlur stdDeviation="2.2"/></filter>
+  </defs>
+  <g transform="rotate(-18 500 500)" fill="none" filter="url(#soft)">
+    <ellipse cx="500" cy="520" rx="470" ry="130" stroke="url(#band)" stroke-width="16"/>
+    <ellipse cx="500" cy="520" rx="452" ry="118" stroke="#9ccaf0" stroke-opacity="0.10" stroke-width="3"/>
+  </g>
+</svg>

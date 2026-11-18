@@ -1,19 +1,19 @@
-// Halo 3 menu colors (our own palette, no game assets): deep navy, the
-// menus' icy blue, the focus bar's orange.
+// The launcher's palette (H3Launcher: the art tinted navy to sky blue),
+// our own colors.
 @import "./color_schemes/dark";
 
 $color-scheme: dark;
-$body-background-color: #08111d;
-$sidebar-color: #0b1726;
-$body-heading-color: #e8f4ff;
-$body-text-color: #b9cde0;
-$link-color: #7fc8f2;
-$nav-child-link-color: #9fb8cc;
-$border-color: #1d3550;
-$feedback-color: #102238;
-$table-background-color: #0d1b2c;
-$code-background-color: #0d1b2c;
-$search-background-color: #0d1b2c;
+$body-background-color: #07111e;
+$sidebar-color: #091626;
+$body-heading-color: #e3eefa;
+$body-text-color: #b4c8dc;
+$link-color: #9ccaf0;
+$nav-child-link-color: #9fb6cb;
+$border-color: #1b3149;
+$feedback-color: #0e2034;
+$table-background-color: #0b1a2b;
+$code-background-color: #0b1a2b;
+$search-background-color: #0b1a2b;
 $search-result-preview-color: #7f97ad;
-$base-button-color: #13263c;
-$btn-primary-color: #d9822b;
+$base-button-color: #12263b;
+$btn-primary-color: #3f6f9c;
