@@ -10,7 +10,7 @@
       .install { fill: #20332b; stroke: #4fae7f; }
       .host { fill: #33291f; stroke: #c99a52; }
       .t { fill: #e6e9ef; font-weight: 600; }
-      .s { fill: #a8b0bf; font-size: 11.5px; }
+      .s { fill: #a8b0bf; font-size: 11px; }
       .h { fill: #8a94a6; font-size: 12px; letter-spacing: .08em; }
       .l { stroke: #8a94a6; stroke-width: 1.4; fill: none; marker-end: url(#arrow); }
       .lbl { fill: #8a94a6; font-size: 11px; }
@@ -20,33 +20,35 @@
 
   <!-- install time -->
   <text class="h" x="24" y="30">INSTALL TIME (h3setup, on the player's PC)</text>
-  <rect class="box install" x="24" y="44" width="170" height="64"/>
+  <rect class="box install" x="24" y="44" width="170" height="76"/>
   <text class="t" x="40" y="70">Your disc image</text>
-  <text class="s" x="40" y="90">default.xex, maps, DLLs</text>
-  <rect class="box install" x="244" y="44" width="200" height="64"/>
+  <text class="s" x="40" y="90">default.xex and maps</text>
+  <rect class="box install" x="244" y="44" width="200" height="76"/>
   <text class="t" x="260" y="70">XenonRecomp</text>
-  <text class="s" x="260" y="90">PowerPC → C++, ~22,400 functions</text>
-  <rect class="box install" x="494" y="44" width="200" height="64"/>
+  <text class="s" x="260" y="90">PowerPC → C++,</text>
+  <text class="s" x="260" y="106">about 22,400 functions</text>
+  <rect class="box install" x="494" y="44" width="200" height="76"/>
   <text class="t" x="510" y="70">clang + link</text>
-  <text class="s" x="510" y="90">with the shipped H3Runtime</text>
-  <rect class="box install" x="744" y="44" width="190" height="64"/>
+  <text class="s" x="510" y="90">with the shipped</text>
+  <text class="s" x="510" y="106">runtime (H3Runtime)</text>
+  <rect class="box install" x="744" y="44" width="190" height="76"/>
   <text class="t" x="760" y="70">H3Recomp</text>
   <text class="s" x="760" y="90">the game executable</text>
-  <path class="l" d="M194,76 H240"/><path class="l" d="M444,76 H490"/><path class="l" d="M694,76 H740"/>
+  <path class="l" d="M194,82 H240"/><path class="l" d="M444,82 H490"/><path class="l" d="M694,82 H740"/>
 
   <!-- run time -->
   <text class="h" x="24" y="150">RUN TIME (inside H3Recomp)</text>
 
   <rect class="box game" x="300" y="166" width="360" height="92"/>
   <text class="t" x="316" y="192">Recompiled game code  (H3RecompLib)</text>
-  <text class="s" x="316" y="212">Halo 3's own logic: simulation, AI, UI, rendering setup,</text>
-  <text class="s" x="316" y="230">running on a model of the 360's CPU and memory</text>
+  <text class="s" x="316" y="212">Halo 3's own logic: simulation, AI, UI, rendering,</text>
+  <text class="s" x="316" y="230">on a model of the 360's CPU and memory</text>
   <text class="s" x="316" y="248">+ the audio DLLs it loads (Waves)</text>
 
   <rect class="box" x="24" y="166" width="230" height="92"/>
   <text class="t" x="40" y="192">Hooks  (hooks/)</text>
   <text class="s" x="40" y="212">replace or wrap game functions:</text>
-  <text class="s" x="40" y="230">60 Hz fixes, mouse look, menu cursor,</text>
+  <text class="s" x="40" y="230">60 Hz fixes, mouse look, cursor,</text>
   <text class="s" x="40" y="248">PC text, FOV, crosshair</text>
   <path class="l" d="M254,212 H296"/>
 
@@ -60,8 +62,8 @@
   <!-- kernel row -->
   <rect class="box" x="300" y="300" width="360" height="80"/>
   <text class="t" x="316" y="326">Kernel and XAM  (kernel/)</text>
-  <text class="s" x="316" y="346">the 360's system calls: threads, files (the disc,</text>
-  <text class="s" x="316" y="364">the hard drive), users, notifications, networking</text>
+  <text class="s" x="316" y="346">the 360's system calls: threads, files</text>
+  <text class="s" x="316" y="364">(disc, hard drive), users, networking</text>
   <path class="l" d="M480,258 V296"/><text class="lbl" x="488" y="282">imports</text>
 
   <rect class="box" x="24" y="300" width="230" height="80"/>
@@ -79,9 +81,9 @@
   <!-- gpu / audio -->
   <rect class="box" x="24" y="430" width="420" height="96"/>
   <text class="t" x="40" y="456">GPU  (gpu/)</text>
-  <text class="s" x="40" y="476">command processor: reads the game's Xenos ring buffer (PM4)</text>
+  <text class="s" x="40" y="476">command processor: the game's Xenos ring buffer</text>
   <text class="s" x="40" y="494">shader translator: Xenos microcode → GLSL → SPIR-V</text>
-  <text class="s" x="40" y="512">renderer: draws, EDRAM render targets, resolves → Vulkan</text>
+  <text class="s" x="40" y="512">renderer: draws, EDRAM targets, resolves → Vulkan</text>
   <path class="l" d="M320,258 V282 H277 V408 H234 V426"/><text class="lbl" x="150" y="404">ring buffer</text>
 
   <rect class="box" x="494" y="430" width="442" height="96"/>

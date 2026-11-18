@@ -9,7 +9,7 @@ This document is the map of the project: what the pieces are, how they talk
 to each other, and where to start reading. Each source file also starts with
 a comment describing its own job.
 
-## The big picture
+## Overview
 
 ![How the pieces fit together](assets/architecture.svg)
 

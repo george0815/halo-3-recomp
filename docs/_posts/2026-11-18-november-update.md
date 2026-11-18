@@ -26,13 +26,6 @@ on your PC in a few minutes.
 - **60 Hz,** with more fixes for things the 360 tied to 30 ticks (a weapon
   switch animation that popped while moving was the latest).
 
-## How we know it works
-
-Every change that could touch the game's simulation is checked against
-recorded Theater films, tick by tick: the game built by the installer
-replays our films identically to the development build. More on that in
-[testing](../testing.html).
-
 ## Next
 
 The release itself, after testing on real Windows machines; then the native
