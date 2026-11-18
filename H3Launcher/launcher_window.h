@@ -22,6 +22,7 @@
 #include <QElapsedTimer>
 #include <QImage>
 #include <QPixmap>
+#include <QProcess>
 #include <QTimer>
 #include <QWidget>
 
@@ -111,6 +112,9 @@ namespace h3::launcher
         QString SettingsPath() const;
         void Save();
         void Launch();
+        // First run of a release: build the game from the player's disc
+        // image with h3setup (docs/ISO_TOOL.md), progress in the status line.
+        void InstallFromIso();
 
         // --- Pages ---------------------------------------------------------
         Page MainPage();
@@ -191,5 +195,8 @@ namespace h3::launcher
         QPixmap background_; // tinted_ scaled to the window, with overlays
         QImage picture_;     // the profile's gamer picture, if any
         QString status_;     // a problem to show (no default.xex, launch failed)
+        bool statusIsProgress_ = false;  // status_ is the install's progress, not a problem
+        QProcess* installer_ = nullptr;  // h3setup, while it runs
+        QString installError_;           // its last error line
     };
 }

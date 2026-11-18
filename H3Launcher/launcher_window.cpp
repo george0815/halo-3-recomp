@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #include <QKeyEvent>
 #include <QLinearGradient>
+#include <QMap>
 #include <QPainter>
 #include <QProcess>
 #include <QRadialGradient>
@@ -176,6 +177,17 @@ namespace h3::launcher
             return QStandardPaths::findExecutable(QStringLiteral("H3Recomp"));
         }
 
+        // h3setup next to the launcher (a release), or empty.
+        QString FindSetupTool()
+        {
+#ifdef _WIN32
+            QString path = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("h3setup.exe"));
+#else
+            QString path = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("h3setup"));
+#endif
+            return QFileInfo(path).isExecutable() ? path : QString();
+        }
+
         // The game's disc folder for a default.xex, as main.cpp picks it.
         QString ContentRoot(const QString& xexPath)
         {
@@ -230,6 +242,7 @@ namespace h3::launcher
     {
         xexPath_ = path;
         status_.clear();
+        statusIsProgress_ = false;
         if (xexPath_.isEmpty())
         {
             status_ = QStringLiteral("default.xex not found. Select LAUNCH to locate it.");
@@ -299,8 +312,77 @@ namespace h3::launcher
             status_ = QStringLiteral("Can't write %1").arg(SettingsPath());
     }
 
+    void LauncherWindow::InstallFromIso()
+    {
+        if (installer_)
+            return;
+        QString setup = FindSetupTool();
+        QString iso = QFileDialog::getOpenFileName(this, QStringLiteral("Choose your Halo 3 disc image"), QDir::homePath(),
+            QStringLiteral("Xbox 360 disc image (*.iso)"));
+        if (setup.isEmpty() || iso.isEmpty())
+            return;
+        QString install = QCoreApplication::applicationDirPath();
+        installer_ = new QProcess(this);
+        installer_->setWorkingDirectory(install);
+        installError_.clear();
+        statusIsProgress_ = true;
+        status_ = QStringLiteral("Checking the disc image...");
+        connect(installer_, &QProcess::readyReadStandardOutput, this, [this] {
+            while (installer_->canReadLine())
+            {
+                QString line = QString::fromUtf8(installer_->readLine()).trimmed();
+                QStringList parts = line.split(' ');
+                if (parts.size() == 3 && parts[0] == QStringLiteral("progress"))
+                {
+                    static const QMap<QString, QString> stages = {
+                        { QStringLiteral("extract"), QStringLiteral("Copying the game's files from the disc image") },
+                        { QStringLiteral("recompile"), QStringLiteral("Translating the game's code") },
+                        { QStringLiteral("compile"), QStringLiteral("Compiling the game (this takes a few minutes)") },
+                    };
+                    status_ = QStringLiteral("%1... %2%").arg(stages.value(parts[1], parts[1]), parts[2]);
+                }
+                else if (line.startsWith(QStringLiteral("linking")))
+                    status_ = QStringLiteral("Linking the game...");
+            }
+            update();
+        });
+        connect(installer_, &QProcess::readyReadStandardError, this, [this] {
+            for (const QString& line : QString::fromUtf8(installer_->readAllStandardError()).split('\n'))
+                if (line.startsWith(QStringLiteral("error: ")))
+                    installError_ = line.mid(7).trimmed();
+        });
+        connect(installer_, &QProcess::finished, this, [this, install](int code, QProcess::ExitStatus exit) {
+            installer_->deleteLater();
+            installer_ = nullptr;
+            statusIsProgress_ = false;
+            if (code == 0 && exit == QProcess::NormalExit)
+            {
+                SetXexPath(QDir(install).filePath(QStringLiteral("game/default.xex")));
+                statusIsProgress_ = true;
+                status_ = QStringLiteral("Halo 3 is installed. Select LAUNCH to play.");
+            }
+            else
+                status_ = QStringLiteral("Install failed: %1").arg(installError_.isEmpty() ? QStringLiteral("h3setup stopped (code %1)").arg(code) : installError_);
+            int selected = Current().selected;
+            pages_.back() = MainPage();
+            Current().selected = std::min(selected, int(Current().items.size()) - 1);
+            update();
+        });
+        installer_->start(setup, { QStringLiteral("install"), iso, install });
+        update();
+    }
+
     void LauncherWindow::Launch()
     {
+        if (installer_)
+            return;
+        // A release without the game built yet: build it first.
+        if (FindGameExecutable().isEmpty() && !FindSetupTool().isEmpty())
+        {
+            InstallFromIso();
+            return;
+        }
+        statusIsProgress_ = false;
         if (xexPath_.isEmpty() && !ChooseXex())
             return;
         Save();
@@ -330,8 +412,14 @@ namespace h3::launcher
     {
         Page page{ QStringLiteral("HALO 3 RECOMP") };
         auto open = [this](Page (LauncherWindow::*build)()) { return [this, build] { Push((this->*build)()); }; };
-        page.items.push_back({ MenuItem::Kind::Action, QStringLiteral("LAUNCH"),
-            QStringLiteral("Save the settings and start Halo 3."), [this] { Launch(); } });
+        if (FindGameExecutable().isEmpty() && !FindSetupTool().isEmpty())
+            page.items.push_back({ MenuItem::Kind::Action, QStringLiteral("INSTALL"),
+                QStringLiteral("Choose your Halo 3 disc image (ISO). The game is built from it on this PC: its files are copied "
+                               "(about 6 GB) and its code is translated and compiled, which takes a few minutes."),
+                [this] { InstallFromIso(); } });
+        else
+            page.items.push_back({ MenuItem::Kind::Action, QStringLiteral("LAUNCH"),
+                QStringLiteral("Save the settings and start Halo 3."), [this] { Launch(); } });
         page.items.push_back({ MenuItem::Kind::Action, QStringLiteral("VIDEO"),
             QStringLiteral("Window size, fullscreen and rendering resolution."), open(&LauncherWindow::VideoPage) });
         page.items.push_back({ MenuItem::Kind::Action, QStringLiteral("CONTROLS"),
@@ -1494,7 +1582,7 @@ namespace h3::launcher
         int line = height() - metrics_.footerHeight + 34;
         for (const QString& text : Wrap(Style::Small, problem ? status_ : item.description, menu.width()))
         {
-            DrawText(painter, Style::Small, menu.left(), line, text, problem ? kWarningColor : kTextColor);
+            DrawText(painter, Style::Small, menu.left(), line, text, problem && !statusIsProgress_ ? kWarningColor : kTextColor);
             line += metrics_.lineHeight;
         }
         DrawHints(painter, menu.left(), height() - 28);

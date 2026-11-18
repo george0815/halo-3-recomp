@@ -4,7 +4,7 @@
 #   H3Recomp                the runtime executable
 #   H3Launcher              the Qt launcher (settings, profile, controls); optional
 #   H3Native                native game code (cache file reader, decompiled functions)
-#   tools/                  h3xexinfo (XEX inspector), h3shader (shader translator test),
+#   tools/                  h3xexinfo (XEX inspector), h3shader (shader translator test), h3setup (ISO -> install),
 #                           h3tags (cache file / tag index lister)
 
 cmake_minimum_required(VERSION 3.20)
@@ -71,6 +71,7 @@ add_subdirectory(H3Native)
 add_subdirectory(tools/h3xexinfo)
 add_subdirectory(tools/h3shader)
 add_subdirectory(tools/h3tags)
+add_subdirectory(tools/h3setup)
 
 # The launcher, when Qt 6 is available.
 find_package(Qt6 COMPONENTS Widgets QUIET)
@@ -95,7 +96,7 @@ endif()
 # Left off: unused parameters (hook and callback signatures are fixed) and
 # missing field initializers (tables and GPU structs leave trailing fields
 # and padding at zero on purpose).
-set(H3_OWN_TARGETS H3Shader H3Config H3NativeCache h3xexinfo h3shader h3tags H3Launcher H3Recomp)
+set(H3_OWN_TARGETS H3Shader H3Config H3NativeCache h3xexinfo h3shader h3tags h3setup H3Launcher H3Runtime H3Recomp)
 foreach (target ${H3_OWN_TARGETS})
     if (TARGET ${target})
         get_target_property(type ${target} TYPE)
