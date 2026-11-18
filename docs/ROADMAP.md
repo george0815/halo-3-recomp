@@ -164,10 +164,10 @@ Rough phases. Each one is a large amount of work; that's fine.
       joining and full matches work between two games on one PC
 - [x] Native mouse look (MCC's approach: no stick curve or acceleration)
 - [x] PC wording and key names in the English text
-- [ ] PC options: skip intro videos, FOV slider, centered crosshair,
-      vehicle mouse sensitivity, toggle crouch/zoom
-- [ ] Mouse in menus: a cursor that focuses and clicks menu items, wheel
-      and right-click
+- [x] PC options: skip intro videos, FOV slider, centered crosshair,
+      vehicle mouse sensitivity, toggle crouch/zoom, zoomed mouse slowdown
+- [x] Mouse in menus: pointing selects a menu item, left click chooses it,
+      right click goes back, the wheel moves up and down
 - [ ] Replace hot recompiled functions with hand-written source (started:
       the 4 MB per-tick game state copy, `hooks/block_copy.cpp`); this
       continues as phase 6

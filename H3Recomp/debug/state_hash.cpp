@@ -64,6 +64,8 @@
 // handles.
 
 #include "debug/state_hash.h"
+
+#include <atomic>
 #include "config/env.h"
 #include "gpu/frame_capture.h"
 
@@ -333,6 +335,16 @@ namespace
     }
 }
 
+namespace
+{
+    std::atomic<uint32_t> g_levelTime{ 0 };
+}
+
+uint32_t h3::debug::CurrentLevelTime()
+{
+    return g_levelTime.load();
+}
+
 void h3::debug::OnGameStateCopy(const uint8_t* state, uint32_t bytes, uint32_t address)
 {
     static FILE* out = [] {
@@ -384,6 +396,7 @@ void h3::debug::OnGameStateCopy(const uint8_t* state, uint32_t bytes, uint32_t a
     else if (inLevel && !held)
         levelTime++;
     lastTick = tick;
+    g_levelTime.store(inLevel ? levelTime : 0);
     static const std::vector<std::pair<uint32_t, uint32_t>> recordSpans = [] {
         std::vector<std::pair<uint32_t, uint32_t>> spans;
         const char* spec = EnvString("H3_STATE_RECORD_TICKS");

@@ -2,6 +2,8 @@
 // every guest address (virtual heaps, the image's data, physical memory)
 // holding a float within 1e-5 of one of the values. For finding game state
 // by a known value (the camera's FOV), then H3_WATCH_WRITES for its writer.
+// H3_SCAN_FLOAT_AGAIN=<frame>,...: at those frames, the current values at
+// the addresses the scan found (what changed since, e.g. zoomed in).
 // H3_POKE_FLOAT=<frame>:<hex address>=<value>,...: writes those floats at
 // that frame (and every frame after, to hold them), to see what they do.
 
@@ -30,6 +32,13 @@ namespace h3::debug
                     GuestRef<float>(address) = float(atof(end + 1));
             }
 
+        static std::vector<uint32_t> matches;
+        static const char* again = EnvString("H3_SCAN_FLOAT_AGAIN");
+        for (const char* p = again; p && *p; p = strchr(p, ',') ? strchr(p, ',') + 1 : nullptr)
+            if (uint32_t(strtoul(p, nullptr, 10)) == frame)
+                for (uint32_t address : matches)
+                    fprintf(stderr, "[scan] frame %u again %08X = %.6f\n", frame, address, float(GuestRef<float>(address)));
+
         static const char* spec = EnvString("H3_SCAN_FLOAT");
         if (!spec)
             return;
@@ -50,6 +59,7 @@ namespace h3::debug
                     if (std::fabs(v - target) < 1e-5f)
                     {
                         fprintf(stderr, "[scan] frame %u %08X = %.6f\n", frame, address, v);
+                        matches.push_back(address);
                         found++;
                     }
             }

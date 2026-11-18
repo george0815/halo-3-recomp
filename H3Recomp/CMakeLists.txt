@@ -48,6 +48,8 @@ add_executable(H3Recomp
     hooks/pc_text.cpp
     hooks/fov.cpp
     hooks/first_person_weapons.cpp
+    hooks/menu_cursor.cpp
+    hooks/crosshair.cpp
     hooks/player_effects.cpp
     hooks/random_seed.cpp
     hooks/tick_rate.cpp
@@ -155,11 +157,14 @@ if (WIN32)
         COMMAND_EXPAND_LISTS)
 endif()
 
-# The commit this is built from: system link only plays with the same build
-# (net/link.cpp). A build with local changes is marked "-dirty".
+# The release version and the commit this is built from: system link plays
+# with games of the same version (and game executable and 60 Hz fixes;
+# net/link.cpp); the commit is logged. A build with local changes is marked
+# "-dirty".
 execute_process(COMMAND git describe --always --dirty --abbrev=12 WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     OUTPUT_VARIABLE H3_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 if (NOT H3_GIT_COMMIT)
     set(H3_GIT_COMMIT unknown)
 endif()
-set_source_files_properties(net/link.cpp PROPERTIES COMPILE_DEFINITIONS "H3_GIT_COMMIT=\"${H3_GIT_COMMIT}\"")
+set_source_files_properties(net/link.cpp PROPERTIES COMPILE_DEFINITIONS
+    "H3_GIT_COMMIT=\"${H3_GIT_COMMIT}\";H3_VERSION=\"${PROJECT_VERSION}\"")

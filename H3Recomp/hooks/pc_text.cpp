@@ -18,6 +18,8 @@
 // Screens already open keep the text they took.
 
 #include "hooks/pc_text.h"
+
+#include <ppc_recomp_shared.h>
 #include "config/env.h"
 #include "config/settings.h"
 #include "input/input.h"
@@ -272,4 +274,16 @@ namespace h3::hooks
         g_original.push_back('\0');  // a last string without its terminator stays inside
         Build(pack, keys, log);
     }
+}
+
+// The user interface's per-frame update (sub_82088FA0, the game thread;
+// it updates and draws the menus): the text is reworded here, before any
+// menu uses a language pack the game just loaded. (Checked after each
+// presented frame instead, a menu built in the frames between showed the
+// 360's button icons for a moment.)
+PPC_FUNC_IMPL(__imp__sub_82088FA0);
+PPC_FUNC(sub_82088FA0)
+{
+    h3::hooks::UpdatePcText();
+    __imp__sub_82088FA0(ctx, base);
 }

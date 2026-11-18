@@ -27,4 +27,9 @@ namespace h3::video
 
     // Thread-safe. Called by the command processor for each VdSwap.
     void OnFramePresented(uint32_t frame);
+
+    // Main thread: a point in the window (SDL window coordinates) as a
+    // fraction of the game frame drawn in it (0..1 across the picture,
+    // letterbox excluded). False before the first frame or off the picture.
+    bool WindowToFrame(float windowX, float windowY, float& frameX, float& frameY);
 }

@@ -9,7 +9,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(H3Recomp LANGUAGES C CXX)
+project(H3Recomp VERSION 0.75.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

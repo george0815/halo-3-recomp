@@ -13,7 +13,15 @@
 // pitch at most that, yaw at most twice that). MCC scales the mouse by the
 // capped rates over the defaults (120 and 60 degrees a second), so a
 // zoomed weapon turns slower under the mouse too; the lowest weapon rate
-// seen during the call gives the same scale here.
+// seen during the call gives the same scale here. That cap doesn't move
+// when a battle rifle zooms, though: so the mouse also follows the view's
+// field of view (the game divides it by the zoom magnification): zoomed,
+// it turns by tan(zoomed fov / 2) / tan(unzoomed fov / 2) as much, the
+// smaller of the two scales winning (the sniper rifle's cap drops too).
+// Player 1's current fov: the camera state the globals table points to at
+// +268, float at +0x78 (found by scanning for 70 degrees, then zooming:
+// 17.5 and 7.78 degrees at the sniper's two levels; the state is allocated
+// at a different address each run, private/re/mouse_look.md).
 //
 // H3_LOG_LOOK=<call>,<call>,... (research): snapshots what the function can
 // reach through its pointer arguments at those calls (one per tick, counted
@@ -27,6 +35,7 @@
 
 #include <ppc_recomp_shared.h>
 
+#include <cmath>
 #include <cstdio>
 #include <algorithm>
 #include <atomic>
@@ -49,6 +58,18 @@ namespace
     // a player, +16; the unit at +0) has a parent object (+16) and a seat
     // (+582, halfword) in the object table (globals +168: data at +68,
     // 16-byte entries, the object at +12).
+    constexpr uint32_t kGlobalsCamera = 268, kCameraFov = 0x78;
+
+    float Player1Fov(const PPCContext& ctx)
+    {
+        uint32_t table = h3::GuestRef<uint32_t>(ctx.r13.u32);
+        uint32_t camera = table ? uint32_t(h3::GuestRef<uint32_t>(table + kGlobalsCamera)) : 0;
+        if (camera < 0x40000000 || camera >= 0xC0000000)
+            return 0;
+        float fov = h3::GuestRef<float>(camera + kCameraFov);
+        return fov > 0.001f && fov < 3.0f ? fov : 0;
+    }
+
     bool Seated(const PPCContext& ctx, uint32_t user)
     {
         using h3::GuestRef;
@@ -229,6 +250,18 @@ PPC_FUNC(sub_82211EA8)
             lastRate = t_weaponRate;
         }
     }
+    // The zoom's share of the mouse scale (1 unzoomed): the field of view
+    // now over the last one seen unzoomed.
+    static float unzoomedFov = 0;
+    float zoomScale = 1.0f;
+    if (user == 0)
+    {
+        float fov = Player1Fov(ctx);
+        if (!g_player1Zoomed.load())
+            unzoomedFov = fov;
+        else if (fov > 0 && unzoomedFov > fov)
+            zoomScale = std::clamp(std::tan(fov / 2) / std::tan(unzoomedFov / 2), 0.02f, 1.0f);
+    }
     if (mouse)
     {
         float yaw, pitch;
@@ -236,12 +269,13 @@ PPC_FUNC(sub_82211EA8)
         if (yaw != 0 || pitch != 0)
         {
             float vehicle = Seated(ctx, user) ? h3::config::Active().controls.vehicleMouseSensitivity : 1.0f;
-            float yawScale = std::min(1.0f, 2 * t_weaponRate / kDefaultYawRate) * vehicle;
-            float pitchScale = std::min(1.0f, t_weaponRate / kDefaultPitchRate) * vehicle;
+            float yawScale = std::min({ 1.0f, 2 * t_weaponRate / kDefaultYawRate, zoomScale }) * vehicle;
+            float pitchScale = std::min({ 1.0f, t_weaponRate / kDefaultPitchRate, zoomScale }) * vehicle;
             static const bool log = h3::EnvFlag("H3_LOG_MOUSE");
             if (log)
-                fprintf(stderr, "[mouse] yaw %.5f pitch %.5f, weapon rate %.4f%s -> scale %.3f / %.3f\n", yaw, pitch,
-                    t_weaponRate, vehicle != 1.0f ? " (seated)" : "", yawScale, pitchScale);
+                fprintf(stderr, "[mouse] yaw %.5f pitch %.5f, weapon rate %.4f, zoom %.3f (fov %.4f of %.4f%s)%s -> scale %.3f / %.3f\n", yaw,
+                    pitch, t_weaponRate, zoomScale, Player1Fov(ctx), unzoomedFov, g_player1Zoomed.load() ? ", zoomed" : "",
+                    vehicle != 1.0f ? " (seated)" : "", yawScale, pitchScale);
             h3::GuestRef<float>(args[2] + kOutputYaw) = float(h3::GuestRef<float>(args[2] + kOutputYaw)) + yaw * yawScale;
             h3::GuestRef<float>(args[2] + kOutputPitch) = float(h3::GuestRef<float>(args[2] + kOutputPitch)) + pitch * pitchScale;
         }

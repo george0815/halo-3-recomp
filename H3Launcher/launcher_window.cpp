@@ -414,6 +414,12 @@ namespace h3::launcher
         fov.step = [&video](int delta) { video.fov = std::clamp(video.fov + 5.0f * float(delta), 60.0f, 120.0f); };
         page.items.push_back(fov);
 
+        MenuItem crosshair{ MenuItem::Kind::Choice, QStringLiteral("Centered crosshair"),
+            QStringLiteral("On: the crosshair, and where you aim, in the middle of the screen. Off: below the middle, as on the 360.") };
+        crosshair.value = [&video] { return OnOff(video.centeredCrosshair); };
+        crosshair.step = [&video](int) { video.centeredCrosshair = !video.centeredCrosshair; };
+        page.items.push_back(crosshair);
+
         MenuItem wording{ MenuItem::Kind::Choice, QStringLiteral("PC wording"),
             QStringLiteral("On: English text says \"PC\" for \"Xbox 360 console\" and explains PC controls. Off: the 360's text.") };
         wording.value = [&video] { return OnOff(video.pcWording); };
@@ -506,6 +512,13 @@ namespace h3::launcher
         holdZoom.value = [&controls] { return controls.holdToZoom ? QStringLiteral("Hold") : QStringLiteral("Toggle"); };
         holdZoom.step = [&controls](int) { controls.holdToZoom = !controls.holdToZoom; };
         page.items.push_back(holdZoom);
+
+        MenuItem menuCursor{ MenuItem::Kind::Choice, QStringLiteral("Mouse in menus"),
+            QStringLiteral("On: the mouse points at menu items; click to select, right click to go back, the wheel moves "
+                           "up and down. Off: menus use the keyboard only.") };
+        menuCursor.value = [&controls] { return OnOff(controls.menuCursor); };
+        menuCursor.step = [&controls](int) { controls.menuCursor = !controls.menuCursor; };
+        page.items.push_back(menuCursor);
 
         MenuItem ownPlayer{ MenuItem::Kind::Choice, QStringLiteral("Keyboard is its own player"),
             QStringLiteral("Split screen: on, the keyboard and mouse are player 1 and the first controller is player 2. "

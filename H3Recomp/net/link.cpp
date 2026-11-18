@@ -3,6 +3,8 @@
 #include "net/link.h"
 #include "config/env.h"
 #include "config/settings.h"
+#include "hooks/tick_rate.h"
+#include "memory.h"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -32,6 +34,9 @@
 
 #ifndef H3_GIT_COMMIT
 #define H3_GIT_COMMIT "unknown"
+#endif
+#ifndef H3_VERSION
+#define H3_VERSION "dev"
 #endif
 
 namespace h3::net
@@ -101,14 +106,27 @@ namespace h3::net
             return true;
         }
 
-        // FNV-1a of the commit this was built from: games from different
-        // builds may run the simulation differently.
+        // What games must share to play together (the tick rate is in the
+        // header too): this release's version (builds of one version run
+        // the simulation alike), the game's code (another executable or
+        // title update: its code section, never written at run time), and
+        // whether the 60 Hz content fixes run (they change the simulation).
+        // FNV-1a of all three.
+        constexpr uint32_t kGameCodeBegin = 0x82080000, kGameCodeEnd = 0x8270E554;  // .text of default.xex
+
+        uint32_t Fnv(uint32_t hash, const uint8_t* bytes, size_t size)
+        {
+            for (size_t i = 0; i < size; i++)
+                hash = (hash ^ bytes[i]) * 16777619u;
+            return hash;
+        }
+
         uint32_t BuildId()
         {
-            uint32_t hash = 2166136261u;
-            for (const char* c = H3_GIT_COMMIT; *c; c++)
-                hash = (hash ^ uint8_t(*c)) * 16777619u;
-            return hash;
+            uint32_t hash = Fnv(2166136261u, reinterpret_cast<const uint8_t*>(H3_VERSION), strlen(H3_VERSION));
+            hash = Fnv(hash, GuestPtr<uint8_t>(kGameCodeBegin), kGameCodeEnd - kGameCodeBegin);
+            uint8_t fixes = hooks::ContentFixes() ? 1 : 0;
+            return Fnv(hash, &fixes, 1);
         }
 
         // A real (IPv4) address and port, network byte order inside.
@@ -311,8 +329,8 @@ namespace h3::net
         setsockopt(g_socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
         std::thread(ReceiveLoop).detach();
         g_enabled = true;
-        fprintf(stderr, "[net] system link on UDP port %u, game address %u.%u.%u.%u, build %s (%08X), %u Hz, %zu friend(s)\n",
-            g_port, g_localIp >> 24, (g_localIp >> 16) & 0xFF, (g_localIp >> 8) & 0xFF, g_localIp & 0xFF, H3_GIT_COMMIT, g_build,
+        fprintf(stderr, "[net] system link on UDP port %u, game address %u.%u.%u.%u, version %s (commit %s, id %08X), %u Hz, %zu friend(s)\n",
+            g_port, g_localIp >> 24, (g_localIp >> 16) & 0xFF, (g_localIp >> 8) & 0xFF, g_localIp & 0xFF, H3_VERSION, H3_GIT_COMMIT, g_build,
             g_tickRate, settings.peers.size());
         return true;
     }

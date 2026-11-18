@@ -112,6 +112,8 @@ namespace h3::config
                     video.frameRate = atoi(value.c_str()) >= kUnlockedTickRate ? kUnlockedTickRate : kOriginalTickRate;
                 else if (key == "skip_intro")
                     video.skipIntro = ParseBool(value);
+                else if (key == "centered_crosshair")
+                    video.centeredCrosshair = ParseBool(value);
                 else if (key == "pc_wording")
                     video.pcWording = ParseBool(value);
                 else if (key == "pc_key_names")
@@ -183,6 +185,8 @@ namespace h3::config
                     controls.toggleCrouch = ParseBool(value);
                 else if (key == "hold_to_zoom")
                     controls.holdToZoom = ParseBool(value);
+                else if (key == "menu_cursor")
+                    controls.menuCursor = ParseBool(value);
                 else
                     for (size_t i = 0; i < kActionCount; i++)
                         if (key == kActions[i].key)
@@ -275,6 +279,7 @@ namespace h3::config
             << "frame_rate = " << video.frameRate << "\n"
             << "anti_aliasing = " << (video.antiAliasing == AntiAliasing::Off ? "off" : "fxaa") << "\n"
             << "skip_intro = " << BoolText(video.skipIntro) << "\n"
+            << "centered_crosshair = " << BoolText(video.centeredCrosshair) << "\n"
             << "pc_wording = " << BoolText(video.pcWording) << "\n"
             << "pc_key_names = " << BoolText(video.pcKeyNames) << "\n"
             << "fov = " << video.fov << "\n\n";
@@ -300,7 +305,8 @@ namespace h3::config
             << "keyboard_own_player = " << BoolText(controls.keyboardOwnPlayer) << "\n"
             << "native_mouse_look = " << BoolText(controls.nativeMouseLook) << "\n"
             << "toggle_crouch = " << BoolText(controls.toggleCrouch) << "\n"
-            << "hold_to_zoom = " << BoolText(controls.holdToZoom) << "\n";
+            << "hold_to_zoom = " << BoolText(controls.holdToZoom) << "\n"
+            << "menu_cursor = " << BoolText(controls.menuCursor) << "\n";
         for (size_t i = 0; i < kActionCount; i++)
         {
             out << kActions[i].key << " =";

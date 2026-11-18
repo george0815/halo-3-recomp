@@ -127,6 +127,9 @@ namespace h3::config
         AntiAliasing antiAliasing = AntiAliasing::Fxaa;
         // Skip the intro video at startup (kernel/vfs.cpp hides it).
         bool skipIntro = false;
+        // The crosshair (and the aim) in the middle of the screen instead
+        // of below it (hooks/crosshair.cpp).
+        bool centeredCrosshair = false;
         // English text (hooks/pc_text.cpp): "PC" for "Xbox 360 console" and
         // the like, and the keys bound to buttons in prompts while playing
         // on the keyboard. Off: the 360's text and button icons.
@@ -171,6 +174,8 @@ namespace h3::config
         // toggles on each press).
         bool toggleCrouch = false;
         bool holdToZoom = false;
+        // Menus: the mouse points and clicks (hooks/menu_cursor.cpp).
+        bool menuCursor = true;
     };
 
     struct DebugSettings

@@ -7,7 +7,9 @@
 #include "input/input.h"
 #include "config/env.h"
 #include "config/settings.h"
+#include "hooks/menu_cursor.h"
 #include "hooks/mouse_look.h"
+#include "video/window.h"
 
 #include <SDL3/SDL.h>
 
@@ -16,6 +18,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -246,6 +249,18 @@ namespace h3::input
         int g_mouseWheel = 0;           // whole notches since the last Update
         uint64_t g_wheelPressUntilNs = 0;
 
+        // Menu cursor (hooks/menu_cursor.cpp): while a menu is open the mouse
+        // is released and points; a left click on an item is A, a right
+        // click B, a wheel notch D-pad up or down. g_menuReleased: we
+        // released a captured mouse for the menu (and take it back after).
+        bool g_menuCursor = true;
+        bool g_menuMode = false, g_menuReleased = false;
+        bool g_menuCursorPlaced = false;  // the cursor was given to the menu since it opened
+        uint64_t g_menuAUntilNs = 0, g_menuBUntilNs = 0, g_menuDpadUntilNs = 0;
+        uint64_t g_menuClickAtNs = 0;  // a left click waiting for its item to be focused (0: none)
+        uint16_t g_menuDpadButton = 0;
+        int g_menuWheelSteps = 0;       // + up, - down, not yet sent
+
         // The window an event belongs to (null for global events).
         SDL_Window* EventWindow(const SDL_Event& event)
         {
@@ -375,6 +390,7 @@ namespace h3::input
         g_nativeMouse = controls.nativeMouseLook || EnvFlag("H3_NATIVE_MOUSE");
         g_toggleCrouch = controls.toggleCrouch;
         g_holdToZoom = controls.holdToZoom;
+        g_menuCursor = controls.menuCursor && !EnvFlag("H3_NO_MENU_CURSOR");
         if (const char* pads = EnvString("H3_VIRTUAL_PADS"))
             for (uint32_t player = 1; player <= std::min<uint32_t>(uint32_t(atoi(pads)), kMaxPlayers - 1); player++)
                 g_virtualPads |= 1u << player;
@@ -402,6 +418,20 @@ namespace h3::input
         switch (event.type)
         {
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            if (g_menuMode)
+            {
+                // A click in a menu: A on the item under the cursor, B for
+                // the right button; never a capture.
+                uint64_t now = SDL_GetTicksNS();
+                if (event.button.button == SDL_BUTTON_LEFT)
+                {
+                    hooks::RequestMenuClick();
+                    g_menuClickAtNs = now;
+                }
+                else if (event.button.button == SDL_BUTTON_RIGHT)
+                    g_menuBUntilNs = now + kClickNs;
+                return;
+            }
             if (SDL_Window* window = EventWindow(event); window && !SDL_GetWindowRelativeMouseMode(window))
             {
                 SDL_SetWindowRelativeMouseMode(window, true);
@@ -439,7 +469,9 @@ namespace h3::input
             // scrolling) sends several fractional events per notch, and
             // counting each as a notch switched weapons twice or more.
             // SDL accumulates the fractions into integer_y.
-            if (SDL_Window* window = EventWindow(event); window && SDL_GetWindowRelativeMouseMode(window))
+            if (g_menuMode)
+                g_menuWheelSteps = std::clamp(g_menuWheelSteps + int(event.wheel.integer_y), -8, 8);
+            else if (SDL_Window* window = EventWindow(event); window && SDL_GetWindowRelativeMouseMode(window))
                 g_mouseWheel += std::abs(int(event.wheel.integer_y));
             break;
         default:
@@ -461,12 +493,118 @@ namespace h3::input
         }
     }
 
+    namespace
+    {
+        // Menu mode follows hooks::MenuOpen(): the mouse is released (the
+        // system cursor shows) and its position goes to the menu cursor;
+        // when the menu closes, a mouse we released is captured again.
+        void UpdateMenuCursor(uint64_t now, uint32_t frame)
+        {
+            SDL_Window* window = SDL_GetKeyboardFocus();
+            bool menu = g_menuCursor && hooks::MenuOpen();
+            if (menu != g_menuMode)
+            {
+                if (g_log || EnvFlag("H3_LOG_MENU"))
+                    fprintf(stderr, "[input] frame %u: %s\n", frame, menu ? "menu open: the mouse points" : "menu closed: the mouse looks");
+                g_menuMode = menu;
+                g_menuWheelSteps = 0;
+                g_menuCursorPlaced = false;
+                if (menu && window && SDL_GetWindowRelativeMouseMode(window))
+                {
+                    SDL_SetWindowRelativeMouseMode(window, false);
+                    int width = 0, height = 0;
+                    SDL_GetWindowSize(window, &width, &height);
+                    SDL_WarpMouseInWindow(window, width / 2.0f, height / 2.0f);
+                    g_menuReleased = true;
+                }
+                else if (!menu)
+                {
+                    // Back to the game: capture the mouse again (also when
+                        // the game started in the menus and it never was).
+                    if (window && (g_menuReleased || SDL_GetMouseFocus() == window))
+                        SDL_SetWindowRelativeMouseMode(window, true);
+                    g_menuReleased = false;
+                    hooks::SetMenuCursor(false, 0, 0);
+                }
+            }
+            if (!menu)
+                return;
+            // Keep the pointer free and shown while the menu lasts (the
+            // switch alone left it hidden, coming back from a game).
+            if (window && SDL_GetWindowRelativeMouseMode(window))
+            {
+                SDL_SetWindowRelativeMouseMode(window, false);
+                g_menuReleased = true;
+            }
+            if (!SDL_CursorVisible())
+                SDL_ShowCursor();
+
+            float windowX = 0, windowY = 0, frameX = 0, frameY = 0;
+            SDL_GetMouseState(&windowX, &windowY);
+            bool inside = window && SDL_GetMouseFocus() == window && video::WindowToFrame(windowX, windowY, frameX, frameY);
+            // H3_TEST_MENU_CURSOR=<frame>:<x>,<y>;... (testing): the cursor
+            // at those frame fractions from each frame on, the real mouse
+            // ignored.
+            if (const char* test = EnvString("H3_TEST_MENU_CURSOR"))
+            {
+                inside = false;
+                for (const char* at = test; at && *at; at = strchr(at, ';') ? strchr(at, ';') + 1 : nullptr)
+                {
+                    unsigned from = 0;
+                    float x = 0, y = 0;
+                    if (sscanf(at, "%u:%f,%f", &from, &x, &y) == 3 && frame >= from)
+                        inside = true, frameX = x, frameY = y;
+                }
+            }
+            hooks::SetMenuCursor(inside, frameX, frameY, g_menuCursorPlaced);
+            g_menuCursorPlaced = true;
+
+            // H3_TEST_MENU_CLICKS=<frame>,... (testing): left clicks then
+            // (in order; each on the first update from its frame on).
+            static const char* testClick = EnvString("H3_TEST_MENU_CLICKS");
+            if (testClick && *testClick && frame >= uint32_t(atoi(testClick)))
+            {
+                hooks::RequestMenuClick();
+                g_menuClickAtNs = now;
+                testClick = strchr(testClick, ',') ? strchr(testClick, ',') + 1 : nullptr;
+            }
+
+            // A left click becomes A once the item under the cursor has the
+            // focus (a click off the items, unanswered, is dropped).
+            if (g_menuClickAtNs)
+            {
+                if (hooks::TakeMenuClick())
+                {
+                    g_menuAUntilNs = now + kClickNs;
+                    g_menuClickAtNs = 0;
+                }
+                else if (now - g_menuClickAtNs > 250'000'000)
+                {
+                    hooks::CancelMenuClick();
+                    g_menuClickAtNs = 0;
+                }
+            }
+
+            // One D-pad press per wheel notch (wheel up = up), with a gap
+            // between presses so the game sees each.
+            constexpr uint64_t kGapNs = 40'000'000;
+            if (g_menuWheelSteps != 0 && now >= g_menuDpadUntilNs + kGapNs)
+            {
+                g_menuDpadButton = g_menuWheelSteps > 0 ? kDpadUp : kDpadDown;
+                g_menuWheelSteps += g_menuWheelSteps > 0 ? -1 : 1;
+                g_menuDpadUntilNs = now + kClickNs;
+            }
+        }
+    }
+
     void Update(uint32_t frame)
     {
         std::array<GamepadState, kMaxPlayers> states;
         GamepadState& state = states[0];  // the keyboard and mouse are controller 1
         const bool* keys = SDL_GetKeyboardState(nullptr);
         uint64_t now = SDL_GetTicksNS();
+
+        UpdateMenuCursor(now, frame);
 
         // Mouse buttons and the wheel only count while the mouse is captured
         // (the click that captures it isn't a press).
@@ -508,6 +646,14 @@ namespace h3::input
         for (size_t action = 0; action < config::kActionCount; action++)
             if (uint16_t button = ButtonFor(Action(action)); button && held(Action(action)))
                 state.buttons |= button;
+
+        // The menu cursor's clicks and wheel.
+        if (now < g_menuAUntilNs)
+            state.buttons |= kA;
+        if (now < g_menuBUntilNs)
+            state.buttons |= kB;
+        if (now < g_menuDpadUntilNs)
+            state.buttons |= g_menuDpadButton;
 
         // Toggle crouch: each press of the crouch key flips it.
         if (g_toggleCrouch)

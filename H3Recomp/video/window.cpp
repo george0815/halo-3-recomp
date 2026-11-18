@@ -59,6 +59,7 @@ namespace h3::video
         SDL_Texture* g_binkTexture = nullptr;
 
         std::atomic<uint32_t> g_framesPresented{ 0 };
+        SDL_FRect g_frameDest{};  // where the last game frame went (render output pixels)
         uint32_t g_quitEvent = 0;
     }
 
@@ -95,6 +96,7 @@ namespace h3::video
             SDL_FRect dest{ (windowWidth - frame.width * scale) / 2, (windowHeight - frame.height * scale) / 2,
                 frame.width * scale, frame.height * scale };
             SDL_RenderTexture(g_renderer, texture, &source, &dest);
+            g_frameDest = dest;
             return true;
         }
 
@@ -337,7 +339,18 @@ namespace h3::video
         hooks::LogTickRate();
         native::tags::CheckTagIndex();
         native::tags::RuntimeChangeReport();
-        hooks::UpdatePcText();  // English text reworded for PC once a map loads it
         hooks::UpdateFov();
+    }
+
+    bool WindowToFrame(float windowX, float windowY, float& frameX, float& frameY)
+    {
+        if (!g_renderer || g_frameDest.w <= 0 || g_frameDest.h <= 0)
+            return false;
+        float x = 0, y = 0;
+        if (!SDL_RenderCoordinatesFromWindow(g_renderer, windowX, windowY, &x, &y))
+            return false;
+        frameX = (x - g_frameDest.x) / g_frameDest.w;
+        frameY = (y - g_frameDest.y) / g_frameDest.h;
+        return frameX >= 0 && frameX < 1 && frameY >= 0 && frameY < 1;
     }
 }

@@ -127,6 +127,14 @@ defaults:
 
 `H3_MOUSE_SENSITIVITY=<factor>` overrides the launcher's mouse sensitivity.
 
+In menus the mouse is a pointer: the mouse is released while a menu is
+open (main menu, lobbies, the start menu, the pause menu) and captured again
+when play resumes. Pointing at an item selects it, a left click chooses it
+(A), a right click goes back (B) and the wheel moves up and down (D-pad).
+Only the menu that has the input responds (not the lobby behind a popup or
+the start menu). Off with "Mouse in menus" (launcher, Controls;
+`menu_cursor`).
+
 Crouch can be a toggle and zoom a hold on the keyboard and mouse (launcher,
 Controls; `toggle_crouch`, `hold_to_zoom`): the game's own are hold to
 crouch and press to step through a weapon's zoom levels and out. Hold to
@@ -139,7 +147,9 @@ own text and button icons, turn off "PC wording" and "Keys in prompts"
 `skip_intro`) goes straight to the main menu. "Field of view" (Video; `fov`,
 60-120, the game's 70) widens the view by scaling every biped's and
 vehicle's camera FOV as a map loads; with more than one player on the PC
-the game's own FOV stays, as in MCC.
+the game's own FOV stays, as in MCC. "Centered crosshair" (Video;
+`centered_crosshair`) puts the crosshair, and the aim, in the middle of the
+screen instead of below it.
 
 While you play on the keyboard and mouse, the button icons in English menus
 and prompts show the keys bound to them ("[Space] Select"); with a gamepad,
@@ -170,9 +180,10 @@ player's game profile (controls, emblem) is saved to
 turns the view straight from the mouse, as MCC's PC version does, instead of
 driving the right stick (which brings the controller's response curve and
 acceleration). Mouse sensitivity is 0.022 degrees per count at 1.0, the
-usual PC shooter scale. Zoomed weapons turn slower, by their own turn rate
-cap as in MCC, and "Vehicle mouse sensitivity" (`vehicle_mouse_sensitivity`)
-scales it in vehicles and turrets.
+usual PC shooter scale. Zoomed in, the mouse slows with the magnification
+(by tan(zoomed FOV / 2) / tan(normal FOV / 2): the view moves across the
+screen as fast as unzoomed), and "Vehicle mouse sensitivity"
+(`vehicle_mouse_sensitivity`) scales it in vehicles and turrets.
 
 #### System link
 
@@ -181,9 +192,10 @@ Games and Forge can host and find System Link games. Each game uses one UDP
 port (41001 by default): on a LAN that's all; over the internet, list
 friends' addresses (`host` or `host:port`) and have the host forward the
 port (only the host needs a reachable port: other players reach each
-other through the games they know). Everyone needs the same build (the git
-commit it was built from) and the same frame rate setting; packets from
-other builds are ignored and logged. Finding, joining and playing work
+other through the games they know). Everyone needs the same version of
+this project, the same game executable (disc and title update), the same
+frame rate setting and the 60 Hz fixes on or off alike; packets from other
+games are ignored and logged. Finding, joining and playing work
 (tested with three games on one PC). Keep shaders precompiled (launcher,
 Video): a map loading with an empty shader cache can stall long enough to
 drop the others.
