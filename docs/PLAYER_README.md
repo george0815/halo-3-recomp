@@ -1,9 +1,11 @@
 Halo 3 Recomp
 =============
 
-A PC port of Halo 3 (Xbox 360), made by statically recompiling the game's
-own code. This download contains no part of Halo 3: you need your own copy
-of the game as a disc image, and the game is built from it on your PC.
+Halo 3 (Xbox 360) on PC, made by statically recompiling the game's own code;
+the console's GPU, audio and system software are emulated around it (not a
+native port yet). This download contains no part of Halo 3: you need your
+own copy of the game as a disc image, and the game is built from it on your
+PC.
 
 What you need
 -------------

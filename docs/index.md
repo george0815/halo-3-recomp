@@ -5,7 +5,7 @@ nav_order: 1
 
 <div class="launcher">
   <p class="title">Halo 3 Recomp</p>
-  <p class="tagline">Halo 3 running natively on PC. Recompiled from the Xbox 360 game, not emulated.</p>
+  <p class="tagline">Halo 3 on PC, statically recompiled from the Xbox 360 game. Not a native port (yet).</p>
   <ul class="menu">
     <li><a class="selected" href="https://github.com/george0815/halo-3-recomp#installing" data-desc="Download the release, choose your Halo 3 disc image, and play.">Install</a></li>
     <li><a href="{{ '/guide.html' | relative_url }}" data-desc="The launcher, controls, split screen and system link, in detail.">Player guide</a></li>
@@ -35,10 +35,13 @@ nav_order: 1
   })();
 </script>
 
-The Xbox 360 game's own code, **statically recompiled** into a native
-program for Linux and Windows, with the 360's operating system, graphics and
-audio rebuilt around it. No part of Halo 3 is distributed: the installer
-builds the game from **your own disc image**, on your PC.
+The Xbox 360 game's own code, **statically recompiled** to C++ and running
+directly on your CPU, on Linux and Windows. The hardware and operating
+system around it, the GPU, XMA audio and the 360's kernel, are emulated at a
+high level, built on [Xenia](https://github.com/xenia-project/xenia)'s
+research. A true native port, hand-written C++ in place of the recompiled
+code, is the long-term goal. No part of Halo 3 is distributed: the
+installer builds the game from **your own disc image**, on your PC.
 
 <div class="feature-grid">
   <div class="panel"><h3>The whole game</h3><p>Campaign solo and co-op, multiplayer Custom Games, Forge and Theater, on Halo 3's own engine and rules.</p></div>

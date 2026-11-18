@@ -1,9 +1,13 @@
 # Halo 3 Recomp
 
-**Halo 3 running natively on PC, Linux and Windows,** made by statically
-recompiling the Xbox 360 game's own code to C++. Not an emulator: the game's
-PowerPC code becomes a native program, with the 360's graphics, audio and
-operating system rebuilt around it.
+**Halo 3 on PC, Linux and Windows,** made by statically recompiling the Xbox
+360 game's own code to C++. The game's PowerPC code is translated ahead of
+time and runs directly on your CPU, but **this is not a native port (yet)**:
+the systems around it, the 360's GPU, XMA audio and operating system, are
+emulated at a high level by the runtime, built on what
+[Xenia](https://github.com/xenia-project/xenia) taught the world about the
+console. Replacing the recompiled code with hand-written C++, a true native
+port, is the project's long-term goal.
 
 **No game data is included.** You need your own Halo 3 disc, dumped to a
 disc image ([how](docs/DUMPING.md)). The installer builds the game from it on

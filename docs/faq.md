@@ -34,13 +34,20 @@ download them straight from Microsoft (about 1 GB, once), after asking you
 to accept Microsoft's license terms. Visual Studio isn't needed. The
 compiler itself (LLVM's clang-cl) comes with the release.
 
-### Is this an emulator?
+### Is this an emulator? Is it a native port?
 
-No. An emulator interprets or JIT-compiles the 360's PowerPC code while the
-game runs. Here every function of the game was translated to C++ ahead of
-time and compiled into a normal program for your CPU; what's emulated is
-the hardware and operating system around it (the GPU's command stream, XMA
-audio, the kernel).
+Partly the first, not yet the second. An emulator like
+[Xenia](https://github.com/xenia-project/xenia) interprets or JIT-compiles
+the 360's PowerPC code while the game runs; here every function of the game
+was translated to C++ ahead of time and compiled into a normal program for
+your CPU, so the game's own logic runs directly. But everything around it is
+still emulated at a high level: the Xenos GPU's command stream and shaders,
+XMA audio, the kernel and system software. That part owes a great deal to
+Xenia, whose source is the reference for how the console behaves.
+
+A *native port* would be the game as readable, hand-written PC code, with no
+Xbox 360 underneath. That's where the project is heading
+([native port](NATIVE_PORT_STATUS.html)), one subsystem at a time.
 
 ### Does it run at 60 fps? Doesn't Halo 3 break at 60?
 
