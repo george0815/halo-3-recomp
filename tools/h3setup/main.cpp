@@ -8,8 +8,11 @@
 //                                  DLLs to C++ in <dir>/build
 //   h3setup build <dir> [--package <dir>] [--jobs <n>]
 //                                  compile and link <dir>/H3Recomp
+//   h3setup sdk <dir> --accept-microsoft-license
+//                                  Windows: fetch Microsoft's C runtime and
+//                                  Windows SDK (xwin) into <dir>/toolchain/sdk
 //   h3setup install <iso> <dir> [--package <dir>] [--jobs <n>]
-//                                  all of the above
+//                   [--accept-microsoft-license]   all of the above
 //
 // The package (the release: runtime/, recompiler/, tools/) defaults to the
 // folder h3setup is in. docs/ISO_TOOL.md. Progress lines for the launcher
@@ -28,6 +31,17 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
+using h3setup::FromUtf8;
+using h3setup::Utf8;
 
 namespace
 {
@@ -49,11 +63,12 @@ namespace
                         "       h3setup extract <iso> <install directory>\n"
                         "       h3setup recompile <install directory> --config <dir> --tools <dir>\n"
                         "       h3setup build <install directory> [--package <dir>] [--jobs <n>]\n"
-                        "       h3setup install <iso> <install directory> [--package <dir>] [--jobs <n>]\n");
+                        "       h3setup sdk <install directory> --accept-microsoft-license\n"
+                        "       h3setup install <iso> <install directory> [--package <dir>] [--jobs <n>] [--accept-microsoft-license]\n");
         return 2;
     }
 
-    bool OpenIso(h3setup::Iso& iso, const char* path)
+    bool OpenIso(h3setup::Iso& iso, const std::filesystem::path& path)
     {
         if (iso.Open(path))
             return true;
@@ -93,16 +108,43 @@ namespace
         return false;
     }
 
-    int Extract(h3setup::Iso& iso, const char* directory)
+    int Extract(h3setup::Iso& iso, const std::filesystem::path& directory)
     {
         uint64_t total = 0, done = 0;
         for (const h3setup::IsoEntry& entry : iso.Entries())
             total += entry.directory ? 0 : entry.size;
+
+        // Room for the disc's files and the build (~1.5 GB of objects).
+        std::error_code ec;
+        std::filesystem::create_directories(directory, ec);
+        std::filesystem::space_info space = std::filesystem::space(directory, ec);
+        constexpr uint64_t kBuildBytes = 1536ull << 20;
+        uint64_t have = 0;
+        if (!ec)
+        {
+            have = space.available;
+            for (const h3setup::IsoEntry& entry : iso.Entries())  // already extracted (a retry)
+                if (!entry.directory && std::filesystem::file_size(directory / "game" / FromUtf8(entry.path.substr(1)), ec) == entry.size && !ec)
+                    have += entry.size;
+            if (have < total + kBuildBytes)
+            {
+                fprintf(stderr, "error: not enough free space in %s: the install needs %.1f GB, %.1f GB are free\n", Utf8(directory).c_str(),
+                    double(total + kBuildBytes) / 1e9, double(space.available) / 1e9);
+                return 1;
+            }
+        }
         int lastPercent = -1;
         for (const h3setup::IsoEntry& entry : iso.Entries())
         {
-            std::filesystem::path destination = std::filesystem::path(directory) / "game" / std::filesystem::path(entry.path.substr(1));
+            std::filesystem::path destination = directory / "game" / FromUtf8(entry.path.substr(1));
             uint64_t before = done;
+            // Already there from an earlier run that stopped: keep it.
+            std::error_code sizeError;
+            if (!entry.directory && std::filesystem::file_size(destination, sizeError) == entry.size && !sizeError)
+            {
+                done += entry.size;
+                continue;
+            }
             bool ok = iso.Extract(entry, destination, [&](uint64_t bytes) {
                 int percent = total ? int((before + bytes) * 100 / total) : 100;
                 if (percent != lastPercent)
@@ -120,28 +162,21 @@ namespace
             if (!entry.directory)
                 done += entry.size;
         }
-        printf("extracted %zu entries (%.1f GB) to %s\n", iso.Entries().size(), double(total) / 1e9, directory);
+        printf("extracted %zu entries (%.1f GB) to %s\n", iso.Entries().size(), double(total) / 1e9, Utf8(directory).c_str());
         return 0;
     }
 
     // --- recompile ----------------------------------------------------------
 
-    std::string Quote(const std::filesystem::path& path)
+    // Runs a program (no shell), its output into log; false (and says so)
+    // if it fails.
+    bool Run(const std::vector<std::string>& args, const std::filesystem::path& log)
     {
-        return "\"" + path.string() + "\"";
-    }
-
-    // Runs a command line; false (and says so) if it fails.
-    bool Run(const std::string& command)
-    {
-#ifdef _WIN32
-        // cmd.exe strips one pair of outer quotes.
-        int status = std::system(("\"" + command + "\"").c_str());
-#else
-        int status = std::system(command.c_str());
-#endif
+        std::error_code ec;
+        std::filesystem::remove(log, ec);
+        int status = h3setup::RunProgram(args, log);
         if (status != 0)
-            fprintf(stderr, "error: command failed (%d): %s\n", status, command.c_str());
+            fprintf(stderr, "error: %s failed (%d); see %s\n", FromUtf8(args[0]).filename().string().c_str(), status, Utf8(log).c_str());
         return status == 0;
     }
 
@@ -159,7 +194,7 @@ namespace
     void SetPath(std::string& config, const std::string& key, const std::filesystem::path& value,
         const std::filesystem::path& configDirectory)
     {
-        std::string relative = std::filesystem::relative(value, configDirectory).generic_string();
+        std::string relative = Utf8(std::filesystem::relative(value, configDirectory));
         std::string replacement = key + " = \"" + relative + "\"";
         config = std::regex_replace(config, std::regex("(^|\n)" + key + " = \"[^\"]*\""), "$1" + replacement);
     }
@@ -176,7 +211,7 @@ namespace
         std::filesystem::path tables = source.parent_path() / (source.stem().string() + "_switch_tables.toml");
         if (config.empty() || !std::filesystem::exists(tables) || !std::filesystem::exists(input))
         {
-            fprintf(stderr, "error: missing %s, its jump tables or %s\n", source.string().c_str(), input.string().c_str());
+            fprintf(stderr, "error: missing %s, its jump tables or %s\n", Utf8(source).c_str(), Utf8(input).c_str());
             return false;
         }
         std::error_code ec;
@@ -193,9 +228,14 @@ namespace
 
         printf("recompiling %s\n", input.filename().string().c_str());
         fflush(stdout);
-        std::filesystem::path recomp = tools / "XenonRecomp", info = tools / "h3xexinfo";
-        return Run(Quote(recomp) + " " + Quote(written) + " " + Quote(context) + " > " + Quote(build / "recompile.log") + " 2>&1") &&
-            Run(Quote(info) + " " + Quote(input) + " --stubs " + Quote(output / "import_stubs.cpp") + " > " + Quote(build / "stubs.log") + " 2>&1");
+#ifdef _WIN32
+        const char* suffix = ".exe";
+#else
+        const char* suffix = "";
+#endif
+        std::filesystem::path recomp = tools / ("XenonRecomp" + std::string(suffix)), info = tools / ("h3xexinfo" + std::string(suffix));
+        return Run({ Utf8(recomp), Utf8(written), Utf8(context) }, build / "recompile.log") &&
+            Run({ Utf8(info), Utf8(input), "--stubs", Utf8(output / "import_stubs.cpp") }, build / "stubs.log");
     }
 
     int Recompile(std::filesystem::path install, std::filesystem::path configs, std::filesystem::path tools)
@@ -208,7 +248,7 @@ namespace
         std::filesystem::path context = configs / "ppc_context.h";
         if (!std::filesystem::exists(context))
         {
-            fprintf(stderr, "error: no ppc_context.h in %s\n", configs.string().c_str());
+            fprintf(stderr, "error: no ppc_context.h in %s\n", Utf8(configs).c_str());
             return 1;
         }
         if (!RecompileOne(configs / "halo3.toml", game / "default.xex", build / "ppc", build, tools, context, true))
@@ -228,64 +268,95 @@ namespace
             std::string config = ReadText(module);
             if (!std::regex_search(config, match, std::regex("file_path = \"[^\"]*/game/([^\"]+)\"")))
             {
-                fprintf(stderr, "error: %s doesn't name its DLL's place on the disc\n", module.string().c_str());
+                fprintf(stderr, "error: %s doesn't name its DLL's place on the disc\n", Utf8(module).c_str());
                 return 1;
             }
-            if (!RecompileOne(module, game / std::filesystem::path(match[1].str()), build / "modules" / module.stem(), build,
+            if (!RecompileOne(module, game / FromUtf8(match[1].str()), build / "modules" / module.stem(), build,
                     tools, context, false))
                 return 1;
             printf("progress recompile %d\n", 20 + 80 * ++done / int(modules.size()));
             fflush(stdout);
         }
-        printf("recompiled into %s\n", build.string().c_str());
+        printf("recompiled into %s\n", Utf8(build).c_str());
         return 0;
     }
 }
 
-int main(int argc, char** argv)
+int main(int argcNarrow, char** argvNarrow)
 {
+    // The arguments as UTF-8 (Windows: from the UTF-16 command line; argv
+    // there is in the ANSI code page and loses other characters).
+    std::vector<std::string> argv(argvNarrow, argvNarrow + argcNarrow);
+#ifdef _WIN32
+    int count = 0;
+    if (wchar_t** wide = CommandLineToArgvW(GetCommandLineW(), &count))
+    {
+        argv.clear();
+        for (int i = 0; i < count; i++)
+        {
+            int length = WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, nullptr, 0, nullptr, nullptr);
+            std::string text(size_t(std::max(length, 1) - 1), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, text.data(), length, nullptr, nullptr);
+            argv.push_back(text);
+        }
+        LocalFree(wide);
+    }
+#endif
+    int argc = int(argv.size());
     if (argc < 3)
         return Usage();
     std::string command = argv[1];
     h3setup::Iso iso;
 
     // --package / --jobs after the positional arguments.
-    std::filesystem::path package = std::filesystem::absolute(argv[0]).parent_path();
+    std::filesystem::path package = std::filesystem::absolute(FromUtf8(argv[0])).parent_path();
     int jobs = int(std::max(1u, std::thread::hardware_concurrency()));
-    std::vector<std::string> positional;
+    bool acceptMicrosoft = false;
+    std::vector<std::filesystem::path> positional;
     for (int i = 2; i < argc; i++)
     {
-        std::string arg = argv[i];
+        const std::string& arg = argv[i];
         if (arg == "--package" && i + 1 < argc)
-            package = argv[++i];
+            package = FromUtf8(argv[++i]);
         else if (arg == "--jobs" && i + 1 < argc)
-            jobs = std::max(1, atoi(argv[++i]));
+            jobs = std::max(1, atoi(argv[++i].c_str()));
+        else if (arg == "--accept-microsoft-license")
+            acceptMicrosoft = true;
         else
-            positional.push_back(arg);
+            positional.push_back(FromUtf8(arg));
     }
     if (command == "build" && positional.size() == 1)
         return h3setup::Build(positional[0], package, jobs);
+    if (command == "sdk" && positional.size() == 1)
+        return h3setup::FetchSdk(positional[0], package, acceptMicrosoft);
     if (command == "install" && positional.size() == 2)
     {
-        if (!OpenIso(iso, positional[0].c_str()) || !Check(iso) || Extract(iso, positional[1].c_str()) != 0)
+        if (!OpenIso(iso, positional[0]) || !Check(iso))
+            return 1;
+#ifdef _WIN32
+        // First, so a missing license acceptance stops before the 6 GB copy.
+        if (h3setup::FetchSdk(positional[1], package, acceptMicrosoft) != 0)
+            return 1;
+#endif
+        if (Extract(iso, positional[1]) != 0)
             return 1;
         if (Recompile(positional[1], package / "recompiler" / "config", package / "tools") != 0)
             return 1;
         return h3setup::Build(positional[1], package, jobs);
     }
-    if (command == "check")
-        return OpenIso(iso, argv[2]) && Check(iso) ? 0 : 1;
-    if (command == "list")
+    if (command == "check" && positional.size() == 1)
+        return OpenIso(iso, positional[0]) && Check(iso) ? 0 : 1;
+    if (command == "list" && positional.size() == 1)
     {
-        if (!OpenIso(iso, argv[2]))
+        if (!OpenIso(iso, positional[0]))
             return 1;
         for (const h3setup::IsoEntry& entry : iso.Entries())
             printf("%c %12llu %s\n", entry.directory ? 'D' : 'F', static_cast<unsigned long long>(entry.size), entry.path.c_str());
         return 0;
     }
-    if (command == "extract" && argc == 4)
-        return OpenIso(iso, argv[2]) && Check(iso) ? Extract(iso, argv[3]) : 1;
-    if (command == "recompile" && argc == 7 && std::string(argv[3]) == "--config" && std::string(argv[5]) == "--tools")
-        return Recompile(argv[2], argv[4], argv[6]);
+    if (command == "extract" && positional.size() == 2)
+        return OpenIso(iso, positional[0]) && Check(iso) ? Extract(iso, positional[1]) : 1;
+    if (command == "recompile" && argc == 7 && argv[3] == "--config" && argv[5] == "--tools")
+        return Recompile(FromUtf8(argv[2]), FromUtf8(argv[4]), FromUtf8(argv[6]));
     return Usage();
 }

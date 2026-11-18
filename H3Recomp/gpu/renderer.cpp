@@ -154,11 +154,16 @@ namespace h3::gpu::renderer
         shader::g_registerLod = !EnvFlag("H3_NO_REGISTER_LOD");
         CreatePlaceholders(device);
 
-        // Shader compilation (pipelines.cpp): asynchronous if asked
-        // (H3_ASYNC_SHADERS=1/0 overrides), and warm-up from the manifest
-        // unless turned off (H3_NO_WARMUP).
+        // Shader compilation (pipelines.cpp): asynchronous if asked, and
+        // always with system link on: a map's first load on a PC that hasn't
+        // seen its shaders otherwise stalls the frame (and the game thread
+        // with it) for seconds, long enough for the other games to drop
+        // this one; asynchronous, objects are missing for a few frames
+        // instead. H3_ASYNC_SHADERS=1/0 overrides. Warm-up from the
+        // manifest unless turned off (H3_NO_WARMUP).
         const config::VideoSettings& video = config::Active().video;
-        g_asyncShaders = EnvNumber("H3_ASYNC_SHADERS", video.asyncShaders ? 1 : 0) != 0;
+        bool async = video.asyncShaders || config::Active().network.systemLink;
+        g_asyncShaders = EnvNumber("H3_ASYNC_SHADERS", async ? 1 : 0) != 0;
         if (video.precompileShaders && !EnvFlag("H3_NO_WARMUP"))
             StartShaderWarmup();
 

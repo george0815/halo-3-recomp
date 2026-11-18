@@ -1,392 +1,126 @@
-# halo-3-recomp
+# Halo 3 Recomp
 
-An in-progress static recompilation of Halo 3 (Xbox 360) to native PC code,
-with decompilation of individual subsystems as a long-term goal.
+**Halo 3 running natively on PC, Linux and Windows,** made by statically
+recompiling the Xbox 360 game's own code to C++. Not an emulator: the game's
+PowerPC code becomes a native program, with the 360's graphics, audio and
+operating system rebuilt around it.
 
-**No game data is included.** You need your own legally dumped copy of the
-game. See [docs/DUMPING.md](docs/DUMPING.md).
+**No game data is included.** You need your own Halo 3 disc, dumped to a
+disc image ([how](docs/DUMPING.md)). The installer builds the game from it on
+your PC; nothing from Halo 3 is ever distributed.
+
+Project site (FAQ, guides, how it works, roadmap, updates):
+**https://george0815.github.io/halo-3-recomp/**
+
+## Features
+
+- **The whole game:** the campaign (solo and two-player co-op), multiplayer
+  Custom Games, Forge and Theater, in Halo 3's own engine and rules.
+- **60 frames per second,** with fixes for what the 360 version tied to
+  30 (weapon fire rates, physics, camera shake, AI, animations), checked
+  tick by tick against the original with recorded films.
+- **Higher resolutions:** 2x and 3x the 360's 1280x720, FXAA, any window size,
+  fullscreen.
+- **Keyboard and mouse that feel native:** direct mouse look like MCC's,
+  zoom-aware mouse speed, a mouse pointer in the menus, rebindable keys shown
+  in the game's own prompts ("[Space] Select"), toggle crouch, hold to zoom.
+- **PC options:** field of view, centered crosshair, vehicle mouse
+  sensitivity, skip the intro, the 360's original text and icons if you
+  prefer them.
+- **Split screen** for up to four players (any mix of controllers and the
+  keyboard).
+- **System link** over your LAN or the internet with friends, no Xbox Live
+  needed.
+- **Linux and Windows,** from one code base.
+
+## Installing
+
+1. Download the release for your system (Releases on this page) and unpack
+   it into a folder of its own.
+2. Start **H3Launcher**, select **INSTALL** and choose your Halo 3 disc image.
+   It checks the disc, copies the game's files (about 6 GB), translates and
+   compiles the game's code (a few minutes), and then it's ready: **LAUNCH**.
+
+You need a 64-bit PC with a Vulkan graphics card and about 8 GB of disk
+space. On Windows (10 version 1903 or later), the installer downloads
+Microsoft's C runtime and Windows SDK once, after asking you to accept
+Microsoft's terms. On Linux, install clang 18 or newer first
+(`sudo apt install clang`, `sudo dnf install clang`, `sudo pacman -S clang`).
+
+Supported: the original disc release of Halo 3 (`default.xex` SHA-1
+`927a8c49062a55179d84116e33f8a5a0b3db13c1`). Title updates and other
+pressings aren't yet.
+
+The [player guide](docs/guide.md) covers the launcher, the controls, split
+screen and system link in detail; the [FAQ](docs/faq.md) answers the usual
+questions.
+
+## Default keys
+
+| Key | Action |
+|---|---|
+| W A S D / Mouse | Move / look |
+| Left / right mouse button | Fire / zoom |
+| Space | Jump (A) |
+| Left Shift | Grenade |
+| Middle mouse, V | Melee |
+| Mouse wheel, Q | Switch weapons |
+| R | Reload / pick up |
+| G | Switch grenades |
+| F | Use equipment |
+| C | Crouch |
+| E, Left Ctrl | Fire |
+| Escape / Tab | Start (menu) / Back (scoreboard) |
+| In menus | The mouse points and clicks; right click goes back |
+
+Every key can be changed in the launcher (CONTROLS). Controllers use the
+standard Halo 3 layout.
 
 ## How it works
 
-1. [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) translates every
-   PowerPC function in the game's `default.xex` into C++
-   (`H3RecompLib/ppc/`, generated and git-ignored).
-2. The runtime (`H3Recomp/`) provides what the 360 used to: guest memory,
-   kernel/XAM imports, graphics, audio, input.
-3. Over time, recompiled functions get replaced with hand-written code.
+1. **[XenonRecomp](https://github.com/hedge-dev/XenonRecomp)** translates
+   every PowerPC function in the game's `default.xex` (and the DLLs it loads)
+   into C++.
+2. **The runtime** (`H3Recomp/`) provides what the Xbox 360 did: guest memory,
+   the kernel and XAM system calls, the Xenos GPU (translated to Vulkan), XMA
+   audio, input, networking.
+3. **Hooks** replace or adjust individual game functions: the 60 Hz fixes,
+   mouse look, the menu cursor, PC text, system link.
+4. **The ISO tool** (`h3setup`) does steps 1 and the build on your machine,
+   from your disc, so the release itself contains only our code.
 
-This is the same approach as [Unleashed Recompiled](https://github.com/hedge-dev/UnleashedRecomp),
-which is the best reference for what a finished runtime looks like.
-[Xenia](https://github.com/xenia-project/xenia) is the reference for kernel
-and GPU behaviour.
+Over time, recompiled functions get replaced with hand-written C++ (the
+native port). The approach follows [Unleashed Recompiled](https://github.com/hedge-dev/UnleashedRecomp);
+[Xenia](https://github.com/xenia-project/xenia) is the reference for the
+360's kernel and GPU. More on the [architecture](docs/ARCHITECTURE.md) and
+how the project [tests itself with recorded films](docs/testing.md).
 
-## Layout
-
-```
-H3Recomp/            runtime: entry point, guest memory, kernel imports
-H3Launcher/          Qt launcher: settings, profile, controls (optional)
-H3RecompLib/config/  XenonRecomp config + jump tables for Halo 3
-H3RecompLib/ppc/     generated C++ (ignored)
-H3RecompLib/modules/ generated C++ for the DLLs the game loads (ignored)
-tools/h3xexinfo/     XEX inspector: layout, imports, helper addresses, stubs
-tools/recompile.sh   full XEX -> C++ pipeline
-tools/build_ffmpeg.sh  FFmpeg 7.1 + XMA frame decoder (tools/patches/), static
-tools/xdvdfs_extract.py  disc image -> private/game
-tools/h3analysis.py  jump table / function boundary fixups
-thirdparty/          XenonRecomp (submodule)
-private/             your game files (ignored)
-docs/                dumping guide, roadmap
-```
-
-## Building
-
-Requires CMake 3.20+, Ninja, Clang 18+, SDL3, shaderc and a Vulkan driver.
-The launcher additionally needs Qt 6 (Widgets); without it, it is skipped.
-XMA audio needs a patched FFmpeg, built once by `tools/build_ffmpeg.sh`
-(downloads FFmpeg 7.1; needs curl, make and a C compiler).
+## Building from source
 
 ```sh
 git submodule update --init --recursive
-
-# Tools only (no game files needed)
-cmake --preset release
-cmake --build --preset release
-
-# Put your default.xex in private/, then:
-build/release/tools/h3xexinfo/h3xexinfo private/default.xex
-# paste the printed addresses into H3RecompLib/config/halo3.toml
-tools/build_ffmpeg.sh
-tools/recompile.sh
-cmake --build --preset release
-build/release/H3Recomp/H3Recomp private/default.xex
+cmake --preset release && cmake --build --preset release   # tools only
+# With your default.xex in private/:
+tools/build_ffmpeg.sh && tools/recompile.sh && cmake --build --preset release
+build/release/H3Launcher/H3Launcher
 ```
 
-The game's hard drive (cache partitions, saves) is created in `private/hdd/`,
-and compiled host shaders are cached in `private/shadercache/` (safe to delete),
-along with `pipelines.txt`, the list of shaders and pipelines this PC has used,
-which the game rebuilds in the background at start (launcher: Video >
-Precompile shaders) so areas you've already played don't stutter.
-Delete `private/hdd/` to start from a clean console (this also clears the
-saved profile settings, `private/hdd/profile_settings.bin`).
-
-### Launcher
-
-`build/release/H3Launcher/H3Launcher` edits the settings and starts the game.
-Keyboard, mouse (right-click goes back) or a gamepad; the layout follows the
-window size.
-It finds `private/default.xex` by itself (or use GAME LOCATION, or pass the
-path as its argument). Its menus use Halo 3's own font, read from the game's
-`maps/fonts/font_package.bin`.
-
-- **Video**: window size, fullscreen (F11 or Alt+Enter toggles it in game),
-  vsync, the render resolution (1x native 1280x720, 2x or 3x), anti-aliasing
-  (FXAA; Halo 3 itself has none), precompiling shaders at start, and background shader compilation (no stutter the first
-  time something new appears, but it can be missing for a few frames).
-- **Controls**: up to three keys or mouse buttons per action, mouse
-  sensitivity and inversion. Gamepads always use the standard layout.
-- **Debug**: the logging and tracing switches below (set in `settings.ini`
-  and applied by the game at start, so they work without the launcher too),
-  writing the console output to `private/h3recomp.log`, and unlocking every
-  campaign mission.
-- **Profile**: gamertag, a gamer picture (shown on the launcher's profile
-  card; Halo 3 itself shows your emblem), and the profile options Halo 3
-  copies into a new player profile (invert look, vibration, auto-aim,
-  auto-center).
-
-Settings are saved to `settings.ini` next to `default.xex` (plain text, safe
-to edit by hand; see `H3Recomp/config/settings.h`), and the game reads them
-at start. Whatever the game saves to your profile (its own settings, controls
-and emblem) persists in `private/hdd/profile_settings.bin`.
-
-### Controls
-
-Controller 1 is the keyboard and mouse merged with the first gamepad SDL
-finds. The keyboard and mouse bindings are set in the launcher; the
-defaults:
-
-| Key | Controller |
-|---|---|
-| W A S D | Left stick (move) |
-| I J K L | Right stick (look) |
-| Arrow keys | D-pad (menus) |
-| Space, Enter | A |
-| Backspace, V | B |
-| F | X |
-| Q | Y |
-| G / R | Left / right bumper |
-| Left Shift | Left trigger |
-| Left Ctrl, E | Right trigger |
-| C / Z | Left / right stick click |
-| Escape | Start |
-| Tab | Back |
-| Mouse | Right stick (look); click the window to capture the mouse, F1 releases it |
-| Left mouse button | Right trigger (fire) |
-| Right mouse button | Right stick click (zoom) |
-| Middle mouse button | B (melee) |
-| Mouse wheel | Y (switch weapons) |
-
-`H3_MOUSE_SENSITIVITY=<factor>` overrides the launcher's mouse sensitivity.
-
-In menus the mouse is a pointer: the mouse is released while a menu is
-open (main menu, lobbies, the start menu, the pause menu) and captured again
-when play resumes. Pointing at an item selects it, a left click chooses it
-(A), a right click goes back (B) and the wheel moves up and down (D-pad).
-Only the menu that has the input responds (not the lobby behind a popup or
-the start menu). Off with "Mouse in menus" (launcher, Controls;
-`menu_cursor`).
-
-Crouch can be a toggle and zoom a hold on the keyboard and mouse (launcher,
-Controls; `toggle_crouch`, `hold_to_zoom`): the game's own are hold to
-crouch and press to step through a weapon's zoom levels and out. Hold to
-zoom zooms to the first level while the key is held and straight out when
-it's let go; pressing a second zoom key while holding one (Mouse Right and
-Z by default) steps to the next level (a sniper rifle's 10x).
-Keys in English prompts use short names ("[Esc]", "[MMB]"). For the 360's
-own text and button icons, turn off "PC wording" and "Keys in prompts"
-(launcher, Video; `pc_wording`, `pc_key_names`). "Skip intro video" (Video;
-`skip_intro`) goes straight to the main menu. "Field of view" (Video; `fov`,
-60-120, the game's 70) widens the view by scaling every biped's and
-vehicle's camera FOV as a map loads; with more than one player on the PC
-the game's own FOV stays, as in MCC. "Centered crosshair" (Video;
-`centered_crosshair`) puts the crosshair, and the aim, in the middle of the
-screen instead of below it.
-
-While you play on the keyboard and mouse, the button icons in English menus
-and prompts show the keys bound to them ("[Space] Select"); with a gamepad,
-the buttons. Screens already open switch the next time they're opened. The
-text also says "PC" where it said "Xbox 360 console" (`H3_NO_PC_TEXT=1`
-keeps the original wording).
-
-#### Split screen
-
-Up to four players, as on the 360: two in campaign co-op, four in
-multiplayer (Custom Games, Forge). Gamepads after the first are controllers
-2-4 in the order they connect; a controller's player joins by pressing
-START (until then the game doesn't see it, so a spare gamepad or Steam's
-virtual copy of one adds no player) and is signed in with the profile
-named in the launcher ("Player 2 gamertag", `gamertag_2` to `gamertag_4` in
-`[profile]`). Signed-in players are in every lobby. With "Keyboard is its
-own player" (`keyboard_own_player` in `[controls]`) the keyboard and mouse
-are player 1 alone and the first gamepad is player 2. A player whose
-controller is unplugged stays signed in: the game pauses with its
-reconnect message and goes on when it's back. Holding BACK and START
-together for two seconds signs a player out (START joins again). Each
-player's game profile (controls, emblem) is saved to
-`profile_settings_2.bin` to `_4.bin` next to player 1's.
-
-#### Mouse look
-
-"Mouse look: Native" in the launcher (`native_mouse_look` in `[controls]`)
-turns the view straight from the mouse, as MCC's PC version does, instead of
-driving the right stick (which brings the controller's response curve and
-acceleration). Mouse sensitivity is 0.022 degrees per count at 1.0, the
-usual PC shooter scale. Zoomed in, the mouse slows with the magnification
-(by tan(zoomed FOV / 2) / tan(normal FOV / 2): the view moves across the
-screen as fast as unzoomed), and "Vehicle mouse sensitivity"
-(`vehicle_mouse_sensitivity`) scales it in vehicles and turrets.
-
-#### System link
-
-With System link on (launcher, Network; `[network]` in settings.ini) Custom
-Games and Forge can host and find System Link games. Each game uses one UDP
-port (41001 by default): on a LAN that's all; over the internet, list
-friends' addresses (`host` or `host:port`) and have the host forward the
-port (only the host needs a reachable port: other players reach each
-other through the games they know). Everyone needs the same version of
-this project, the same game executable (disc and title update), the same
-frame rate setting and the 60 Hz fixes on or off alike; packets from other
-games are ignored and logged. Finding, joining and playing work
-(tested with three games on one PC). Keep shaders precompiled (launcher,
-Video): a map loading with an empty shader cache can stall long enough to
-drop the others.
-
-`H3_INPUT_SCRIPT="40-40.4:down,f900-905:a"` holds buttons between two
-times (seconds since start, or presented frames with `f`) for testing
-without a keyboard (names: a b x y start
-back up down left right lb rb ls rs; sticks and triggers: lup ldown lleft
-lright rup rdown rleft rright lt rt). A `p2.` to `p4.` prefix presses it
-on another controller (`f2300-2306:p2.start` joins player 2), and `unplug`
-disconnects that controller while held. `H3_VIRTUAL_PADS=<n>` connects
-controllers 2 to n+1 with no gamepad behind them, for split screen tests.
-`H3_LOG_INPUT=1` logs state changes; `H3_LOG_USER=1` sign-ins and profile
-calls.
-
-### Debugging
-
-Environment variables:
-
-| Variable | Effect |
-|---|---|
-| `H3_STRICT_IMPORTS=1` | Abort on the first unimplemented import instead of logging it |
-| `H3_LOG_FILES=1` | Log file opens (with share access), attribute queries, information changes, renames and symbolic links |
-| `H3_LOG_READS=1` | Log every file read (path, offset, length, destination) |
-| `H3_LOG_MEMORY=1` | Log physical memory allocations |
-| `H3_LOG_GPU=1` | Log ring buffer setup, the first use of each PM4 opcode, and frame counts |
-| `H3_RENDER=0` | Turn host rendering off (the GPU command stream is still processed) |
-| `H3_RENDER_SCALE=<1-3>` | Override the launcher's render resolution |
-| `H3_AA=off\|fxaa` | Override the launcher's anti-aliasing (FXAA on the finished frame) |
-| `H3_ASYNC_SHADERS=1\|0` | Override background shader compilation |
-| `H3_NO_WARMUP=1` | Don't rebuild the shader cache's pipelines at start (the list of them, `pipelines.txt` in the shader cache, starts over when the translator's output changes for every shader) |
-| `H3_LAUNCHER_SCREENSHOT=out.png` | (H3Launcher) render the launcher window to a PNG and exit; `H3_LAUNCHER_KEYS="Down,Return"` sends keys first. Works with `QT_QPA_PLATFORM=offscreen` |
-| `H3_NO_TEXTURES=1` | Bind gray placeholders instead of textures decoded from memory |
-| `H3_NO_WRITEBACK=1` | Don't copy small resolves back to guest memory |
-| `H3_DUMP_FRAME=<n>` | Save the n-th presented frame as `frame_<n>.png` |
-| `H3_DUMP_RESOLVE=<n>\|all` | With `H3_DUMP_FRAME`: save that frame's n-th resolve (or all of them) as PNGs |
-| `H3_LOG_RESOLVES=1` | Log every resolve (source, rectangle, destination, format) |
-| `H3_LOG_USER=1`, `H3_LOG_CONTENT=1`, `H3_LOG_NOTIFY=1` | Log profile, content and notification calls |
-| F10 (key) | Like F9, plus what each draw of the frame changed in color target 0: a crop of the changed rectangle per draw (`draw_<frame>_<n>_<x>_<y>.png`), listed in `deep_capture.txt`. The game freezes until it finishes (up to a minute or so); let it finish |
-| F9 (key) / `H3_CAPTURE_AT=<frame>[,<frame>...]` | Capture the next frame (or those frames, one folder each) into `captures/capture_<n>/`: `gpu_capture.txt`, the shaders, the presented frame and every resolve |
-| `H3_GPU_CAPTURE=<frame>` | Write `gpu_capture.txt`: every draw, resolve and shader load in that frame (counted in swaps) with the render state |
-| `H3_DUMP_DRAWS=<first>-<last>` | With `H3_DUMP_FRAME`: save color target 0 after each of those draws (numbered like the capture's `draw #n`), 2304x1280 (render targets are in sample space: a 4x surface's pixel is 2x2 texels) |
-| `H3_SKIP_DRAWS=<first>-<last>[,...]` | Drop those draws (numbered like the capture's `draw #n`) in every frame, to find which draw causes an artifact |
-| `H3_NO_MEMEXPORT=1` | Don't run vertex shaders' memory exports (GPU particles, occlusion tests, water factors) |
-| `H3_LOG_MEMEXPORT=1` | Log memory export dispatches, their records (first few values) and buffer use |
-| `H3_TICK_RATE=<n>` | Game ticks (frames) per second, overriding the launcher's frame rate (30 original, 60 experimental) |
-| `H3_TICK_RATE_SKIP=<n>` | Leave the first n game time setups at 30 ticks (1: menus at 30, levels at `H3_TICK_RATE`; for frame-timed input scripts) |
-| `H3_PRESENT_INTERVAL=<n>` | Vblanks each swap waits for (Halo 3 asks for 1; with the 60 Hz tick it is 0, swaps present at once). Set 1 to compare |
-| `H3_LOG_TICK_RATE=1` | Log the game's time globals (tick rate, tick count) every 300 frames |
-| `H3_POKE=<frame>:<address>:<hex bytes>[,...]` | Write bytes into guest memory at that swap (addresses as for `H3_DUMP_MEMORY`), for experiments |
-| `H3_LOG_WAIT_DETAIL=1` | Log every WAIT_REG_MEM (address, function, reference, current value) |
-| `H3_APPROX_GAMMA=1` | Approximate the 8_8_8_8_GAMMA piecewise-linear curve as gamma 2 (the old behaviour), to compare |
-| `H3_LOG_CARRYOVER=1` | Log every EDRAM format switch (base, formats, rectangle carried over) |
-| `H3_FULL_CARRYOVER=1` | Carry whole render targets over on EDRAM format switches instead of only what changed, to compare |
-| `H3_FAKE_ZPD=1` | Report every occlusion query as visible (the old behaviour) instead of counting samples (tac lights, light glows) |
-| `H3_MEMEXPORT_ASYNC=1` | Don't wait for earlier frames' memory exports before reading their data (the old behaviour) |
-| `H3_NO_EXPORT_SCATTER=1` | Don't copy a memory export's results into the data later dispatches in the same frame read (GPU particles spawned and updated in one frame: muzzle flashes, splashes) |
-| `H3_NO_EXPORT_BATCHING=1` | Record each memory export dispatch on its own (the old way) instead of in batches of independent dispatches |
-| `H3_HIGHLIGHT_VS=<hash>` | Draw that vertex shader's draws (hash prefix of a captured `gpu_shaders/vs_<hash>.bin`; `list` prints them) in magenta with depth test off, and log their vertex fetch data |
-| `H3_LOG_VS_DATA=<hash>[:<dwords>]` | Log each draw of that vertex shader (hash prefix as for `H3_HIGHLIGHT_VS`): primitive, clip control, some VS constants, its vertex fetch ranges, which of this frame's memory exports write them, and their records (record size in dwords, default 16; contrail draws log exactly the points they read); `H3_LOG_VS_DATA_FRAMES=<first>-<last>` limits it to those frames |
-| `H3_VERIFY_VS_DATA=1` | With `H3_LOG_VS_DATA`: also read those records back from the GPU after the export scatter (all-zero records, `JUMP` for a stray point) |
-| `H3_DEBUG_VS_POSITIONS=1` | With `H3_LOG_VS_DATA`: run the draw's vertex shader as compute and log every vertex's clip-space position (`ODD`: behind the eye or far off screen). Auto-indexed draws; slow |
-| `H3_TRACE_EXPORTS=<a>-<b>` | Log every memory export record applied in that physical range (frame, address, value, shader); `H3_TRACE_EXPORTS_VS=<8 hex>[,...]` only those shaders, `H3_TRACE_EXPORTS_AT=<modulus>:<remainder>` only those offsets. Output can be gigabytes |
-| `H3_LOG_STREAMS=<8 hex>` | Log that memexport shader's stream constants (base, format, endian) |
-| `H3_CHECK_EXPORT_DUPES=1` | Report dispatches that export one address twice with different values |
-| `H3_NO_STAGING_REUSE=1` | Copy every vertex buffer and convert every index list again on each flush (the old way), instead of reusing what earlier flushes this frame staged when the guest memory is unchanged |
-| `H3_NO_RESIDENT=1` | Stage every vertex buffer into each frame's upload buffer (the old way) instead of keeping ones that don't change in a resident GPU buffer |
-| `H3_NO_CONSTANT_REUSE=1` | Snapshot every draw's float constants, instead of sharing the previous draw's snapshot when the command stream wrote no constants in between |
-| `H3_UNIFORM_CONSTANTS=1` | Push draws' float constants as uniform data draw by draw (the old way), instead of one storage buffer per flush that shaders index through the draw's first instance. Translates shaders differently, so they compile again the first time |
-| `H3_LOG_VOLUMES=1` | Log each 3D or stacked texture once (size, layers, mips) |
-| `H3_DUMP_TEXTURE=<physical address>` | Save that texture's decoded levels and layers (RGBA8 formats) as `tex_<address>_l<level>_<layer>.png` |
-| `H3_NO_CULL=1` | Don't cull faces (PA_SU_SC_MODE_CNTL), to compare |
-| `H3_NO_POLY_OFFSET=1` | Ignore polygon offset (depth bias: Halo's decals and shadow maps) |
-| `H3_NO_STENCIL_RESTORE=1` | Don't turn stencil drawn through a color view (Halo's dither pattern) into stencil |
-| `H3_LOG_ZPD=1` | Log occlusion query (EVENT_WRITE_ZPD) events |
-| `H3_DUMP_PRIM=<type>` | With `H3_DUMP_FRAME`: save color target 0 before and after every draw of that primitive type (17: tessellated triangle patches, Halo's water) |
-| `H3_DUMP_RESTORE=<frame>` | After each depth restore in that frame (Halo rewriting depth through a color view), save the color bytes and the resulting depth (`restore_<frame>_<n>_*.png`; depth also as raw floats in `.f32`, as are all 32-bit float dumps) |
-| `H3_DUMP_SOURCE=1` | With `H3_DUMP_RESOLVE`: also save each resolve's source render target as `source_<frame>_<n>.png` |
-| `H3_DUMP_VIEWS=1` | With `H3_DUMP_FRAME`: save each part of a resolved texture copied out for sampling at another size (`view_*.png`) |
-| `H3_DUMP_SCALE=<n>` | Divide 16-bit float colors by n in dumps (Halo's final 7e3 target holds 32x values) |
-| `H3_SNAPSHOT_EVERY=<n>` | Save every n-th presented frame as `frame_<n>.png` (from frame `H3_SNAPSHOT_FROM` to `H3_SNAPSHOT_TO`, if set) |
-| `H3_SNAPSHOT_ASYNC=1` | Write snapshot PNGs on a background thread, so saving every frame doesn't slow frames down (real-time-driven animation) |
-| `H3_LOG_CLEARS=1` | Log D3D clears (screen-space rectangle draws) with their rectangles, color and surface |
-| `H3_LOG_AUDIO=1` | Log audio frames submitted and their peak level, once a second |
-| `H3_AUDIO_DUMP=<file>` | Also write the audio output as raw 6-channel 48 kHz float (`ffmpeg -f f32le -ac 6 -ar 48000 -i <file> out.wav`) |
-| `H3_LOG_FPS=1` | Log presented frames per second and the slowest frame, once a second; also `[vram]` lines with the video memory held by render targets, resolves, textures and buffers (every 150 frames, and whenever it moves by 64 MB), `[passes]` lines: GPU passes per frame by kind (draw, copy, depth/stencil restore, blit) with the host pixels they cover, and `[cp]` lines: per frame, how long the command processor thread executes packets (wall and CPU time; the gap is time blocked) and sits idle. A busy thread with little idle time is what limits the frame rate |
-| `H3_LOG_SLOW=1` | Log shader translations, pipeline creations and texture uploads that take 20 ms or more (pipelines with their shaders' cache names) |
-| `H3_DUMP_GLSL=1` | Write each translated shader's GLSL to the working directory as `<cache name>.glsl` |
-| `H3_DUMP_MEMORY=<frame>:<address>:<bytes>[,...]` | Save guest memory at that swap as `mem_<frame>_<address>.bin` (hex address; below 0x80000000 physical, otherwise a guest address such as the executable's data) |
-| `H3_WATCH_WRITES=<first>-<last>:<physical address>:<bytes>` | Linux: write-protect that range during those frames and log every host instruction that writes it to `write_watch.txt` (offsets into the executable; `addr2line`/`nm` them) |
-| `H3_PROFILE=<first>-<last>` | Sample host CPU time between those frames into `profile.txt`; `tools/h3profile.py` symbolizes it. With `H3_PROFILE_STACKS=1` it also attributes time in libraries to the calling function |
-| `H3_PROFILE_WALL=1` | With `H3_PROFILE`: sample only the command processor thread, 1000 times per wall-clock second whether it runs or not, so time it spends blocked (GPU driver, fences, locks) shows up in the blocking call |
-| `H3_GPU_TIMING=<frame>` | From that swap on, run each draw flush and each labelled piece of other GPU work (resolves, copies, restores, carry-overs, memexport) alone on the GPU and wait for it, logging GPU ms per frame by flush and label (`[gpu timing]`). Slow; trustworthy for large passes, while waiting after many small dispatches inflates their numbers |
-| `H3_GPU_TIMING_COARSE=1` | With `H3_GPU_TIMING`: no waits around labelled work; everything between two flushes is timed together, and the longest of those gaps are listed by the flush they precede |
-| `H3_GPU_TIMING_LABELS=<label>[,...]` | With `H3_GPU_TIMING`: wait around those labels only (e.g. `memexport,resolve`) |
-| `H3_WATCH_READS=<first>-<last>:<address>:<bytes>` | Like `H3_WATCH_WRITES`, but every access (reads too); writes `read_watch.txt` |
-| `H3_TRAP_ON_STUCK=1` | Raise SIGTRAP when a thread is stuck on a critical section (for an attached debugger) |
-| `H3_RANDOM_SEED=<n>` | Fixed random seeds (XNetRandom, the game's clock-based seeds, the local random seed at level start, a seed of its own for the particle thread): the game state lands at the same address and replays compare word for word (`tools/films/`) |
-| `H3_LOCKSTEP=1` | Exactly one game tick per frame (the game runs as fast as frames finish), so per-frame state replays alike |
-| `H3_LOCKSTEP_TICKS=<n>` | Exactly n game ticks per frame (testing multi-tick frames) |
-| `H3_CAPTURE_LEVEL_TICK=<n>` | F9 capture (F10 with `H3_CAPTURE_DEEP=1`) when the first level's game tick reaches n: live runs drift by hundreds of frames, level ticks don't (one deep capture per run: cutscenes keep real time through the freeze) |
-| `H3_STATE_HASH=<file>` | Append `<copy> <tick> <hash>` for every per-tick game state copy: a checksum of the 4 MB game state per tick (`tools/films/`) |
-| `H3_STATE_MASK=<file>` | Leave the cosmetic state that file names (data arrays, object fields, words; learned by `tools/films/learn_mask.py`) out of `H3_STATE_HASH` |
-| `H3_STATE_DUMP=<tick>[,...]` | With `H3_STATE_HASH`: save the raw game state at those ticks as `state_<tick>.bin` |
-| `H3_ORIGINAL=<name>[,...]` | Run the recompiled originals instead of those decompiled replacements (`tag_get`, `character_get_general_properties`, ...; `H3Native/`) |
-| `H3_CHECK_NATIVE=1` | Run each decompiled replacement and its original, log differences (`[native]`); the game gets the original's result |
-| `H3_CHECK_TAGS=1` | Compare the loaded tag index with the native cache file reader's, log the tag cache, and ~10 s after a map loads report tag bytes the game changed at runtime (`[tags]`) |
-| `H3_STATE_RECORD=<file>` | With `H3_STATE_HASH`: record every tick's game state compactly (words changed since the previous tick; ~90 KB a tick) |
-| `H3_CAPTURE_LEVEL=<t>,...` / `H3_CAPTURE_LEVEL_TICK=<n>,...` | GPU frame capture (as F9, or F10 with `H3_CAPTURE_DEEP`) at those level times / game ticks |
-| `H3_CAPTURE_HOLD_TICKS=1` | With `H3_CAPTURE_LEVEL_TICK`: hold the game until each capture is written, so consecutive ticks land on their own frames |
-| `H3_CAPTURE_PS_CONST=<n>` | In captures, also log every write to pixel shader constant c<n> |
-| `H3_DEBUG_PS=<hash prefix>@<case>=<GLSL vec4>[;...]` | Debug variants of one pixel shader: deep captures (F10) replay each draw once per expression and save its value per pixel (`tools`: `pixtrace.py`) |
-| `H3_DUMP_ADDRESS=<hex>` / `H3_DUMP_TARGET=<0-3>` | With `H3_DUMP_FRAME`: dump the resolved texture at that address / that color target |
-| `H3_SNAPSHOT_LEVEL=<first>-<last>[/<every>]` | Save the presented frame at those level times (`level_<time>.png`; film screenshot A/Bs) |
-| `H3_STATE_RECORD_TICKS=<first>-<last>[,...]` | With `H3_STATE_RECORD`: record only those ticks |
-| `H3_NATIVE_SHADOW=1` | Run each decompiled replacement's original first, then the replacement on a copy, to find effects besides memory |
-| `H3_FRAME_DELAY_MS=<n>` | Sleep n ms per main loop iteration (simulates a slow machine: more than one tick per frame) |
-| `H3_POLY_SLOPE_SCALE=<factor>` | Scale the slope part of the polygon offset |
-| `H3_NO_DEPTH=1` / `H3_NO_STENCIL=1` / `H3_DEPTH_FLIP=1` | No depth and stencil tests / no stencil test / swap less and greater depth compares |
-| `H3_BORDER_CLAMP=1` | Emulate clamp-to-border in the shader (experiment) |
-| `H3_ALIAS_KEEP_HIGHER=<ps hash high 32 bits>` | For that pixel shader, the higher of two aliased color outputs wins (experiment) |
-| `H3_CHECK_TRIG=1` | Compare the game's sin and cos with the host's on every call; log each new worst error |
-| `H3_LOG_DEPTH=1` / `H3_LOG_SCISSOR=1` | Log each distinct depth state / window offsets and the scissors they give |
-| `H3_LOG_REG_WRITES=<first>-<last>` | Log writes to that GPU register range (hex indices) |
-| `H3_LOG_STREAMS_AT=<hex physical address>\|all` | Log each distinct memexport stream holding that address (shader, first frame) |
-| `H3_LOG_TEXTURE_DECODES=1` | Log every texture decode, and textures bound without their base level per frame |
-| `H3_LOG_TICKS=1` | Game tick and wall-clock time at each tick and presented frame |
-| `H3_LOG_WAITS=1` | Every 150 frames, the time threads spent blocked, by object |
-| `H3_LOG_TRYLOCK=1` | Failed critical section tries, with the caller |
-| `H3_LOG_XMA=1` | Per-context XMA diagnostics (loops, buffer swaps, bad frames, exactly repeated frames, fields changed mid-decode) |
-| `H3_LOG_XCONFIG=1` | Log console configuration queries |
-| `H3_LOG_EXPOSURE=1` / `H3_LOG_AI_BURST=1` / `H3_LOG_BARRELS=1` / `H3_LOG_DAMAGE=1` / `H3_LOG_CAMERA=1` | 60 Hz fix checks: exposure updates per tick / AI bursts the minimum raised / ticks between each weapon's rounds / every damage call / cinematic camera modes |
-| `H3_LOG_OBJLIGHT=<first>[-<last>]` / `H3_LOG_ATOC=<calls>` / `H3_LOG_EMOTION=1` / `H3_NO_EMOTION=1` | Object lighting calls in that tick range / alpha-to-coverage and blend mode calls / facial emotion calls / drop facial emotions |
-| `H3_LAUNCHER_SIZE=<w>x<h>` | The launcher's window size |
-| `H3_SCAN_FLOAT=<frame>:<value>[,...]` / `H3_POKE_FLOAT=<frame>:<hex address>=<value>[,...]` | Log every guest address holding a float near those values at that frame / write floats from that frame on (finding game state by value: the FOV) |
-| `H3_FOV=<degrees>` / `H3_LOG_FOV=1` | Override the FOV setting / log the unit FOVs scaled per map |
-| `H3_LOG_PC_TEXT=1` / `H3_LOG_NET=1` / `H3_LOG_LOOK=<calls>` / `H3_LOG_MOUSE=1` | How many English strings were reworded / system link calls and datagrams / what player 1's look function changed at those calls (research) / native mouse look per tick (movement, weapon rate, zoom scale) |
-
-#### Turning a fix off
-
-Each of these turns one fix or improvement back off. They're there for
-comparison and as escape hatches: if something looks or plays wrong, try the
-switch for the area it's in and report whether it changes.
-
-| Variable | Turns off |
-|---|---|
-| `H3_NO_60HZ_FIXES=1` | The 60 Hz content fixes (weapon fire rates, camera shake, exposure, physics step, AI bursts...); the tick rate stays |
-| `H3_NO_STRUCTURED_SHADERS=1` | Structured shader control flow (back to the slower-compiling state machine) |
-| `H3_NO_REGISTER_LOD=1` | Explicit texture LOD (shaders that pick their own mip level) |
-| `H3_NO_WEIGHTS_OFFSET=1` / `H3_NO_SNAP_WEIGHTED_TAPS=1` | The shadow filtering fixes (weights offset; taps snapped to guest texels at a render scale) |
-| `H3_NO_CLIP_PLANES=1` | User clip planes |
-| `H3_DEPTH_ONLY_PS=1` | Skipping the pixel shader's kills in depth-only passes (shadow maps) |
-| `H3_CTX1_LOW_R=1` | The CTX1 normal map channel order fix |
-| `H3_NO_DEPTH_RESTORE=1` | Restoring depth written as color |
-| `H3_NO_DEPTH_BYTES_SWIZZLE=1` | The byte order fix for depth read back as color |
-| `H3_KEEP_ALIASED_TARGETS=1` | Unbinding a color target bound to two slots |
-| `H3_NO_FORCED_FILTERS=1` | Filters forced by shader instructions (samplers follow the fetch constant only) |
-| `H3_NO_KEPT_BASES=1` | Drawing a demoted texture (base level evicted, being read back) at full size, as MCC does: back to the 360's half-resolution popping |
-| `H3_NO_STANDIN_MIPS=1` | Mips under a stand-in level (a texture whose base isn't resident yet draws its largest resident level alone) |
-| `H3_NO_GAMMA=1` | The display gamma ramp (front buffer shown as is) |
-| `H3_XMA_SUBFRAMES=0` | The XMA subframe model (music notes repeating) |
-| `H3_NO_PC_TEXT=1` | PC wording in the English text ("this PC" for "this Xbox 360 console", the controller, sign-out tips) |
-| `H3_MEMEXPORT_FENCE_ASYNC=1` | Waiting for memexport fences (they land at once, as before) |
-| `H3_SYNC_WRITEBACK=1` | Asynchronous resolve write-back (waits instead) |
-| `H3_SPIN_WAITS=1` | Sleeping in long GPU waits (always spins) |
-
-CMake option `-DH3_TRACE_D3D=ON` counts and samples calls into the game's
-statically linked D3D library and writes `d3d_trace.txt` at frame 150 (or
-`H3_TRACE_D3D_FRAME`), sampling the 50 frames before it.
-
-CMake option `-DH3_TRACE_FIRST_CALLS=ON` writes `first_calls.txt`: the first
-call of every recompiled function with the frame it happened in; with
-`H3_TRACE_WINDOW=<first>-<last>` also `window_calls.txt`, every function
-called in that frame range. Use a separate build directory; it slows things
-down.
-
-CMake option `-DH3_TRACE_MODULE_CALLS=ON` logs every function call in the
-recompiled DLLs with arguments and return values (very slow).
-
-The runtime also reports locks held for more than two seconds and GPU waits
-that last more than a second.
+Needs CMake, Ninja, Clang 18+, SDL3, shaderc, a Vulkan driver and (for the
+launcher) Qt 6. Details, the source layout and release packaging:
+[Building](docs/building.md). Debugging switches: [Debugging](docs/debugging.md).
 
 ## Status
 
-Boots through kernel setup, the Waves audio DLLs, the intro video and map
-loading (`mainmenu.map`, `shared.map`) to the main menu, which renders
-through the host GPU backend (Xenos command stream -> SDL_GPU/Vulkan): the
-lit menu scene, the menu and its text, the logos. Keyboard/gamepad input
-works, a local profile is signed in, and Campaign and multiplayer games start:
-levels load and run with the HUD, though in-game frames are still washed
-out. The intro movie shows through a debug shortcut that reads Bink's
-decoded frames from guest memory (`H3Recomp/video/bink_view.cpp`). The
-window title shows frames presented.
-See [docs/ROADMAP.md](docs/ROADMAP.md).
+Version 0.75: the campaign, multiplayer, Forge and Theater play through at
+60 Hz on Linux and Windows. Next is the native port: replacing the
+recompiled code with readable C++, subsystem by subsystem. See the
+[roadmap](docs/ROADMAP.md).
+
+## Legal
+
+Halo 3 is a trademark of Microsoft. This project is not affiliated with or
+endorsed by Microsoft, Bungie or 343 Industries. It contains no game code or
+data; use it only with a copy of the game you own.
+
+The project is under the MIT license (LICENSE). Third-party code keeps its
+own licenses (thirdparty/, and THIRD-PARTY.txt in releases).

@@ -1,3 +1,8 @@
+---
+title: Architecture
+nav_order: 4
+---
+
 # Architecture
 
 This document is the map of the project: what the pieces are, how they talk
@@ -5,6 +10,8 @@ to each other, and where to start reading. Each source file also starts with
 a comment describing its own job.
 
 ## The big picture
+
+![How the pieces fit together](assets/architecture.svg)
 
 Halo 3 is an Xbox 360 game: PowerPC code (`default.xex`) running on the
 360's kernel, talking to the Xenos GPU and the XMA audio hardware. This

@@ -24,4 +24,12 @@ if (WIN32)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::QModernWindowsStylePlugin> $<TARGET_FILE_DIR:H3Launcher>/styles
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::QJpegPlugin> $<TARGET_FILE_DIR:H3Launcher>/imageformats
         COMMAND_EXPAND_LISTS)
+else()
+    # A release (tools/package.py) bundles Qt and the libraries it needs in
+    # lib/ beside the launcher. RPATH, not RUNPATH (--disable-new-dtags):
+    # it also applies to those libraries' own dependencies (ICU under Qt
+    # Core) and to the plugins Qt loads. A checkout without lib/ falls
+    # through to the system's.
+    set_target_properties(H3Launcher PROPERTIES BUILD_RPATH "\$ORIGIN/lib")
+    target_link_options(H3Launcher PRIVATE -Wl,--disable-new-dtags)
 endif()

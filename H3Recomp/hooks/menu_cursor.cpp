@@ -16,6 +16,9 @@
 //     sub_82486700(screen, list, element, 1, 1) (focus it, with the
 //     focus animations).
 //   sub_824E1B00(list) (list vtable +0x5C): the list's per-frame update.
+//   sub_8247F008(owner, event kind, component) plays a menu event's sound
+//     through sub_82483698(sound, owner); navigation plays sound 1 or 2,
+//     owner -1 = the global one (the window manager's own calls).
 //   The window manager (global 0x83142940, sub_8208B958 updates it) holds
 //     the screens in 5 layers, +8 + layer * 40 (10 pointers), counts at
 //     +208 + layer * 4, later on top. The menus are in layer 4 (the one for
@@ -46,7 +49,7 @@
 
 namespace
 {
-    constexpr uint32_t kTypeText = 0, kTypeListItem = 5;
+    constexpr uint32_t kTypeText = 0, kTypeListItem = 5, kTypeSlider = 6;
     constexpr uint32_t kTextBounds = 0xF4;
     constexpr uint32_t kScreenFocusedItem = 216, kScreenNothingFocused = 220, kScreenId = 64;
     constexpr uint32_t kWindowManager = 0x83142940, kMenuLayer = 4;
@@ -58,6 +61,7 @@ namespace
     std::atomic<uint32_t> g_cursorMoves{ 0 };
     std::atomic<int64_t> g_lastListNs{ 0 };
     std::atomic<bool> g_clickRequested{ false }, g_clickReady{ false };
+    std::atomic<int64_t> g_overSliderNs{ 0 };  // the cursor was last over an item with a slider
 
     int64_t NowNs()
     {
@@ -66,7 +70,11 @@ namespace
 
     // Calls a recompiled function with up to five integer arguments from
     // inside a hook (same thread, same stack: the callee allocates below
-    // r1). Returns r3.
+    // r1). Returns r3. The callee's floating-point state comes back to the
+    // caller: the generated code keeps the host's flush-to-zero mode cached
+    // in ctx.fpscr and only switches the host when the cache says so, so a
+    // callee that switched it on a copy left the caller's cache wrong (its
+    // later float math then ran in the other mode: Storm's film diverged).
     uint32_t Call(PPCContext& ctx, uint8_t* base, PPCFunc* function, uint32_t a0, uint32_t a1 = 0, uint32_t a2 = 0,
         uint32_t a3 = 0, uint32_t a4 = 0)
     {
@@ -77,6 +85,7 @@ namespace
         call.r6.u64 = a3;
         call.r7.u64 = a4;
         function(call, base);
+        ctx.fpscr = call.fpscr;
         return call.r3.u32;
     }
 
@@ -104,13 +113,16 @@ namespace
         bool Contains(float x, float y) const { return x >= x0 && x < x1 && y >= y0 && y < y1; }
     };
 
-    // The union of the bounds of the text under a widget (depth-limited).
-    void TextBounds(PPCContext& ctx, uint8_t* base, uint32_t widget, Rect& rect, int depth)
+    // The union of the bounds of the text under a widget (depth-limited);
+    // slider: one of the widgets under it is a slider.
+    void TextBounds(PPCContext& ctx, uint8_t* base, uint32_t widget, Rect& rect, int depth, bool* slider = nullptr)
     {
         int guard = 0;
         for (uint32_t child = Resolve(ctx, base, widget + 28); child && Plausible(child) && guard < 64;
             child = Resolve(ctx, base, child + 40), guard++)
         {
+            if (slider && h3::GuestRef<uint32_t>(child + 8) == kTypeSlider)
+                *slider = true;
             if (h3::GuestRef<uint32_t>(child + 8) == kTypeText)
             {
                 float x0 = h3::GuestRef<float>(child + kTextBounds), x1 = h3::GuestRef<float>(child + kTextBounds + 4);
@@ -124,7 +136,7 @@ namespace
                 }
             }
             if (depth > 0)
-                TextBounds(ctx, base, child, rect, depth - 1);
+                TextBounds(ctx, base, child, rect, depth - 1, slider);
         }
     }
 
@@ -167,6 +179,12 @@ namespace
         static const bool log = h3::EnvFlag("H3_LOG_MENU");
         g_lastListNs.store(NowNs());
 
+        // Nothing to do (and no game code to call) until the pointer has
+        // been in the window (the menu cursor off, a film or scripted run).
+        uint64_t cursor = g_cursor.load();
+        if (g_cursorMoves.load() == 0 && !(cursor >> 63) && !g_clickRequested.load())
+            return;
+
         uint32_t screen = Call(ctx, base, sub_8248B648, list);
         uint32_t inputScreen = InputScreen(ctx, base);
         if (!Plausible(screen) || screen != inputScreen)
@@ -184,7 +202,6 @@ namespace
             handledMoves = moves;
         }
 
-        uint64_t cursor = g_cursor.load();
         if (!(cursor >> 63))
             return;
         float x = float(uint32_t(cursor) & 0xFFFF) / 65535.0f * kUiWidth - kUiWidth / 2;
@@ -194,6 +211,7 @@ namespace
         // a row), the lowest-starting one, since text sits at the top.
         uint32_t hit = 0;
         Rect hitRect;
+        bool hitSlider = false;
         int guard = 0;
         for (uint32_t item = Resolve(ctx, base, list + 28); item && Plausible(item) && guard < 64;
             item = Resolve(ctx, base, item + 40), guard++)
@@ -201,15 +219,19 @@ namespace
             if (h3::GuestRef<uint32_t>(item + 8) != kTypeListItem)
                 continue;
             Rect rect;
-            TextBounds(ctx, base, item, rect, 2);
+            bool slider = false;
+            TextBounds(ctx, base, item, rect, 2, &slider);
             if (!rect.Empty() && rect.Contains(x, y) && (!hit || rect.y0 > hitRect.y0))
             {
                 hit = item;
                 hitRect = rect;
+                hitSlider = slider;
             }
         }
         if (!hit)
             return;
+        if (hitSlider)
+            g_overSliderNs.store(NowNs());
         bool click = g_clickRequested.exchange(false);
 
         // Focus it when the cursor has moved (so the keyboard and pad
@@ -228,11 +250,15 @@ namespace
         if (element == 0xFFFFFFFF)
             return;
         if (log)
-            fprintf(stderr, "[menu] cursor %.0f,%.0f%s: list %08X item %08X (%.0f..%.0f x %.0f..%.0f) element %08X\n", x, y,
-                click ? " (click)" : "", list, hit, hitRect.x0, hitRect.x1, hitRect.y0, hitRect.y1, element);
+            fprintf(stderr, "[menu] cursor %.0f,%.0f%s: list %08X item %08X (%.0f..%.0f x %.0f..%.0f) element %08X%s\n", x, y,
+                click ? " (click)" : "", list, hit, hitRect.x0, hitRect.x1, hitRect.y0, hitRect.y1, element, hitSlider ? " slider" : "");
         if (Call(ctx, base, sub_824E2D20, list, element, 0) & 0xFF)
         {
             Call(ctx, base, sub_82486700, screen, list, element, 1, 1);
+            // The D-pad's navigation sound, for a move onto an item (a click
+            // plays A's own sound next).
+            if (!click)
+                Call(ctx, base, sub_82483698, 1, 0xFFFFFFFF);
             g_clickReady.store(click);
         }
     }
@@ -251,6 +277,11 @@ namespace h3::hooks
     bool MenuOpen()
     {
         return NowNs() - g_lastListNs.load() < 150'000'000;
+    }
+
+    bool MenuCursorOverSlider()
+    {
+        return NowNs() - g_overSliderNs.load() < 150'000'000;
     }
 
     void RequestMenuClick()

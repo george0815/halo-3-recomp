@@ -1,3 +1,8 @@
+---
+title: Dumping your disc
+nav_order: 8
+---
+
 # Dumping Halo 3
 
 This project ships no game data. You need your **own** copy of Halo 3 for

@@ -15,6 +15,10 @@ namespace h3::hooks
     // 150 ms): the mouse is a pointer, not the look stick.
     bool MenuOpen();
 
+    // Any thread: the cursor is over an item with a slider (the wheel then
+    // moves the slider: D-pad left/right).
+    bool MenuCursorOverSlider();
+
     // A click: RequestMenuClick asks the game thread to focus the item under
     // the cursor; TakeMenuClick is true once it has (then press A). False
     // until then; CancelMenuClick drops a request nothing answered.

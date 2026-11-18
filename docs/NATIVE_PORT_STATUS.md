@@ -1,3 +1,8 @@
+---
+title: Native port
+nav_order: 9
+---
+
 # Native port: where things stand (2026-10-15)
 
 Resume notes for the decompilation / native port (docs/ROADMAP.md phase 6).

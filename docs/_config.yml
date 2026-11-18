@@ -1,0 +1,17 @@
+# The project site (GitHub Pages: Settings > Pages > Deploy from branch, main, /docs).
+title: Halo 3 Recomp
+description: Halo 3 running natively on PC, made by statically recompiling the Xbox 360 game.
+url: https://george0815.github.io
+baseurl: /halo-3-recomp
+remote_theme: just-the-docs/just-the-docs@v0.12.0
+plugins:
+  - jekyll-remote-theme
+  - jekyll-seo-tag
+color_scheme: dark
+search_enabled: true
+aux_links:
+  "GitHub": "https://github.com/george0815/halo-3-recomp"
+# Not pages: the player README ships in releases as README.txt.
+exclude:
+  - PLAYER_README.md
+footer_content: "Halo 3 is a trademark of Microsoft. This project is not affiliated with Microsoft, Bungie or 343 Industries and contains no game code or data."

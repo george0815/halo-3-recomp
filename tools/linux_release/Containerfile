@@ -1,0 +1,29 @@
+# The Linux release's build environment: Ubuntu 22.04 (glibc 2.35), so the
+# shipped programs and libraries run on distributions from 2022 on (built
+# on a current distribution they'd need its glibc). tools/linux_release/run.sh
+# builds this image and runs build.sh in it.
+
+FROM docker.io/library/ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg git python3 python3-pip python3-venv pkg-config ninja-build make patch xz-utils file \
+        binutils nasm \
+        libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev \
+        libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl1-mesa-dev libgl1-mesa-dev \
+        libdrm-dev libgbm-dev libpulse-dev libasound2-dev libpipewire-0.3-dev libudev-dev libdbus-1-dev \
+        libfontconfig1-dev libfreetype6-dev libxcb1-dev libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+        libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0 \
+        g++ && rm -rf /var/lib/apt/lists/*
+
+# clang 19 from LLVM's own apt repository (22.04's is 14; the project needs 18+).
+RUN curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-19 main" \
+        > /etc/apt/sources.list.d/llvm.list && \
+    apt-get update && apt-get install -y --no-install-recommends clang-19 lld-19 llvm-19 && \
+    rm -rf /var/lib/apt/lists/* && \
+    ln -s /usr/bin/clang-19 /usr/local/bin/clang && ln -s /usr/bin/clang++-19 /usr/local/bin/clang++
+
+# CMake 3.24+ (WHOLE_ARCHIVE; 22.04 has 3.22) and aqtinstall (Qt's own Linux build).
+RUN python3 -m venv /opt/tools && /opt/tools/bin/pip install --no-cache-dir "cmake>=3.28,<4" aqtinstall && \
+    ln -s /opt/tools/bin/cmake /usr/local/bin/cmake && ln -s /opt/tools/bin/aqt /usr/local/bin/aqt

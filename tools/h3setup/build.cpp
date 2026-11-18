@@ -16,7 +16,9 @@
 #include <thread>
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #else
 #include <fcntl.h>
@@ -117,7 +119,7 @@ namespace h3setup
                     module.size = match[1];
                 if (module.base.empty() || module.size.empty())
                 {
-                    fprintf(stderr, "error: %s has no image base or size\n", (dir / "ppc_config.h").string().c_str());
+                    fprintf(stderr, "error: %s has no image base or size\n", Utf8(dir / "ppc_config.h").c_str());
                     return false;
                 }
                 std::string stubs = ReadText(dir / "import_stubs.cpp");
@@ -180,16 +182,72 @@ namespace h3setup
         {
             std::vector<std::string> args;
             fs::path source, object;
+            bool exe = false;  // the executable's own object (not the game's)
         };
+    }
+
+    fs::path SdkDirectory(const fs::path& install)
+    {
+        return fs::absolute(install) / "toolchain" / "sdk";
+    }
+
+    int FetchSdk(const fs::path& install, const fs::path& package, bool accepted)
+    {
+        fs::path sdk = SdkDirectory(install);
+        if (fs::exists(sdk / "crt" / "include") && fs::exists(sdk / "sdk" / "lib"))
+        {
+            printf("Microsoft's C runtime and Windows SDK: already in %s\n", Utf8(sdk).c_str());
+            return 0;
+        }
+        if (!accepted)
+        {
+            fprintf(stderr,
+                "error: building the game on Windows needs Microsoft's C runtime and Windows SDK, which xwin downloads\n"
+                "from Microsoft under the license terms of Microsoft's Visual Studio build tools.\n"
+                "Run again with --accept-microsoft-license if you accept them.\n");
+            return 1;
+        }
+        fs::path xwin = package / "toolchain" /
+#ifdef _WIN32
+            "xwin.exe";
+#else
+            "xwin";
+#endif
+        if (!fs::exists(xwin))
+        {
+            fprintf(stderr, "error: %s is missing\n", Utf8(xwin).c_str());
+            return 1;
+        }
+        std::error_code ec;
+        fs::create_directories(sdk.parent_path(), ec);
+        printf("progress sdk 0\ndownloading Microsoft's C runtime and Windows SDK (about 1 GB, once)\n");
+        fflush(stdout);
+        fs::path cache = sdk.parent_path() / "xwin-cache";
+        int status = RunProgram({ Utf8(xwin), "--accept-license", "--arch", "x86_64", "--cache-dir", Utf8(cache), "splat", "--output",
+                                    Utf8(sdk) },
+            sdk.parent_path() / "xwin.log");
+        if (status != 0)
+        {
+            fprintf(stderr, "error: xwin failed (%d); see %s\n", status, Utf8(sdk.parent_path() / "xwin.log").c_str());
+            return 1;
+        }
+        fs::remove_all(cache, ec);  // the downloads, no longer needed
+        printf("progress sdk 100\n");
+        return 0;
     }
 
     int RunProgram(const std::vector<std::string>& args, const fs::path& log)
     {
 #ifdef _WIN32
+        auto wide = [](const std::string& text) {
+            std::wstring result(MultiByteToWideChar(CP_UTF8, 0, text.data(), int(text.size()), nullptr, 0), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, text.data(), int(text.size()), result.data(), int(result.size()));
+            return result;
+        };
         std::wstring line;
         for (const std::string& arg : args)
         {
-            std::wstring warg = fs::path(arg).wstring();
+            std::wstring warg = wide(arg);
             if (!line.empty())
                 line += L' ';
             // CommandLineToArgvW's quoting: backslashes before a quote double.
@@ -248,10 +306,15 @@ namespace h3setup
 #endif
     }
 
-    std::string FindCompiler()
+    std::string FindCompiler(const fs::path& package)
     {
         if (const char* cxx = getenv("CXX"); cxx && *cxx)
             return cxx;
+#ifdef _WIN32
+        // The release's own (trimmed LLVM, toolchain/llvm).
+        if (fs::path shipped = package / "toolchain" / "llvm" / "bin" / "clang-cl.exe"; fs::exists(shipped))
+            return Utf8(shipped);
+#endif
 #ifdef _WIN32
         const char* names[] = { "clang-cl.exe" };
         const char separator = ';';
@@ -269,7 +332,7 @@ namespace h3setup
                 size_t end = paths.find(separator, start);
                 std::string dir = paths.substr(start, end == std::string::npos ? std::string::npos : end - start);
                 if (!dir.empty() && fs::exists(fs::path(dir) / name))
-                    return (fs::path(dir) / name).string();
+                    return Utf8(fs::path(dir) / name);
                 if (end == std::string::npos)
                     break;
                 start = end + 1;
@@ -286,28 +349,46 @@ namespace h3setup
         for (const char* kind : { "game", "module", "module_stubs", "exe_source", "link" })
             if (!manifest.count(kind))
             {
-                fprintf(stderr, "error: %s has no '%s' command\n", (package / "runtime" / "build.txt").string().c_str(), kind);
+                fprintf(stderr, "error: %s has no '%s' command\n", Utf8(package / "runtime" / "build.txt").c_str(), kind);
                 return 1;
             }
-        std::string compiler = FindCompiler();
+        std::string compiler = FindCompiler(package);
         if (compiler.empty())
         {
-            fprintf(stderr, "error: no C++ compiler found. Install clang (18 or newer), or set CXX.\n");
+#ifdef _WIN32
+            fprintf(stderr, "error: the compiler that comes with this release is missing (toolchain\\llvm\\bin\\clang-cl.exe). "
+                            "Download the release again.\n");
+#else
+            fprintf(stderr, "error: no C++ compiler found. Install clang 18 or newer: Ubuntu/Debian: sudo apt install clang; "
+                            "Fedora: sudo dnf install clang; Arch: sudo pacman -S clang; openSUSE: sudo zypper install clang. "
+                            "Or set CXX to a clang++.\n");
+#endif
             return 1;
         }
         printf("compiler: %s\n", compiler.c_str());
+        // Windows: lld-link beside clang-cl, and the CRT/SDK `sdk` fetched.
+        fs::path linker = FromUtf8(compiler).parent_path() / "lld-link.exe";
+        fs::path sdk = SdkDirectory(install);
+#ifdef _WIN32
+        if (!fs::exists(sdk / "crt" / "include"))
+        {
+            fprintf(stderr, "error: Microsoft's C runtime and Windows SDK aren't here yet (h3setup sdk)\n");
+            return 1;
+        }
+#endif
 
         std::vector<Module> modules;
         if (!Glue(gen, modules))
             return 1;
 
-        std::map<std::string, std::string> common{ { "cxx", compiler }, { "pkg", package.generic_string() }, { "gen", gen.generic_string() } };
+        std::map<std::string, std::string> common{ { "cxx", compiler }, { "pkg", Utf8(package) }, { "gen", Utf8(gen) },
+            { "ld", Utf8(linker) }, { "sdk", Utf8(sdk) } };
         std::vector<Job> work;
         auto add = [&](const std::string& kind, const fs::path& source, const fs::path& object, std::map<std::string, std::string> values) {
             values.insert(common.begin(), common.end());
-            values["in"] = source.generic_string();
-            values["out"] = object.generic_string();
-            Job job{ {}, source, object };
+            values["in"] = Utf8(source);
+            values["out"] = Utf8(object);
+            Job job{ {}, source, object, kind == "module_stubs" || kind == "exe_source" };
             for (const std::string& arg : manifest[kind])
                 job.args.push_back(Expand(arg, values));
             work.push_back(job);
@@ -355,11 +436,11 @@ namespace h3setup
                 fs::path temporary = job.object;
                 temporary += ".part";
                 std::vector<std::string> args = job.args;
-                std::replace(args.begin(), args.end(), job.object.generic_string(), temporary.generic_string());
+                std::replace(args.begin(), args.end(), Utf8(job.object), Utf8(temporary));
                 if (RunProgram(args, jobLog) != 0)
                 {
                     std::lock_guard lock(outputMutex);
-                    fprintf(stderr, "error: compiling %s failed (see %s)\n", job.source.string().c_str(), jobLog.string().c_str());
+                    fprintf(stderr, "error: compiling %s failed (see %s)\n", Utf8(job.source).c_str(), Utf8(jobLog).c_str());
                     failed = true;
                     return;
                 }
@@ -390,33 +471,47 @@ namespace h3setup
 #else
             "H3Recomp";
 #endif
-        std::string list;
+        std::string exeList, gameList;
         for (const Job& job : work)
-            list += "\"" + job.object.generic_string() + "\"\n";
-        fs::path response = gen / "objects.rsp";
-        WriteIfDifferent(response, list);
+            (job.exe ? exeList : gameList) += "\"" + Utf8(job.object) + "\"\n";
+        fs::path exeResponse = gen / "exe_objects.rsp", gameResponse = gen / "game_objects.rsp";
+        WriteIfDifferent(exeResponse, exeList);
+        WriteIfDifferent(gameResponse, gameList);
         std::vector<std::string> link;
         std::map<std::string, std::string> values = common;
-        values["exe"] = exe.generic_string();
+        values["exe"] = Utf8(exe);
         for (const std::string& arg : manifest["link"])
-            link.push_back(arg == "{objects}" ? "@" + response.generic_string() : Expand(arg, values));
-        printf("linking %s\n", exe.string().c_str());
+        {
+            if (arg == "{exe_objects}")
+                link.push_back("@" + Utf8(exeResponse));
+            else if (arg == "{game_objects}")
+                link.push_back("@" + Utf8(gameResponse));
+            else
+                link.push_back(Expand(arg, values));
+        }
+        printf("linking %s\n", Utf8(exe).c_str());
         fflush(stdout);
         if (RunProgram(link, log) != 0)
         {
-            fprintf(stderr, "error: linking failed (see %s)\n", log.string().c_str());
+            fprintf(stderr, "error: linking failed (see %s)\n", Utf8(log).c_str());
             return 1;
         }
 
-        // The shared libraries it loads, next to it in lib/ (rpath $ORIGIN/lib).
+        // The shared libraries it loads: Linux in lib/ (rpath $ORIGIN/lib),
+        // Windows next to it.
         fs::create_directories(install / "lib", ec);
         for (const auto& entry : fs::directory_iterator(package / "runtime" / "lib"))
         {
             std::string name = entry.path().filename().string();
-            if (name.find(".so") != std::string::npos || entry.path().extension() == ".dll")
-                fs::copy(entry.path(), install / "lib" / name, fs::copy_options::overwrite_existing | fs::copy_options::copy_symlinks, ec);
+            if (name.find(".so") != std::string::npos)
+            {
+                fs::remove(install / "lib" / name, ec);
+                fs::copy(entry.path(), install / "lib" / name, fs::copy_options::copy_symlinks, ec);
+            }
+            else if (entry.path().extension() == ".dll" && entry.path().parent_path() != install)
+                fs::copy_file(entry.path(), install / name, fs::copy_options::overwrite_existing, ec);
         }
-        printf("built %s\n", exe.string().c_str());
+        printf("built %s\n", Utf8(exe).c_str());
         return 0;
     }
 }

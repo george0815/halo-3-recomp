@@ -8,6 +8,7 @@
 // attributes (0x10 = directory) and the name. 0xFFFF/0xFFFF is padding.
 
 #include "iso.h"
+#include "build.h"
 
 #include <algorithm>
 #include <cctype>
@@ -60,7 +61,7 @@ namespace h3setup
         m_file.open(path, std::ios::binary);
         if (!m_file)
         {
-            m_error = "can't open " + path.string();
+            m_error = "can't open " + h3setup::Utf8(path);
             return false;
         }
         m_file.seekg(0, std::ios::end);
@@ -159,7 +160,7 @@ namespace h3setup
         std::ofstream out(destination, std::ios::binary | std::ios::trunc);
         if (!out)
         {
-            m_error = "can't write " + destination.string();
+            m_error = "can't write " + h3setup::Utf8(destination);
             return false;
         }
         std::vector<char> buffer(8u << 20);
@@ -178,7 +179,7 @@ namespace h3setup
             out.write(buffer.data(), std::streamsize(chunk));
             if (!out)
             {
-                m_error = "write error (disk full?) at " + destination.string();
+                m_error = "write error (disk full?) at " + h3setup::Utf8(destination);
                 return false;
             }
             done += chunk;

@@ -11,6 +11,7 @@
 #include <QKeyEvent>
 #include <QLinearGradient>
 #include <QMap>
+#include <QMessageBox>
 #include <QPainter>
 #include <QProcess>
 #include <QRadialGradient>
@@ -215,6 +216,9 @@ namespace h3::launcher
         // Gamepads, through SDL (Qt 6 has no gamepad support). No SDL window
         // exists, so allow events without one having focus.
         SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+        // SDL would turn SIGINT/SIGTERM into a quit event nothing here reads
+        // (the launcher then ignored them); Qt's default handling instead.
+        SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
         if (SDL_InitSubSystem(SDL_INIT_GAMEPAD))
         {
             connect(&gamepadPoll_, &QTimer::timeout, this, [this] { PollGamepad(); });
@@ -322,6 +326,19 @@ namespace h3::launcher
         if (setup.isEmpty() || iso.isEmpty())
             return;
         QString install = QCoreApplication::applicationDirPath();
+        QStringList arguments = { QStringLiteral("install"), iso, install };
+#ifdef _WIN32
+        // Compiling on Windows needs Microsoft's C runtime and Windows SDK,
+        // which can't be shipped: xwin downloads them from Microsoft, under
+        // Microsoft's terms, which the player has to accept.
+        if (QMessageBox::question(this, QStringLiteral("Microsoft's C runtime and Windows SDK"),
+                QStringLiteral("To build the game on this PC, the installer downloads Microsoft's C runtime and Windows SDK "
+                               "(about 1 GB, once) from Microsoft with xwin. They come under the license terms of Microsoft's "
+                               "Visual Studio build tools.\n\nDo you accept Microsoft's license terms for them?"),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+            return;
+        arguments << QStringLiteral("--accept-microsoft-license");
+#endif
         installer_ = new QProcess(this);
         installer_->setWorkingDirectory(install);
         installError_.clear();
@@ -338,6 +355,7 @@ namespace h3::launcher
                         { QStringLiteral("extract"), QStringLiteral("Copying the game's files from the disc image") },
                         { QStringLiteral("recompile"), QStringLiteral("Translating the game's code") },
                         { QStringLiteral("compile"), QStringLiteral("Compiling the game (this takes a few minutes)") },
+                        { QStringLiteral("sdk"), QStringLiteral("Downloading Microsoft's C runtime and Windows SDK") },
                     };
                     status_ = QStringLiteral("%1... %2%").arg(stages.value(parts[1], parts[1]), parts[2]);
                 }
@@ -368,7 +386,7 @@ namespace h3::launcher
             Current().selected = std::min(selected, int(Current().items.size()) - 1);
             update();
         });
-        installer_->start(setup, { QStringLiteral("install"), iso, install });
+        installer_->start(setup, arguments);
         update();
     }
 

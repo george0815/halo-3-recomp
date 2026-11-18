@@ -11,8 +11,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="7.1"
 SHA256="40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6"
-WORK="$ROOT/build/ffmpeg-src"
-PREFIX="$ROOT/build/ffmpeg"
+WORK="${H3_FFMPEG_WORK:-$ROOT/build/ffmpeg-src}"
+PREFIX="${H3_FFMPEG_PREFIX:-$ROOT/build/ffmpeg}"  # H3_FFMPEG_PREFIX / H3_FFMPEG_WORK: elsewhere (tools/linux_release)
 TARBALL="$WORK/ffmpeg-$VERSION.tar.xz"
 
 mkdir -p "$WORK"

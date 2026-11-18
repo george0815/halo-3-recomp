@@ -1,3 +1,8 @@
+---
+title: The ISO tool
+nav_order: 6
+---
+
 # ISO tool (h3setup)
 
 Turns the player's own Halo 3 disc image into a playable install, on the
@@ -42,13 +47,19 @@ Input: a disc image (ISO) only. Supported: the original disc release,
 
 ## Toolchain on the player's machine
 
-- Linux: the system's clang (18+) and lld or the system linker; h3setup
-  finds them and says what to install if missing.
-- Windows: h3setup downloads LLVM (clang-cl, lld-link) and runs xwin to
-  fetch Microsoft's CRT and Windows SDK (the player accepts Microsoft's
-  license there), into a cache folder. No Visual Studio needed. The same
-  toolchain cross-builds our Windows release (cmake/toolchains/
-  windows-clang-cl.cmake), so the flags carry over.
+- Linux: the system's clang (18+) (`$CXX`, or `clang++` on the PATH);
+  h3setup says what to install if it's missing.
+- Windows (user's choice, 2026-11-18): the release ships a trimmed LLVM
+  for Windows (toolchain/llvm: clang-cl, lld-link and clang's headers from
+  the official LLVM release matching our clang, ~200 MB; Apache 2.0 with
+  LLVM exceptions, licenses included) and xwin (toolchain/xwin.exe,
+  MIT/Apache). Microsoft's CRT and Windows SDK can't be redistributed:
+  `h3setup sdk <dir> --accept-microsoft-license` (also the first step of
+  `install` on Windows, before the 6 GB copy) has xwin download them into
+  <install>/toolchain/sdk once the player accepts Microsoft's terms (the
+  launcher asks). No Visual Studio needed. The same toolchain cross-builds
+  our Windows release (cmake/toolchains/windows-clang-cl.cmake), so the
+  flags carry over ({sdk} in runtime/build.txt).
 
 ## Release layout (planned)
 
@@ -69,3 +80,30 @@ H3Recomp(.exe) (created by h3setup)
   the four DLLs is identical to the dev tree's (4 s). Next: the build
   (steps 4-6): split the runtime into a library the release ships, a
   build manifest, the compile/link driver.
+- 2026-11-18: film check: the h3setup-built Linux executable matches
+  Storm's reference on every tick (78563), so it simulates exactly like the
+  dev build. (Link order matters: the game objects go where the dev build
+  links the game's libraries, after the runtime, so shared inline functions
+  come from the same copy; {exe_objects} / {game_objects}.)
+- 2026-11-18: Windows end to end under wine: build/package_windows (307 MB,
+  trimmed LLVM 23.1.4 + xwin 0.10.0 included), `h3setup.exe install` with
+  the SDK already present (the dev machine's xwin splat): 135 compiles with
+  the shipped clang-cl, lld-link, 2 min 10 s; H3Recomp.exe boots to the main
+  menu. The launcher asks for Microsoft's license on Windows before
+  passing --accept-microsoft-license.
+- Left: the launcher INSTALL page (user test), a real-Windows run (xwin's
+  download included), Linux launcher's Qt (system Qt 6 for now), the
+  release README, film check of the Windows-built executable.
+- 2026-11-18 later: release packaging: Linux bundles Qt (plugins, qt.conf)
+  and every non-system library the launcher and game need (lib/,
+  runtime/lib; RPATH via --disable-new-dtags); licenses/ + THIRD-PARTY.txt
+  (XenonRecomp's disassembler is GPL: XenonRecomp ships with the GPL text;
+  the runtime doesn't use it and libdisasm isn't shipped); README.txt
+  (docs/PLAYER_README.md); --archive writes halo3-recomp-<version>-
+  {linux,windows}-x86_64.{tar.gz,zip} (39 MB / 107 MB). h3setup: UTF-8
+  paths everywhere (Windows: UTF-16 command line; programs run without a
+  shell); Windows tools and H3Recomp.exe run with the UTF-8 code page
+  (cmake/utf8.manifest; runtime/utf8.res for the player's link): a full
+  install into a non-ASCII folder works under wine; free-space check;
+  extraction resumes (files already there are kept); clang install hints.
+- Open: the project's own license (LICENSE) — the user's choice.

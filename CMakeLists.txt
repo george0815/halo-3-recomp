@@ -64,6 +64,13 @@ target_include_directories(H3Shader PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/H3Recomp)
 add_library(H3Config STATIC H3Recomp/config/settings.cpp)
 target_include_directories(H3Config PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/H3Recomp)
 
+# Windows: our command line tools run with UTF-8 as their code page
+# (cmake/utf8.manifest), for paths with any characters; the recompiler too.
+if (WIN32)
+    target_sources(XenonRecomp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/utf8.manifest)
+    target_sources(XenonAnalyse PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/utf8.manifest)
+endif()
+
 # Native game code that builds without the recompiled code.
 add_subdirectory(H3Native)
 
@@ -72,6 +79,9 @@ add_subdirectory(tools/h3xexinfo)
 add_subdirectory(tools/h3shader)
 add_subdirectory(tools/h3tags)
 add_subdirectory(tools/h3setup)
+if (WIN32)
+    target_sources(h3xexinfo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/utf8.manifest)
+endif()
 
 # The launcher, when Qt 6 is available.
 find_package(Qt6 COMPONENTS Widgets QUIET)

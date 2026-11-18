@@ -585,12 +585,16 @@ namespace h3::input
                 }
             }
 
-            // One D-pad press per wheel notch (wheel up = up), with a gap
-            // between presses so the game sees each.
+            // One D-pad press per wheel notch (wheel up = up; over a slider,
+            // right), with a gap between presses so the game sees each.
             constexpr uint64_t kGapNs = 40'000'000;
             if (g_menuWheelSteps != 0 && now >= g_menuDpadUntilNs + kGapNs)
             {
-                g_menuDpadButton = g_menuWheelSteps > 0 ? kDpadUp : kDpadDown;
+                // Over a slider, the wheel moves it (up = right, more).
+                if (hooks::MenuCursorOverSlider())
+                    g_menuDpadButton = g_menuWheelSteps > 0 ? kDpadRight : kDpadLeft;
+                else
+                    g_menuDpadButton = g_menuWheelSteps > 0 ? kDpadUp : kDpadDown;
                 g_menuWheelSteps += g_menuWheelSteps > 0 ? -1 : 1;
                 g_menuDpadUntilNs = now + kClickNs;
             }
