@@ -11,6 +11,7 @@
 
 #include "imports.h"
 #include "config/env.h"
+#include "config/settings.h"
 #include "objects.h"
 #include "vfs.h"
 #include "../memory.h"
@@ -335,7 +336,22 @@ PPC_FUNC(__imp__XamEnumerate)
 // DWORD XamUserCreateAchievementEnumerator(DWORD titleId, DWORD userIndex, XUID xuid, DWORD flags,
 //     DWORD offset, DWORD count, PDWORD bufferSize, PHANDLE enumerator)
 // No achievements: the enumeration is empty. XACHIEVEMENT_DETAILS is 0x24
-// bytes (plus strings the caller sizes the buffer for).
+// bytes (plus strings the caller sizes the buffer for): +0 id, +4/+8/+12
+// label, description and unachieved text, +16 image, +20 gamerscore,
+// +24 time earned, +32 flags (0x20000 earned, 0x10000 earned online).
+//
+// [profile] unlock_all_armor: all of Halo 3's 49 achievements, earned. Halo 3
+// asks for them at sign-in (sub_823A4BB0) and its completion (sub_823A4C88)
+// maps each earned id through its table of achievement ids at 0x820271D0 to
+// a bit in the controller's record (+2496/+2500), and keeps each one's
+// gamerscore; the armor unlocks check those (some, like Security, the total
+// gamerscore: 25 each here, 1225 in all).
+namespace
+{
+    constexpr uint32_t kAchievementIds = 0x820271D0, kAchievementCount = 49;
+    constexpr uint32_t kAchievementEarned = 0x20000, kAchievementEarnedOnline = 0x10000;
+}
+
 PPC_FUNC(__imp__XamUserCreateAchievementEnumerator)
 {
     uint32_t count = ctx.r8.u32, bufferSize = ctx.r9.u32, handleOut = ctx.r10.u32;
@@ -345,6 +361,18 @@ PPC_FUNC(__imp__XamUserCreateAchievementEnumerator)
         return;
     }
     auto enumerator = std::make_shared<Enumerator>(0x24, count);
+    if (config::Active().profile.unlockAllArmor)
+        for (uint32_t i = 0; i < kAchievementCount; i++)
+        {
+            std::vector<uint8_t> item(0x24, 0);
+            auto put = [&item](size_t at, uint32_t value) {
+                item[at] = uint8_t(value >> 24), item[at + 1] = uint8_t(value >> 16), item[at + 2] = uint8_t(value >> 8), item[at + 3] = uint8_t(value);
+            };
+            put(0, GuestRef<uint32_t>(kAchievementIds + i * 4));
+            put(20, 25);
+            put(32, kAchievementEarned | kAchievementEarnedOnline);
+            enumerator->items.push_back(std::move(item));
+        }
     if (bufferSize != 0)
         GuestRef<uint32_t>(bufferSize) = enumerator->itemsPerCall * 0x24;
     GuestRef<uint32_t>(handleOut) = CreateHandle(enumerator);

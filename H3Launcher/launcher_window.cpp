@@ -692,6 +692,8 @@ namespace h3::launcher
         toggle(QStringLiteral("Vibration"), QStringLiteral("Controller rumble.") + note, profile.vibration);
         toggle(QStringLiteral("Auto-aim"), QStringLiteral("Aim assist.") + note, profile.autoAim);
         toggle(QStringLiteral("Auto-center"), QStringLiteral("Level the view while moving.") + note, profile.autoCenter);
+        toggle(QStringLiteral("Unlock all armor"),
+            QStringLiteral("Every armor piece selectable in Appearance, as if every achievement were earned."), profile.unlockAllArmor);
 
         // Split screen: the profiles players 2-4 sign in with.
         for (size_t i = 0; i < profile.otherGamertags.size(); i++)

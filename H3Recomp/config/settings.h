@@ -154,6 +154,10 @@ namespace h3::config
         bool vibration = true;
         bool autoAim = true;
         bool autoCenter = true;
+        // Every armor piece selectable: the profile reports all of Halo 3's
+        // achievements as earned (kernel/xam_content.cpp), which is what the
+        // armor unlocks check.
+        bool unlockAllArmor = false;
     };
 
     struct ControlSettings

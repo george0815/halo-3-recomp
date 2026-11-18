@@ -140,6 +140,8 @@ namespace h3::config
                     profile.autoAim = ParseBool(value);
                 else if (key == "auto_center")
                     profile.autoCenter = ParseBool(value);
+                else if (key == "unlock_all_armor")
+                    profile.unlockAllArmor = ParseBool(value);
             }
             else if (section == "network")
             {
@@ -294,7 +296,8 @@ namespace h3::config
             << "invert_look = " << BoolText(profile.invertLook) << "\n"
             << "vibration = " << BoolText(profile.vibration) << "\n"
             << "auto_aim = " << BoolText(profile.autoAim) << "\n"
-            << "auto_center = " << BoolText(profile.autoCenter) << "\n\n";
+            << "auto_center = " << BoolText(profile.autoCenter) << "\n"
+            << "unlock_all_armor = " << BoolText(profile.unlockAllArmor) << "\n\n";
 
         const ControlSettings& controls = settings.controls;
         out << "[controls]\n"
