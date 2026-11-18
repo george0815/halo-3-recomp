@@ -1,0 +1,102 @@
+// Halo 3 feel, our own styling: condensed headings, HUD panels, the
+// menu's orange focus bar.
+
+$halo-blue: #7fc8f2;
+$halo-cyan: #4fd1ff;
+$halo-orange: #d9822b;
+
+body {
+  font-family: "Titillium Web", system-ui, sans-serif;
+  background:
+    radial-gradient(1200px 600px at 75% -10%, rgba(79, 209, 255, 0.10), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(30, 80, 140, 0.25), transparent 60%),
+    #08111d;
+  background-attachment: fixed;
+}
+
+h1, h2, h3, h4, .site-title, .nav-list .nav-list-item .nav-list-link {
+  font-family: "Rajdhani", "Titillium Web", sans-serif;
+  letter-spacing: 0.04em;
+}
+h1, h2 { text-transform: uppercase; }
+h1 { font-weight: 700; color: #f2f9ff; }
+h2 {
+  font-weight: 600;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid rgba(79, 209, 255, 0.25);
+}
+
+.site-title {
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #f2f9ff !important;
+  letter-spacing: 0.12em;
+}
+
+// The selected page: the menus' orange focus bar.
+.nav-list .nav-list-item .nav-list-link.active {
+  background: linear-gradient(90deg, rgba(217, 130, 43, 0.85), rgba(217, 130, 43, 0.15));
+  color: #fff8ef;
+  border-left: 3px solid $halo-orange;
+}
+.nav-list .nav-list-item .nav-list-link:hover {
+  background: rgba(79, 209, 255, 0.08);
+  color: #e8f4ff;
+}
+
+a { text-decoration-color: rgba(127, 200, 242, 0.4); }
+
+// HUD panel: cut corners and a thin cyan edge.
+.hud-panel, table, .main-content pre.highlight, .main-content div.highlighter-rouge {
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+}
+.hud-panel {
+  background: linear-gradient(180deg, rgba(16, 38, 60, 0.85), rgba(10, 24, 40, 0.85));
+  border: 1px solid rgba(79, 209, 255, 0.3);
+  padding: 1.25rem 1.5rem;
+  margin: 1.5rem 0;
+}
+
+// The home page banner.
+.hero {
+  position: relative;
+  margin: 0 0 2rem;
+  padding: 2.5rem 2rem 2rem;
+  background:
+    linear-gradient(120deg, rgba(79, 209, 255, 0.16), rgba(10, 30, 55, 0.2) 45%, rgba(217, 130, 43, 0.12)),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 4px);
+  border: 1px solid rgba(79, 209, 255, 0.35);
+  clip-path: polygon(0 0, calc(100% - 28px) 0, 100% 28px, 100% 100%, 28px 100%, 0 calc(100% - 28px));
+}
+.hero h1 {
+  font-size: 2.6rem;
+  margin: 0 0 0.25rem;
+  letter-spacing: 0.14em;
+  text-shadow: 0 0 18px rgba(79, 209, 255, 0.45);
+}
+.hero .tagline {
+  font-family: "Rajdhani", sans-serif;
+  font-size: 1.25rem;
+  color: $halo-blue;
+  letter-spacing: 0.06em;
+  margin: 0 0 1.25rem;
+}
+.hero .btn { margin-right: 0.5rem; font-family: "Rajdhani", sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }
+
+// Feature grid on the home page.
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+.feature-grid .hud-panel { margin: 0; }
+.feature-grid h3 { margin-top: 0; color: $halo-cyan; text-transform: uppercase; font-size: 1.05rem; }
+.feature-grid p { margin-bottom: 0; font-size: 0.95rem; }
+
+table th {
+  font-family: "Rajdhani", sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: $halo-blue;
+}

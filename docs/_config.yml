@@ -7,7 +7,7 @@ remote_theme: just-the-docs/just-the-docs@v0.12.0
 plugins:
   - jekyll-remote-theme
   - jekyll-seo-tag
-color_scheme: dark
+color_scheme: halo
 search_enabled: true
 aux_links:
   "GitHub": "https://github.com/george0815/halo-3-recomp"
