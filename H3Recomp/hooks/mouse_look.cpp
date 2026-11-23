@@ -155,6 +155,33 @@ namespace
     constexpr uint32_t kControlZoomLevel = 0x2A;
     std::atomic<bool> g_unzoomRequested{ false };
 
+    // Look auto-centering ("auto-leveling": the profile's auto-center
+    // option). The player control update (sub_822147B0) times how long a
+    // player moves without look-stick input (record +112, seconds); past
+    // the globals' minimum autoleveling ticks it sets record +108, and the
+    // view is pulled level. Native mouse look doesn't go through the
+    // stick, so to the game a mouse player never looks around: their view
+    // was levelled while they aimed. MCC doesn't auto-center the mouse
+    // either. Cleared for player 1 while they play on the mouse.
+    constexpr uint32_t kControlAutoLevel = 108, kControlAutoLevelTime = 112;
+
+    void SuppressAutoLevel(PPCContext& ctx)
+    {
+        if (!h3::input::NativeMouseLook() || !h3::input::KeyboardLastUsed())
+            return;
+        uint32_t globals = h3::GuestRef<uint32_t>(ctx.r13.u32);
+        uint32_t controls = globals ? uint32_t(h3::GuestRef<uint32_t>(globals + 120)) : 0;
+        if (controls < 0x40000000 || controls >= 0xC0000000)
+            return;
+        // H3_LOG_AUTOLEVEL: each time the game had started leveling.
+        static const bool log = h3::EnvFlag("H3_LOG_AUTOLEVEL");
+        if (log && h3::GuestRef<uint8_t>(controls + 16 + kControlAutoLevel))
+            fprintf(stderr, "[look] auto-leveling suppressed (%.2f s without look input)\n",
+                double(h3::GuestRef<float>(controls + 16 + kControlAutoLevelTime)));
+        h3::GuestRef<uint8_t>(controls + 16 + kControlAutoLevel) = 0;
+        h3::GuestRef<float>(controls + 16 + kControlAutoLevelTime) = 0.0f;
+    }
+
     constexpr uint32_t kSpan = 0x400;  // bytes snapshot behind each pointer
 
     struct Snapshot
@@ -213,6 +240,8 @@ PPC_FUNC(sub_82211EA8)
         if (controls >= 0x40000000 && controls < 0xC0000000)
             h3::GuestRef<uint16_t>(controls + 16 + kControlZoomLevel) = 0xFFFF;
     }
+    if (user == 0)
+        SuppressAutoLevel(ctx);
     bool mouse = user == 0 && args[2] != 0 && h3::input::NativeMouseLook();
     t_collecting = user == 0;  // player 1's weapon rate: the mouse's zoom scale, and Player1Zoomed
     t_weaponRate = 1e9f;
@@ -317,4 +346,15 @@ PPC_FUNC(sub_82098B50)
     __imp__sub_82098B50(ctx, base);
     if (t_collecting && ctx.f1.f64 > 0)
         t_weaponRate = std::min(t_weaponRate, float(ctx.f1.f64));
+}
+
+// The player control update (sub_822147B0; the look function above runs
+// at its start, auto-leveling is decided at its end): player 1's
+// auto-leveling cleared again after it, for whatever reads the flag before
+// the next look call.
+PPC_FUNC_IMPL(__imp__sub_822147B0);
+PPC_FUNC(sub_822147B0)
+{
+    __imp__sub_822147B0(ctx, base);
+    SuppressAutoLevel(ctx);
 }

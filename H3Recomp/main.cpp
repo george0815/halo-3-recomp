@@ -18,6 +18,8 @@
 #include "kernel/vfs.h"
 #include "video/window.h"
 
+#include <SDL3/SDL_filesystem.h>
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -110,6 +112,17 @@ int main(int argc, char* argv[])
 
     // Compiled host shaders, kept between runs.
     h3::gpu::renderer::SetShaderCacheDirectory(xexDir / "shadercache");
+
+    // H3Recomp <xex> --precompile-shaders [manifest dir]: fill the shader
+    // cache ahead of the first start (gpu/renderer/precompile.cpp), then exit.
+    // The manifests default to the directory holding this executable.
+    for (int i = 2; i < argc; i++)
+        if (std::string(argv[i]) == "--precompile-shaders")
+        {
+            std::filesystem::path manifests = i + 1 < argc ? std::filesystem::path(argv[i + 1]) : std::filesystem::path(SDL_GetBasePath() ? SDL_GetBasePath() : ".");
+            std::filesystem::path content = std::filesystem::is_directory(xexDir / "game") ? xexDir / "game" : xexDir;
+            return h3::gpu::renderer::PrecompileShaders(manifests, content / "maps");
+        }
 
     if (!h3::InitGuestMemory())
     {

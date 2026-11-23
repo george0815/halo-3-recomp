@@ -42,7 +42,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # display server); everything else a shipped binary needs is bundled.
 SYSTEM_LIBRARIES = re.compile(
     r"^(ld-linux.*|linux-vdso.*|lib(c|m|dl|pthread|rt|util|resolv|stdc\+\+|gcc_s|atomic)\.so.*"
-    r"|lib(X|xcb|xkbcommon|GL|EGL|OpenGL|GLX|GLdispatch|gbm|drm|vulkan|wayland|dbus-1|systemd|udev|fontconfig|freetype"
+    # (libxcb's own protocol libraries are always there; the xcb-util ones
+    # Qt's X11 plugin needs often aren't, e.g. libxcb-cursor: bundled)
+    r"|lib(X|xcb(?!-(cursor|icccm|image|keysyms|render-util|util)\.)|xkbcommon|GL|EGL|OpenGL|GLX|GLdispatch|gbm|drm|vulkan|wayland|dbus-1|systemd|udev|fontconfig|freetype"
     r"|harfbuzz|graphite2|glib-2|gobject-2|gio-2|gmodule-2|z\.|expat|png16|bz2|brotli|uring|crypto|ssl|gomp|asound|pulse"
     r"|zstd|pcre2-8|cap|lzma|gcrypt|gpg-error|lz4|ffi|mount|blkid|selinux|Xau|Xdmcp|ICE|SM|uuid).*)$")
 
@@ -365,6 +367,12 @@ def main():
     shutil.copy2(os.path.join(ROOT, "thirdparty/XenonRecomp/XenonUtils/ppc_context.h"),
                  os.path.join(pkg, "recompiler", "config", "ppc_context.h"))
     shutil.copy2(os.path.join(build, "tools/h3setup/h3setup" + exe_suffix), os.path.join(pkg, "h3setup" + exe_suffix))
+    # The shader manifests h3setup's last step uses (H3Recomp
+    # --precompile-shaders): descriptors only, the shaders come from the
+    # player's maps (assets/shaders/README.md).
+    shaders = os.path.join(ROOT, "assets", "shaders")
+    if os.path.isdir(shaders):
+        shutil.copytree(shaders, os.path.join(pkg, "shaders"), dirs_exist_ok=True)
     launcher_dir = os.path.join(build, "H3Launcher")
     if os.path.exists(os.path.join(launcher_dir, "H3Launcher" + exe_suffix)):
         if windows:
@@ -384,13 +392,28 @@ def main():
             os.makedirs(lib, exist_ok=True)
             done = set()
             bundle_closure(os.path.join(pkg, "H3Launcher"), lib, done)
-            plugin_root = "/usr/lib/qt6/plugins"
+            # The plugins of the Qt the launcher was built with: its prefix
+            # from the build's Qt6Core_DIR (<prefix>/lib/cmake/Qt6Core; the
+            # release container's aqtinstall Qt has no qtpaths on PATH),
+            # else qtpaths, else the system Qt's.
+            plugin_root = None
+            with open(os.path.join(build, "CMakeCache.txt")) as cache:
+                for line in cache:
+                    if line.startswith("Qt6Core_DIR:"):
+                        prefix = os.path.normpath(os.path.join(line.split("=", 1)[1].strip(), "..", "..", ".."))
+                        if os.path.isdir(os.path.join(prefix, "plugins", "platforms")):
+                            plugin_root = os.path.join(prefix, "plugins")
             for tool in ("qtpaths6", "qtpaths"):
-                try:
-                    plugin_root = subprocess.run([tool, "--plugin-dir"], capture_output=True, text=True).stdout.strip() or plugin_root
+                if plugin_root:
                     break
+                try:
+                    plugin_root = subprocess.run([tool, "--plugin-dir"], capture_output=True, text=True).stdout.strip() or None
                 except FileNotFoundError:
                     pass
+            plugin_root = plugin_root or "/usr/lib/qt6/plugins"
+            for required in ("platforms/libqxcb.so", "platforms/libqwayland.so"):
+                if not os.path.exists(os.path.join(plugin_root, required)):
+                    sys.exit(f"Qt platform plugin {required} not found in {plugin_root}: the launcher wouldn't start")
             for plugin in ("platforms/libqxcb.so", "platforms/libqwayland.so", "xcbglintegrations/libqxcb-glx-integration.so",
                            "xcbglintegrations/libqxcb-egl-integration.so", "wayland-shell-integration/libxdg-shell.so",
                            "wayland-decoration-client/libbradient.so", "wayland-graphics-integration-client/libqt-plugin-wayland-egl.so",

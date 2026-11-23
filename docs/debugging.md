@@ -122,6 +122,10 @@ Environment variables:
 | `H3_CAPTURE_LEVEL=<t>,...` / `H3_CAPTURE_LEVEL_TICK=<n>,...` | GPU frame capture (as F9, or F10 with `H3_CAPTURE_DEEP`) at those level times / game ticks |
 | `H3_CAPTURE_HOLD_TICKS=1` | With `H3_CAPTURE_LEVEL_TICK`: hold the game until each capture is written, so consecutive ticks land on their own frames |
 | `H3_CAPTURE_PS_CONST=<n>` | In captures, also log every write to pixel shader constant c<n> |
+| `H3_LOG_TEXT_RENDER=1` | Log menu text widgets' bounds and render data (the drawn quad), every 600th render of each |
+| `H3_LOG_MENU_FIELDS=1` | With `H3_LOG_MENU`: also each list item's and text widget's rectangles and the list widget's own words |
+| `H3_MENU_CURSOR_BOUNDS_ONLY=1` | Menu cursor hit test on the text bounds alone (before the drawn-offset correction) |
+| `H3_LOG_COMPACT_CONSTANTS=1` | Print each translated shader's compact constant list (`XE_C(i)` in the GLSL reads hardware constant `c<list[i]>`; pixel shader constants are the capture's `ps constants`) |
 | `H3_DEBUG_PS=<hash prefix>@<case>=<GLSL vec4>[;...]` | Debug variants of one pixel shader: deep captures (F10) replay each draw once per expression and save its value per pixel (`tools`: `pixtrace.py`) |
 | `H3_DUMP_ADDRESS=<hex>` / `H3_DUMP_TARGET=<0-3>` | With `H3_DUMP_FRAME`: dump the resolved texture at that address / that color target |
 | `H3_SNAPSHOT_LEVEL=<first>-<last>[/<every>]` | Save the presented frame at those level times (`level_<time>.png`; film screenshot A/Bs) |

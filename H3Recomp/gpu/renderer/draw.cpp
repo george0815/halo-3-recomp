@@ -1731,6 +1731,16 @@ namespace h3::gpu::renderer::internal
         // 3D geometry keeps its sub-pixel edges.
         if (g_renderScale > 1 && (primitive == kPrimRectangleList || !(vte & 1)))
             system.flags |= kSystemFlagSnapToPixels;
+        // Screen-aligned passes through the viewport transform (Sierra's
+        // ripple normal map: a full-target quad list) put their edges on
+        // guest pixel centers too; only those vertices move, so 3D
+        // geometry keeps its sub-pixel positions. Without it the first
+        // host row and column of the 800x800 ripple normal map stayed
+        // unwritten at scale 2, and far water (its ripple coordinates
+        // clamped to that edge) refracted through garbage normals: a hard
+        // line past which the river looked like white rapids.
+        else if (static const bool noSnapCenters = EnvFlag("H3_NO_SNAP_CENTERS"); g_renderScale > 1 && !noSnapCenters)
+            system.flags |= kSystemFlagSnapCenters;
 
         if (primitive == kPrimTrianglePatch)
         {

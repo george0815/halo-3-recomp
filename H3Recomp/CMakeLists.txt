@@ -28,6 +28,7 @@ add_library(H3Runtime STATIC
     gpu/renderer/queries.cpp
     gpu/renderer/pipelines.cpp
     gpu/renderer/postprocess.cpp
+    gpu/renderer/precompile.cpp
     gpu/renderer/resolve.cpp
     gpu/renderer/shaders.cpp
     gpu/renderer/targets.cpp

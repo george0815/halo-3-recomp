@@ -225,6 +225,27 @@ namespace h3::gpu::renderer::internal
             for (int b = 0; b < 4; b++)
                 entry->captureHash = (entry->captureHash ^ bytes[b]) * 0x100000001B3ull;
         }
+        // H3_RECORD_SHADERS=<dir> (building the shipped shader manifest,
+        // tools/shaders): each new shader's microcode as loaded (host
+        // order dwords converted back to big endian, as in guest memory), as
+        // <vs|ps>_<capture hash>.bin.
+        static const char* record = EnvString("H3_RECORD_SHADERS");
+        if (record)
+        {
+            char path[1024];
+            snprintf(path, sizeof(path), "%s/%s_%016llx.bin", record, vertex ? "vs" : "ps", (unsigned long long)entry->captureHash);
+            if (FILE* existing = fopen(path, "rb"))
+                fclose(existing);
+            else if (FILE* out = fopen(path, "wb"))
+            {
+                for (uint32_t i = 0; i < count; i++)
+                {
+                    uint32_t big = __builtin_bswap32(dwords[i]);
+                    fwrite(&big, 4, 1, out);
+                }
+                fclose(out);
+            }
+        }
         shader::TranslationResult translated = shader::Translate(vertex, dwords, count);
         if (!translated.ok)
             LogOnce("shader translation failed: " + translated.error);

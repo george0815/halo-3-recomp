@@ -51,6 +51,10 @@ namespace h3::launcher
         std::function<void(int delta)> step;
         std::string* text = nullptr;
         size_t maxLength = 0;
+        // Text: which characters typing may add (unset: a gamertag's
+        // letters, digits and spaces), and what an emptied field becomes.
+        std::function<bool(char)> accepts;
+        std::string emptyValue;
         size_t action = 0;  // Binding: index into the settings' bindings
     };
 

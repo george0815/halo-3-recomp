@@ -23,7 +23,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
+#include <cstring>
 
 namespace h3::launcher
 {
@@ -356,6 +358,7 @@ namespace h3::launcher
                         { QStringLiteral("recompile"), QStringLiteral("Translating the game's code") },
                         { QStringLiteral("compile"), QStringLiteral("Compiling the game (this takes a few minutes)") },
                         { QStringLiteral("sdk"), QStringLiteral("Downloading Microsoft's C runtime and Windows SDK") },
+                        { QStringLiteral("shaders"), QStringLiteral("Preparing the shaders") },
                     };
                     status_ = QStringLiteral("%1... %2%").arg(stages.value(parts[1], parts[1]), parts[2]);
                 }
@@ -661,6 +664,7 @@ namespace h3::launcher
             QStringLiteral("Your name in game (up to 15 characters). Enter to edit.") };
         gamertag.text = &profile.gamertag;
         gamertag.maxLength = config::kMaxGamertag;
+        gamertag.emptyValue = config::Defaults().profile.gamertag;
         page.items.push_back(gamertag);
 
         MenuItem picture{ MenuItem::Kind::Action, QStringLiteral("Gamer picture"),
@@ -702,6 +706,7 @@ namespace h3::launcher
                 QStringLiteral("Split screen: player %1's name. They join by pressing START on their controller.").arg(i + 2) };
             other.text = &profile.otherGamertags[i];
             other.maxLength = config::kMaxGamertag;
+            other.emptyValue = config::Defaults().profile.otherGamertags[i];
             page.items.push_back(other);
         }
         return page;
@@ -773,6 +778,8 @@ namespace h3::launcher
             QStringLiteral("The UDP port this game uses (default 41001). Over the internet, the host forwards it on their router.") };
         port.text = &portText_;
         port.maxLength = 5;
+        port.accepts = [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; };
+        port.emptyValue = std::to_string(config::Defaults().network.port);
         page.items.push_back(port);
 
         MenuItem peers{ MenuItem::Kind::Text, QStringLiteral("Friends"),
@@ -780,6 +787,11 @@ namespace h3::launcher
                            "Everyone in a game needs the same build.") };
         peers.text = &peersText_;
         peers.maxLength = 400;
+        // Addresses: IPv4 (1.2.3.4), host names, :port, comma-separated;
+        // IPv6 in brackets ([::1]:41001). Empty: no friends.
+        peers.accepts = [](char c) {
+            return std::isalnum(static_cast<unsigned char>(c)) || std::strchr(".:,-_[] ", c) != nullptr;
+        };
         page.items.push_back(peers);
         return page;
     }
@@ -1097,7 +1109,7 @@ namespace h3::launcher
             case Qt::Key_Down:
                 editing_ = false;
                 if (text.empty())
-                    text = config::Defaults().profile.gamertag;
+                    text = item.emptyValue;
                 Save();
                 break;
             case Qt::Key_Backspace:
@@ -1105,10 +1117,16 @@ namespace h3::launcher
                     text.pop_back();
                 break;
             default:
-                // Gamertags are letters, digits and spaces.
                 for (QChar c : event->text())
-                    if (c.unicode() < 0x80 && (c.isLetterOrNumber() || c == ' ') && text.size() < item.maxLength)
-                        text.push_back(char(c.unicode()));
+                {
+                    if (c.unicode() >= 0x80 || text.size() >= item.maxLength)
+                        continue;
+                    char ch = char(c.unicode());
+                    // Gamertags (the default) are letters, digits and spaces.
+                    bool ok = item.accepts ? item.accepts(ch) : (std::isalnum(static_cast<unsigned char>(ch)) || ch == ' ');
+                    if (ok)
+                        text.push_back(ch);
+                }
                 break;
             }
             update();
@@ -1169,6 +1187,9 @@ namespace h3::launcher
         {
             if (editing_)
                 editing_ = false, Save();
+            // Right-click goes back from anywhere, not just over a row.
+            if (event->button() == Qt::RightButton)
+                Back();
             update();
             return;
         }

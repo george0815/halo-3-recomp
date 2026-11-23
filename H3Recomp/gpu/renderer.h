@@ -24,6 +24,12 @@ namespace h3::gpu::renderer
     // Where compiled SPIR-V is kept between runs (before Initialize).
     void SetShaderCacheDirectory(const std::filesystem::path& directory);
 
+    // H3Recomp --precompile-shaders (renderer/precompile.cpp): fills the
+    // shader cache from the maps in mapsDirectory and the shipped manifests
+    // (shader_manifest.txt, pipelines.txt) in manifestDirectory, without a
+    // device. Returns the process exit code.
+    int PrecompileShaders(const std::filesystem::path& manifestDirectory, const std::filesystem::path& mapsDirectory);
+
     // Shader microcode was loaded (host-endian dwords). type: 0 vertex, 1 pixel.
     void OnShaderLoad(uint32_t type, const uint32_t* dwords, uint32_t dwordCount);
 

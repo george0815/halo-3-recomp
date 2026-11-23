@@ -11,6 +11,9 @@
 //                                  the generated tag layouts (tools/tagdefs)
 //   h3tags <map> convert           converts every tag to host layout (as the
 //                                  game's tag cache does) and reports errors
+//   h3tags <map> shaders <out dir> writes every compiled Xenon shader blob
+//                                  (vtsh, pixl, glvs, glps) as
+//                                  <group>_<datum>_<n>.bin
 
 #include "cache/cache_file.h"
 
@@ -146,6 +149,111 @@ int main(int argc, char** argv)
             printf("  %2d %s %08X %s\n", i, GroupTagString(bsp.structure_bsp.group.get()).c_str(), datum,
                 file->Tag(datum) ? file->TagName(datum & 0xFFFF).c_str() : "(none)");
         }
+    }
+    else if (command == "shaders" && argc > 3)
+    {
+        namespace layout = h3::native::tags::layout;
+        std::string out = argv[3];
+        uint32_t written = 0;
+        uint64_t bytes = 0;
+        const auto& tags = file->Index().tags;
+        struct Micro
+        {
+            uint32_t address;
+            std::string group;
+            uint32_t datum;
+            int32_t index;
+        };
+        std::vector<Micro> micro;
+        auto dumpBlocks = [&](uint32_t slot, const char* group, int32_t count, uint32_t address) {
+            for (int32_t i = 0; i < count; i++)
+            {
+                layout::compiled_vertex_shader_block block;  // same layout as the pixel one
+                static_assert(sizeof(layout::compiled_vertex_shader_block) == sizeof(layout::compiled_pixel_shader_block));
+                if (!file->ReadTagData(address + uint32_t(i) * sizeof(block), &block, sizeof(block)))
+                    break;
+                // Cache files keep no Xenon blob: +0x4C points at the game's
+                // runtime shader object, whose +0x10 is its microcode.
+                if (uint32_t runtime = block.runtime_vertex_shader.get())
+                {
+                    uint8_t object[20];
+                    if (file->ReadTagData(runtime, object, sizeof(object)))
+                    {
+                        uint32_t code = (uint32_t(object[16]) << 24) | (uint32_t(object[17]) << 16) | (uint32_t(object[18]) << 8) | object[19];
+                        if (code)
+                            micro.push_back({ code, std::string(group), file->Datum(slot), i });
+                    }
+                }
+                int32_t size = block.xenon_compiled_shader.size.get();
+                if (size <= 0 || size > (1 << 20))
+                    continue;
+                std::vector<uint8_t> data(static_cast<size_t>(size));
+                if (!file->ReadTagData(block.xenon_compiled_shader.address.get(), data.data(), data.size()))
+                    continue;
+                char name[64];
+                snprintf(name, sizeof(name), "/%s_%08X_%d.bin", group, file->Datum(slot), i);
+                if (FILE* f = fopen((out + name).c_str(), "wb"))
+                {
+                    fwrite(data.data(), 1, data.size(), f);
+                    fclose(f);
+                    written++;
+                    bytes += data.size();
+                }
+            }
+        };
+        for (uint32_t slot = 0; slot < tags.size(); slot++)
+        {
+            if (tags[slot].Empty() || !tags[slot].address)
+                continue;
+            std::string group = GroupTagString(file->Index().groups[tags[slot].groupIndex].tag);
+            if (group == "vtsh" || group == "pixl")
+            {
+                layout::vertex_shader_block_struct s;  // the pixel one has the same layout
+                static_assert(sizeof(layout::vertex_shader_block_struct) == sizeof(layout::pixel_shader_block_struct));
+                if (file->ReadTagData(tags[slot].address, &s, sizeof(s)))
+                {
+                    dumpBlocks(slot, group.c_str(), s.compiled_shaders.count.get(), s.compiled_shaders.address.get());
+                }
+            }
+            else if (group == "glvs" || group == "glps")
+            {
+                layout::global_vertex_shader_block_struct s;
+                static_assert(sizeof(layout::global_vertex_shader_block_struct) == sizeof(layout::global_pixel_shader_block_struct));
+                if (file->ReadTagData(tags[slot].address, &s, sizeof(s)))
+                    dumpBlocks(slot, group.c_str(), s.compiled_shaders.count.get(), s.compiled_shaders.address.get());
+            }
+        }
+        // Each microcode runs to the next one's start (or 16 KB): shaders
+        // ignore what follows their last instruction.
+        std::vector<uint32_t> starts;
+        for (const Micro& m : micro)
+            starts.push_back(m.address);
+        std::sort(starts.begin(), starts.end());
+        starts.erase(std::unique(starts.begin(), starts.end()), starts.end());
+        uint32_t microWritten = 0;
+        for (uint32_t start : starts)
+        {
+            auto next = std::upper_bound(starts.begin(), starts.end(), start);
+            uint32_t size = next == starts.end() ? 16384 : std::min<uint32_t>(*next - start, 16384);
+            std::vector<uint8_t> code(size);
+            while (size && !file->ReadTagData(start, code.data(), size))
+                size -= 4;
+            if (!size)
+                continue;
+            const Micro* first = nullptr;
+            for (const Micro& m : micro)
+                if (m.address == start && (!first || m.group < first->group))
+                    first = &m;
+            char name[64];
+            snprintf(name, sizeof(name), "/mc_%s_%08X.bin", first->group.c_str(), start);
+            if (FILE* f = fopen((out + name).c_str(), "wb"))
+            {
+                fwrite(code.data(), 1, size, f);
+                fclose(f);
+                microWritten++;
+            }
+        }
+        printf("%u shader blobs, %" PRIu64 " bytes; %zu microcode references, %u distinct written\n", written, bytes, micro.size(), microWritten);
     }
     else if (command == "convert")
     {

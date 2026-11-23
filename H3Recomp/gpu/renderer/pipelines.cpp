@@ -55,7 +55,9 @@ namespace h3::gpu::renderer::internal
         // 7: structured control flow and registers as variables
         //    (translator.cpp StructuredRegion, ScalarRegisters).
         // 8: explicit-LOD texture fetches (translator.cpp, xe_lod).
-        constexpr uint32_t kManifestVersion = 8;
+        // 9: vertex snapping to guest pixel centres at a render scale
+        //    (translator.cpp, kSystemFlagSnapCenters).
+        constexpr uint32_t kManifestVersion = 9;
         // Worker threads for shader and pipeline creation. The game itself
         // keeps about six host threads busy; drivers compile pipelines
         // single-threaded, so a few workers go a long way.

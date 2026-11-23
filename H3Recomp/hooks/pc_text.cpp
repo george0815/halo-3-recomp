@@ -27,6 +27,7 @@
 
 #include "tags/tag_cache.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -83,25 +84,75 @@ namespace h3::hooks
 
         // The button icons in the text: private-use characters the font
         // draws as the 360's buttons (U+E100.., UTF-8 EE 84 80..), and the
-        // controller input each stands for. Ones not confirmed yet stay.
+        // controller input each stands for (the game's own button -> icon
+        // table, in sub_82494060; the stick clicks are animated, three
+        // icons each).
         struct Icon
         {
             char32_t character;
-            uint16_t buttons[4];  // the controller inputs, joined with "/" (0: unused)
+            uint16_t button;
         };
         constexpr Icon kIcons[] = {
-            { 0xE100, { input::kA } },
-            { 0xE101, { input::kB } },
-            { 0xE102, { input::kX } },
-            { 0xE103, { input::kY } },
-            { 0xE104, { input::kLeftShoulder } },
-            { 0xE105, { input::kRightShoulder } },
-            { 0xE106, { input::kLeftTriggerKey } },
-            { 0xE107, { input::kRightTriggerKey } },
-            { 0xE108, { input::kDpadUp, input::kDpadDown, input::kDpadLeft, input::kDpadRight } },
-            { 0xE10C, { input::kStart } },  // "Settings" in lobbies
-            { 0xE10D, { input::kBack } },   // "Prior Game Stats"
+            { 0xE100, input::kA },
+            { 0xE101, input::kB },
+            { 0xE102, input::kX },
+            { 0xE103, input::kY },
+            { 0xE104, input::kLeftShoulder },
+            { 0xE105, input::kRightShoulder },
+            { 0xE106, input::kLeftTriggerKey },
+            { 0xE107, input::kRightTriggerKey },
+            { 0xE108, input::kDpadUp },
+            { 0xE109, input::kDpadDown },
+            { 0xE10A, input::kDpadLeft },
+            { 0xE10B, input::kDpadRight },
+            { 0xE10C, input::kStart },
+            { 0xE10D, input::kBack },
+            { 0xE133, input::kLeftThumb },
+            { 0xE134, input::kLeftThumb },
+            { 0xE135, input::kLeftThumb },
+            { 0xE136, input::kRightThumb },
+            { 0xE137, input::kRightThumb },
+            { 0xE138, input::kRightThumb },
         };
+        // The sticks themselves (theater: "Fly Camera", "Camera Look").
+        constexpr char32_t kLeftStickIcon = 0xE110, kRightStickIcon = 0xE111;
+
+        // Gameplay text names actions instead of buttons (U+E443..E460:
+        // "Press <melee> to melee"), and the game draws the button the
+        // player's controller layout gives that action (sub_82494060). The
+        // token's action, per token from kFirstActionToken (-1: the trigger
+        // that doesn't fire the right weapon, the left weapon's; kNoAction:
+        // not a button). Move and look (E453, E454) are the sticks.
+        constexpr char32_t kFirstActionToken = 0xE443, kMoveToken = 0xE453, kLookToken = 0xE454;
+        constexpr int8_t kNoAction = -2, kOtherTrigger = -1;
+        constexpr int8_t kTokenActions[] = {
+            0, 1, 3, 2, 5, 17, 7, 8, 11, 12, 13, 14, 15, 16, 18, 19,                          // E443-E452
+            kNoAction, kNoAction, kNoAction, kNoAction, kNoAction, kNoAction, kNoAction, kNoAction,  // E453-E45A
+            kOtherTrigger, 3, 3, 4, 26, 6,                                                     // E45B-E460
+        };
+        constexpr int8_t kFireRightAction = 8;
+        // The players' controller settings (52 bytes each, the game's copy
+        // of the profile's): from +8 the button (below) of each action.
+        constexpr uint32_t kControllerSettings = 0x829E74A0;
+        constexpr uint32_t kActionButtons = 8;
+        constexpr uint32_t kActionButtonCount = 28;  // up to the stick layout (+36)
+        // The game's buttons (the actions' values) as controller inputs.
+        constexpr uint16_t kGameButtons[] = {
+            input::kLeftTriggerKey, input::kRightTriggerKey, input::kDpadUp, input::kDpadDown, input::kDpadLeft,
+            input::kDpadRight, input::kStart, input::kBack, input::kLeftThumb, input::kRightThumb, input::kA, input::kB,
+            input::kX, input::kY, input::kLeftShoulder, input::kRightShoulder,
+        };
+
+        // Player 1's action -> button bytes, as the rewrite last used them.
+        std::array<uint8_t, kActionButtonCount> g_layout{};
+
+        std::array<uint8_t, kActionButtonCount> CurrentLayout()
+        {
+            std::array<uint8_t, kActionButtonCount> layout{};
+            for (uint32_t i = 0; i < kActionButtonCount; i++)
+                layout[i] = GuestRef<uint8_t>(kControllerSettings + kActionButtons + i);
+            return layout;
+        }
 
         // The short name a key goes by in game text: the full SDL names
         // ("Mouse Middle") ran past menu footers built for button icons.
@@ -120,25 +171,52 @@ namespace h3::hooks
             return name;
         }
 
-        // "[Space]" for an icon, or empty to keep the icon (nothing bound).
-        std::string KeyLabel(const Icon& icon)
+        // "[Space]" for a controller input, or empty to keep the icon
+        // (nothing bound).
+        std::string ButtonLabel(uint16_t button)
         {
+            std::string name = input::KeyNameFor(button);
+            return name.empty() ? std::string() : "[" + ShortKeyName(name) + "]";
+        }
+
+        // "[W/A/S/D]": the movement keys, or empty if one isn't bound.
+        std::string MoveLabel()
+        {
+            const auto& bindings = config::Active().controls.bindings;
             std::string names;
-            for (uint16_t button : icon.buttons)
+            for (config::Action action : { config::Action::MoveForward, config::Action::MoveLeft, config::Action::MoveBack,
+                                           config::Action::MoveRight })
             {
-                if (!button)
-                    break;
-                std::string name = input::KeyNameFor(button);
-                if (name.empty())
+                const auto& keys = bindings[size_t(action)];
+                if (keys.empty())
                     return {};
-                names += (names.empty() ? "" : "/") + ShortKeyName(name);
+                names += (names.empty() ? "" : "/") + ShortKeyName(keys.front());
             }
             return "[" + names + "]";
         }
 
-        std::string Utf8(char32_t c)
+        // The key text for a private-use character (a button icon or an
+        // action token), or empty to leave it.
+        std::string Label(char32_t c, const std::array<uint8_t, kActionButtonCount>& layout)
         {
-            return { char(0xE0 | (c >> 12)), char(0x80 | ((c >> 6) & 0x3F)), char(0x80 | (c & 0x3F)) };
+            for (const Icon& icon : kIcons)
+                if (icon.character == c)
+                    return ButtonLabel(icon.button);
+            if (c == kLeftStickIcon || c == kMoveToken)
+                return MoveLabel();
+            if (c == kRightStickIcon || c == kLookToken)
+                return "[Mouse]";
+            if (c < kFirstActionToken || c >= kFirstActionToken + std::size(kTokenActions))
+                return {};
+            int8_t action = kTokenActions[c - kFirstActionToken];
+            if (action == kNoAction)
+                return {};
+            uint8_t button;
+            if (action == kOtherTrigger)
+                button = layout[kFireRightAction] == 1 ? 0 : 1;
+            else
+                button = layout[size_t(action)];
+            return button < std::size(kGameButtons) ? ButtonLabel(kGameButtons[button]) : std::string();
         }
 
         // The rewrite of a string, or empty if it stays. [video] pc_wording
@@ -165,19 +243,27 @@ namespace h3::hooks
                         result.replace(at, strlen(from), to);
                         changed = true;
                     }
-            if (keys)
-                for (const Icon& icon : kIcons)
+            if (keys && result.find('\xEE') != std::string::npos)
+            {
+                std::string out;
+                for (size_t at = 0; at < result.size(); at++)
                 {
-                    std::string glyph = Utf8(icon.character);
-                    if (result.find(glyph) == std::string::npos)
-                        continue;
-                    std::string label = KeyLabel(icon);
-                    if (label.empty())
-                        continue;
-                    for (size_t at = result.find(glyph); at != std::string::npos; at = result.find(glyph, at + label.size()))
-                        result.replace(at, glyph.size(), label);
-                    changed = true;
+                    if (at + 2 < result.size() && uint8_t(result[at]) == 0xEE)
+                    {
+                        char32_t c = 0xE000 | (char32_t(uint8_t(result[at + 1]) & 0x3F) << 6) | (uint8_t(result[at + 2]) & 0x3F);
+                        std::string label = Label(c, g_layout);
+                        if (!label.empty())
+                        {
+                            out += label;
+                            at += 2;
+                            changed = true;
+                            continue;
+                        }
+                    }
+                    out += result[at];
                 }
+                result = std::move(out);
+            }
             return changed ? result : std::string();
         }
 
@@ -244,10 +330,22 @@ namespace h3::hooks
         if (GuestRef<uint32_t>(pack + kPackLoaded) == 0 || data == 0)
             return;
         bool keys = input::KeyboardLastUsed();
+        // Action tokens follow player 1's controller layout (a profile
+        // setting, loaded with the profile or changed in the settings).
+        std::array<uint8_t, kActionButtonCount> layout = CurrentLayout();
+        bool layoutChanged = keys && layout != g_layout;
+        g_layout = layout;
+        if (layoutChanged && log)
+        {
+            fprintf(stderr, "[text] controller layout:");
+            for (uint8_t button : layout)
+                fprintf(stderr, " %u", button);
+            fprintf(stderr, "\n");
+        }
         if (data == g_copy)
         {
-            if (keys != g_keys)
-                Build(pack, keys, log);  // the player switched devices
+            if (keys != g_keys || layoutChanged)
+                Build(pack, keys, log);  // the player switched devices or layouts
             return;
         }
 
@@ -272,6 +370,33 @@ namespace h3::hooks
             g_originalOffsets[i] = GuestRef<uint32_t>(index + i * kIndexEntryBytes + kIndexEntryOffset);
         g_original.assign(GuestPtr<char>(data), GuestPtr<char>(data) + size);
         g_original.push_back('\0');  // a last string without its terminator stays inside
+        // H3_LOG_PC_TEXT: every string with a private-use character (button
+        // icons U+E1xx, action tokens U+E4xx), shown as {Exxx}.
+        if (log)
+            for (uint32_t i = 0; i < count; i++)
+            {
+                uint32_t offset = g_originalOffsets[i];
+                if (offset >= size)
+                    continue;
+                std::string text = g_original.data() + offset;
+                if (text.find('\xEE') == std::string::npos)
+                    continue;
+                std::string shown;
+                for (size_t at = 0; at < text.size(); at++)
+                    if (at + 2 < text.size() && uint8_t(text[at]) == 0xEE)
+                    {
+                        char code[12];
+                        snprintf(code, sizeof(code), "{%04X}",
+                            0xE000u | (uint32_t(uint8_t(text[at + 1]) & 0x3F) << 6) | (uint8_t(text[at + 2]) & 0x3F));
+                        shown += code;
+                        at += 2;
+                    }
+                    else if (text[at] != '\n')
+                        shown += text[at];
+                    else
+                        shown += "\\n";
+                fprintf(stderr, "[text icons] %u: %s\n", i, shown.c_str());
+            }
         Build(pack, keys, log);
     }
 }

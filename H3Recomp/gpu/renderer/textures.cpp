@@ -213,6 +213,31 @@ namespace h3::gpu::renderer::internal
                     mips.resize(i);
                     break;
                 }
+            // A stand-in's following levels may not be loaded at all: the
+            // game streams some bitmaps' level 1 alone (Sierra's 3-layer
+            // water ripple shape, 256x256 at mip levels 1-8 with only
+            // level 1 in memory). Their all-zero memory decoded as black
+            // levels, and the ripple shader's (texel - 0.5) filled every
+            // ripple quad drawn small enough to sample them: square
+            // ripples. Stop at the first level that is all zeros.
+            if (base.width != constant.width || base.height != constant.height)
+                for (size_t i = 0; i < mips.size(); i++)
+                {
+                    const uint8_t* level = GuestPtr<uint8_t>(PhysicalToGuest(mips[i].address));
+                    uint32_t bytes = texture::GuestSize(mips[i]);
+                    bool empty = true;
+                    for (uint32_t b = 0; b < bytes && empty; b += 8)
+                    {
+                        uint64_t word = 0;
+                        memcpy(&word, level + b, std::min<uint32_t>(8, bytes - b));
+                        empty = word == 0;
+                    }
+                    if (empty)
+                    {
+                        mips.resize(i);
+                        break;
+                    }
+                }
             return mips;
         }
 

@@ -204,6 +204,24 @@ void xe_write_vertex(vec4 position, vec4 outputs[16])
         ndc = vec2(host.x / size.x * 2.0 - 1.0, 1.0 - host.y / size.y * 2.0);
         gl_Position.xy = ndc * gl_Position.w;
     }
+    // Flags bit 23 (other draws at a render scale): the same, but only for
+    // a vertex within 1/1000 guest pixel of a guest pixel center, where the
+    // console's coverage rule and the scaled host grid disagree.
+    else if ((xe_sys.flags & 8388608u) != 0u && gl_Position.w != 0.0)
+    {
+        vec2 size = vec2(xe_sys.target_width, xe_sys.target_height);
+        vec2 block = vec2(xe_sys.pixel_scale_x, xe_sys.pixel_scale_y);
+        vec2 ndc = gl_Position.xy / gl_Position.w;
+        vec2 guest = vec2(ndc.x + 1.0, 1.0 - ndc.y) * 0.5 * size / block;
+        bvec2 center = lessThan(abs(fract(guest) - 0.5), vec2(1.0e-3));
+        if (any(center))
+        {
+            guest = mix(guest, ceil(guest - 0.5 - 1.0e-3), vec2(center));
+            vec2 host = guest * block;
+            ndc = vec2(host.x / size.x * 2.0 - 1.0, 1.0 - host.y / size.y * 2.0);
+            gl_Position.xy = ndc * gl_Position.w;
+        }
+    }
 }
 
 // The shader body is called from a single site: the optimizer inlines every
@@ -661,6 +679,15 @@ void main()
                     at = end;
                 }
                 out.append(body, at, std::string::npos);
+                // H3_LOG_COMPACT_CONSTANTS=1: print each compact index's
+                // hardware constant (XE_C(i) in the GLSL is c<list[i]>).
+                if (getenv("H3_LOG_COMPACT_CONSTANTS"))
+                {
+                    fprintf(stderr, "[shader] compact constants:");
+                    for (size_t i = 0; i < m_info.compactConstants.size(); i++)
+                        fprintf(stderr, " %zu=c%u", i, m_info.compactConstants[i]);
+                    fprintf(stderr, "\n");
+                }
                 return out;
             }
             std::set<uint32_t> m_vertexFetchSet;

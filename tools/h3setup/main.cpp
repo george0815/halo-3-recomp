@@ -11,6 +11,9 @@
 //   h3setup sdk <dir> --accept-microsoft-license
 //                                  Windows: fetch Microsoft's C runtime and
 //                                  Windows SDK (xwin) into <dir>/toolchain/sdk
+//   h3setup shaders <dir>          fill <dir>/game/shadercache ahead of the
+//                                  first start (H3Recomp --precompile-shaders
+//                                  with the package's shaders/ manifests)
 //   h3setup install <iso> <dir> [--package <dir>] [--jobs <n>]
 //                   [--accept-microsoft-license]   all of the above
 //
@@ -23,6 +26,8 @@
 #include "sha1.h"
 
 #include <cstdio>
+#include <chrono>
+#include <atomic>
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
@@ -282,6 +287,59 @@ namespace
     }
 }
 
+namespace
+{
+    // The built game compiles every shader of the maps (and the shipped
+    // manifest's patched variants) into its shader cache, so the first
+    // start doesn't stutter on each new shader. Optional: on failure the
+    // game still compiles them as it meets them. Relays the game's
+    // "progress shaders <percent>" lines from its log.
+    int PrecompileShaders(const std::filesystem::path& install, const std::filesystem::path& package)
+    {
+        std::filesystem::path exe = install /
+#ifdef _WIN32
+            "H3Recomp.exe";
+#else
+            "H3Recomp";
+#endif
+        std::filesystem::path log = install / "build" / "shaders.log";
+        std::error_code ec;
+        std::filesystem::create_directories(log.parent_path(), ec);
+        std::filesystem::remove(log, ec);
+        printf("progress shaders 0\n");
+        fflush(stdout);
+        int status = -1;
+        std::atomic<bool> finished{ false };
+        std::thread worker([&] {
+            status = h3setup::RunProgram({ Utf8(exe), Utf8(install / "game" / "default.xex"), "--precompile-shaders",
+                Utf8(package / "shaders") }, log);
+            finished = true;
+        });
+        std::string last;
+        while (!finished)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            std::ifstream in(log);
+            std::string line, progress;
+            while (std::getline(in, line))
+                if (line.rfind("progress shaders ", 0) == 0)
+                    progress = line;
+            if (!progress.empty() && progress != last)
+            {
+                last = progress;
+                printf("%s\n", progress.c_str());
+                fflush(stdout);
+            }
+        }
+        worker.join();
+        if (status != 0)
+            fprintf(stderr, "warning: shader precompile failed (%d); see %s\n", status, Utf8(log).c_str());
+        else
+            printf("progress shaders 100\n");
+        return 0;
+    }
+}
+
 int main(int argcNarrow, char** argvNarrow)
 {
     // The arguments as UTF-8 (Windows: from the UTF-16 command line; argv
@@ -342,8 +400,12 @@ int main(int argcNarrow, char** argvNarrow)
             return 1;
         if (Recompile(positional[1], package / "recompiler" / "config", package / "tools") != 0)
             return 1;
-        return h3setup::Build(positional[1], package, jobs);
+        if (h3setup::Build(positional[1], package, jobs) != 0)
+            return 1;
+        return PrecompileShaders(positional[1], package);
     }
+    if (command == "shaders" && positional.size() == 1)
+        return PrecompileShaders(positional[0], package);
     if (command == "check" && positional.size() == 1)
         return OpenIso(iso, positional[0]) && Check(iso) ? 0 : 1;
     if (command == "list" && positional.size() == 1)
