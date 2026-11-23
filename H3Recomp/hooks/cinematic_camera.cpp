@@ -17,8 +17,9 @@
 // camera from a frame blended between the current one and the next (by the
 // fraction of a frame the tick is past the current one), so the camera
 // moves every tick. The blend is built in guest memory below the stack (the
-// call runs with the stack pointer moved past it). The field of view, read
-// from the frame directly by the camera update, still steps at 30 Hz.
+// call runs with the stack pointer moved past it). The field of view, which
+// the camera update reads from the frame itself (+44) and converts in
+// sub_82291A38, is blended there.
 //
 // H3_LOG_CAMERA=1 logs the camera mode and the camera the director's camera
 // update writes, on every call, with the tick.
@@ -68,6 +69,7 @@ namespace
     constexpr uint32_t kFramePosition = 0;
     constexpr uint32_t kFrameForward = 12;
     constexpr uint32_t kFrameUp = 24;
+    constexpr uint32_t kFrameFov = 44;
 
     // The camera track's frames per second (the float sub_82290F80 scales
     // ticks * seconds per tick by: 30).
@@ -80,6 +82,13 @@ namespace
 
     // Camera out words logged per call (H3_LOG_CAMERA).
     constexpr uint32_t kLogWords = 40;
+
+    // The blended track FOV for sub_82291A38: set by sub_82292D28 when it
+    // builds a blended frame, used by the next FOV conversion if its input
+    // is the current frame's own FOV (the camera update thread only).
+    bool g_fovPending = false;
+    float g_fovFrame = 0.0f;
+    float g_fovBlend = 0.0f;
 
     float LoadFloat(uint32_t address) { return h3::GuestRef<float>(address); }
     void StoreFloat(uint32_t address, float value) { h3::GuestRef<float>(address) = value; }
@@ -145,6 +154,7 @@ PPC_FUNC(sub_82292D28)
     uint32_t frame;
     float fraction;
     uint32_t tls = h3::GuestRef<uint32_t>(ctx.r13.u32);
+    g_fovPending = false;
     if (!BetweenFrames(tls, frame, fraction) || (ctx.r3.u32 != 0 && ctx.r3.u32 != frame))
     {
         __imp__sub_82292D28(ctx, base);
@@ -162,6 +172,30 @@ PPC_FUNC(sub_82292D28)
     ctx.r1.u64 = stack - kBlendStackDrop;
     __imp__sub_82292D28(ctx, base);
     ctx.r1.u64 = stack;
+    float from = LoadFloat(frame + kFrameFov);
+    float to = LoadFloat(frame + kFrameBytes + kFrameFov);
+    g_fovFrame = from;
+    g_fovBlend = from + (to - from) * fraction;
+    g_fovPending = true;
+}
+
+// camera FOV from a track FOV (f1, radians; returns the FOV the camera
+// uses). The cinematic camera update reads the frame's FOV (+44) itself and
+// converts it here, so between frames the blend noted by sub_82292D28 above
+// is passed instead: a zooming shot (The Ark's intro, following the
+// Pelican) otherwise pulsed every other tick.
+PPC_FUNC_IMPL(__imp__sub_82291A38);
+PPC_FUNC(sub_82291A38)
+{
+    static const bool log = h3::EnvFlag("H3_LOG_CAMERA");
+    if (g_fovPending && float(ctx.f1.f64) == g_fovFrame)
+    {
+        if (log)
+            fprintf(stderr, "[camera fov] frame %.5f blended %.5f\n", double(g_fovFrame), double(g_fovBlend));
+        ctx.f1.f64 = double(g_fovBlend);
+    }
+    g_fovPending = false;
+    __imp__sub_82291A38(ctx, base);
 }
 
 // director camera update(r3, r4, r5 camera out): logs (H3_LOG_CAMERA).

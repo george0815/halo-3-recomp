@@ -11,7 +11,10 @@ BUILD=$SRC/build/linux-compat
 JOBS=$(nproc)
 QT_VERSION=6.12.0
 export CC=clang CXX=clang++
-mkdir -p "$DEPS"
+# podman --userns=keep-id leaves HOME at /, which isn't writable (aqtinstall
+# keeps its settings and downloads under ~/.local).
+export HOME=$DEPS/home
+mkdir -p "$DEPS" "$HOME"
 
 # SDL3, from the source tools/build_windows_deps.sh fetched.
 if [[ ! -f $DEPS/sdl3/lib/libSDL3.so ]]; then
@@ -35,7 +38,8 @@ fi
 
 # Qt (the launcher), Qt's own Linux build.
 if [[ ! -d $DEPS/qt/$QT_VERSION/gcc_64 ]]; then
-    aqt install-qt linux desktop "$QT_VERSION" linux_gcc_64 -O "$DEPS/qt"
+    # (from $DEPS: aqt writes aqtinstall.log to the working directory)
+    (cd "$DEPS" && aqt install-qt linux desktop "$QT_VERSION" linux_gcc_64 -O "$DEPS/qt")
 fi
 
 export PKG_CONFIG_PATH="$DEPS/shaderc/lib/pkgconfig"
