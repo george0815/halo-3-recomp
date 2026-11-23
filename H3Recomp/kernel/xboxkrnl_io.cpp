@@ -305,7 +305,13 @@ namespace
     uint64_t ToFileTime(std::filesystem::file_time_type time)
     {
         constexpr uint64_t kUnixEpochAsFileTime = 116444736000000000ull;
+        // clock_cast isn't in libstdc++ before GCC 13 (the Linux release
+        // builds against Ubuntu 22.04's); MSVC's file_clock has no to_sys.
+#ifdef _WIN32
         auto system = std::chrono::clock_cast<std::chrono::system_clock>(time);
+#else
+        auto system = std::chrono::file_clock::to_sys(time);
+#endif
         auto sinceEpoch = std::chrono::duration_cast<std::chrono::nanoseconds>(system.time_since_epoch()).count();
         return kUnixEpochAsFileTime + uint64_t(sinceEpoch / 100);
     }
