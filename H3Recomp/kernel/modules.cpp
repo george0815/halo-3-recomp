@@ -239,6 +239,9 @@ namespace h3::kernel
         }
     }
 
+    // Boot: reads and decrypts default.xex, copies its image to 0x82000000,
+    // registers its recompiled functions, resolves its kernel imports and
+    // records the module (entry point, stack size, TLS).
     bool LoadExecutable(const char* path)
     {
         std::lock_guard lock(g_mutex);
@@ -275,11 +278,14 @@ namespace h3::kernel
         return ResolveImports(image, *g_modules.back(), nullptr);
     }
 
+    // default.xex's module record (the first one loaded).
     const Module& ExecutableModule()
     {
         return *g_modules.front();
     }
 
+    // XexLoadImage: loads one of the game's DLLs (the Waves audio DLLs) from
+    // its recompiled code and runs its DllMain, or counts another load.
     Module* LoadModule(std::string_view guestPath, PPCContext& ctx)
     {
         std::lock_guard lock(g_mutex);
@@ -353,6 +359,7 @@ namespace h3::kernel
         return module;
     }
 
+    // A module by handle (the guest address of its loader entry).
     Module* ModuleFromHandle(uint32_t handle)
     {
         std::lock_guard lock(g_mutex);
@@ -364,6 +371,7 @@ namespace h3::kernel
         return nullptr;
     }
 
+    // A module by file name ("WavesLibDLL.dll"), any case.
     Module* FindModule(std::string_view name)
     {
         std::lock_guard lock(g_mutex);
@@ -375,6 +383,8 @@ namespace h3::kernel
         return nullptr;
     }
 
+    // An exported function's guest address by ordinal (the game's DLLs
+    // export by number).
     uint32_t GetProcAddress(const Module& module, uint32_t ordinal)
     {
         uint32_t table = module.exportTable;
@@ -392,6 +402,8 @@ namespace h3::kernel
         return (GuestRef<uint32_t>(table + kExportImageBase) << 16) + offset;
     }
 
+    // What a generated import stub calls when the game calls into another
+    // module: finds the export and runs its recompiled function.
     void CallModuleImport(const char* library, uint32_t ordinal, PPCContext& ctx, uint8_t* base)
     {
         Module* module = FindModule(library);

@@ -163,6 +163,8 @@ void main()
             return enabled;
         }
 
+        // The FXAA pass's pipeline, compiled on first use (null if the shaders
+        // don't compile: the frame is presented without FXAA).
         SDL_GPUGraphicsPipeline* FxaaPipeline()
         {
             if (g_fxaaPipeline)
@@ -191,6 +193,7 @@ void main()
         }
     }
 
+    // FXAA on the finished frame when on: the frame becomes the FXAA output.
     void ApplyAntiAliasing(Frame& frame, SDL_GPUTextureFormat& format)
     {
         if (!frame.texture || !FxaaEnabled())

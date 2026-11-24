@@ -58,15 +58,20 @@ namespace h3::native::cache
         constexpr uint32_t kSetStarts[] = { 0xC11, 0x4B7, 0xA7D, 0xB0F, 0xBAF, 0xB63, 0xBBF, 0xBF0, 0xC04 };
         constexpr uint32_t kSetCount = sizeof(kSetStarts) / sizeof(kSetStarts[0]);
 
+        // Big-endian 32/16-bit values from file bytes (the cache file is the
+        // 360's byte order).
         uint32_t Be32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
         uint16_t Be16(const uint8_t* p) { return uint16_t(p[0] << 8 | p[1]); }
 
+        // A char[bytes] header field, which may fill the field with no terminator.
         std::string FixedString(const uint8_t* p, size_t bytes)
         {
             const char* text = reinterpret_cast<const char*>(p);
             return std::string(text, strnlen(text, bytes));
         }
 
+        // Sets *error when the caller asked for it; always false, so a check can
+        // `return Fail(error, "...")`.
         bool Fail(std::string* error, std::string message)
         {
             if (error)
@@ -75,6 +80,7 @@ namespace h3::native::cache
         }
     }
 
+    // A group tag's four characters, most significant byte first.
     std::string GroupTagString(uint32_t tag)
     {
         std::string text(4, ' ');
@@ -83,6 +89,8 @@ namespace h3::native::cache
         return text;
     }
 
+    // Opens the file and parses it (Load); null, with the reason in *error,
+    // if it isn't a readable Halo 3 cache file.
     std::unique_ptr<CacheFile> CacheFile::Open(const std::string& path, std::string* error)
     {
         std::unique_ptr<CacheFile> file(new CacheFile());
@@ -97,17 +105,21 @@ namespace h3::native::cache
         return file;
     }
 
+    // Closes the file.
     CacheFile::~CacheFile()
     {
         if (m_file)
             fclose(m_file);
     }
 
+    // size bytes at a file offset; false if the file is shorter.
     bool CacheFile::ReadAt(uint32_t offset, void* out, size_t size) const
     {
         return fseek(m_file, long(offset), SEEK_SET) == 0 && fread(out, 1, size, m_file) == size;
     }
 
+    // A string table (string ids, tag names): count offsets into one block
+    // of null-terminated strings; an offset outside the block leaves "".
     bool CacheFile::ReadStringTable(uint32_t count, uint32_t indexOffset, uint32_t tableOffset, uint32_t tableSize,
         std::vector<std::string>* out) const
     {
@@ -126,6 +138,9 @@ namespace h3::native::cache
         return true;
     }
 
+    // Reads the header (checks its head/foot magic and version 11, Halo 3
+    // retail), the string id and tag name tables, and the tag index (groups,
+    // tag instances, global tags). On failure *error says which part.
     bool CacheFile::Load(std::string* error)
     {
         uint8_t h[kHeaderBytes];
@@ -208,6 +223,7 @@ namespace h3::native::cache
         return true;
     }
 
+    // A datum index is salt << 16 | slot: the slot's tag if the salt matches.
     const TagInstance* CacheFile::Tag(uint32_t datum) const
     {
         uint32_t slot = datum & 0xFFFF;
@@ -219,6 +235,7 @@ namespace h3::native::cache
         return &tag;
     }
 
+    // The group with this tag (a linear search: a map has ~180 groups).
     const TagGroup* CacheFile::Group(uint32_t groupTag) const
     {
         for (const TagGroup& group : m_index.groups)
@@ -227,6 +244,8 @@ namespace h3::native::cache
         return nullptr;
     }
 
+    // Group inheritance: a "proj" tag is also an "obje" (its parent), as the
+    // game's tag_get accepts.
     bool CacheFile::IsA(const TagInstance& tag, uint32_t groupTag) const
     {
         if (tag.groupIndex >= m_index.groups.size())
@@ -235,12 +254,16 @@ namespace h3::native::cache
         return group.tag == groupTag || group.parent == groupTag || group.grandparent == groupTag;
     }
 
+    // A tag's path, or "" past the end of the name table.
     const std::string& CacheFile::TagName(uint32_t slot) const
     {
         static const std::string kNone;
         return slot < m_tagNames.size() ? m_tagNames[slot] : kNone;
     }
 
+    // A string id's text. The ids index one table, but in sets: set 0 starts
+    // with its static strings, and each set's dynamic strings start at
+    // kSetStarts[set] (see the constants above).
     std::string CacheFile::StringId(uint32_t id) const
     {
         uint32_t index = id & kStringIdIndexMask;
@@ -255,6 +278,8 @@ namespace h3::native::cache
         return entry < m_strings.size() ? m_strings[entry] : std::to_string(set) + ":" + std::to_string(index);
     }
 
+    // Tag data lives at virtualBase.. in memory and at the tag section's file
+    // offset in the file: the same distance in both.
     std::optional<uint32_t> CacheFile::TagFileOffset(uint32_t address) const
     {
         const SectionBounds& tags = m_header.sections[size_t(Section::Tags)];
@@ -263,6 +288,7 @@ namespace h3::native::cache
         return tags.FileOffset(tags.address) + (address - m_header.virtualBase);
     }
 
+    // Fails if any of the range is outside the tag section.
     bool CacheFile::ReadTagData(uint32_t address, void* out, size_t size) const
     {
         std::optional<uint32_t> offset = TagFileOffset(address);

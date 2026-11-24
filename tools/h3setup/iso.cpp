@@ -23,6 +23,7 @@ namespace h3setup
         constexpr uint64_t kPartitions[] = { 0xFD90000, 0x18300000, 0x2080000, 0 };  // XGD2, XGD1, XGD3, plain XISO
         constexpr char kMagic[] = "MICROSOFT*XBOX*MEDIA";
 
+        // XDVDFS stores numbers little-endian.
         uint16_t Le16(const uint8_t* p) { return uint16_t(p[0] | p[1] << 8); }
         uint32_t Le32(const uint8_t* p) { return uint32_t(p[0] | p[1] << 8 | p[2] << 16 | uint32_t(p[3]) << 24); }
 
@@ -38,6 +39,7 @@ namespace h3setup
             return true;
         }
 
+        // ASCII lower case: disc paths compare case-insensitively (XDVDFS is).
         std::string Lower(std::string text)
         {
             std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return char(std::tolower(c)); });
@@ -45,6 +47,7 @@ namespace h3setup
         }
     }
 
+    // size bytes at an image offset; false past the end of the file.
     bool Iso::ReadAt(uint64_t offset, void* buffer, size_t size)
     {
         if (offset + size > m_fileSize)
@@ -55,6 +58,8 @@ namespace h3setup
         return size_t(m_file.gcount()) == size;
     }
 
+    // Finds the XDVDFS volume (trying the disc layouts' offsets: XGD1/2/3
+    // and a plain XISO), checks its magic, and walks the directory tree.
     bool Iso::Open(const std::filesystem::path& path)
     {
         m_entries.clear();
@@ -83,6 +88,13 @@ namespace h3setup
         return false;
     }
 
+    // Adds a directory's entries (and, recursively, its subdirectories') to
+    // m_entries. An XDVDFS directory is a binary tree in one extent: each
+    // entry is left and right subtree offsets (in dwords; 0xFFFF both =
+    // padding), start sector, length, attributes (0x10 = directory), name
+    // length, name. Visited offsets are remembered and the depth is capped,
+    // so a damaged or hostile image can't loop. Fails on file names that
+    // could escape the install folder and on files past the image's end.
     bool Iso::Walk(uint32_t sector, uint32_t size, const std::string& path, int depth)
     {
         if (depth > 32 || size > (64u << 20))
@@ -135,6 +147,7 @@ namespace h3setup
         return true;
     }
 
+    // A file or folder by its path on the disc, any case.
     const IsoEntry* Iso::Find(const std::string& path) const
     {
         std::string wanted = Lower(path);
@@ -144,12 +157,16 @@ namespace h3setup
         return nullptr;
     }
 
+    // A whole (small) file in memory: default.xex for the checksum.
     bool Iso::Read(const IsoEntry& entry, std::vector<uint8_t>& data)
     {
         data.resize(entry.size);
         return ReadAt(entry.offset, data.data(), data.size());
     }
 
+    // Copies one file (or creates one folder) at destination, in 8 MB
+    // chunks, reporting progress. (Skipping files an earlier, interrupted
+    // run already copied is the caller's job: main.cpp's Extract.)
     bool Iso::Extract(const IsoEntry& entry, const std::filesystem::path& destination,
         const std::function<void(uint64_t)>& progress)
     {

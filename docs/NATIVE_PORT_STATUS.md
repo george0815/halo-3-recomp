@@ -3,27 +3,23 @@ title: Native port
 nav_order: 9
 ---
 
-# Native port: where things stand (2026-10-15)
+# Native port: where things stand (2026-10-15, film library updated 2026-11-24)
 
-Resume notes for the decompilation / native port (docs/ROADMAP.md phase 6).
-Read this first, then the roadmap. Detailed logs: `private/SESSION_NOTES.md`
-(not in git); open questions: `private/QUESTIONS.md`.
+Working notes on the decompilation and native port ([roadmap](ROADMAP.html)
+phase 6): read this first, then the roadmap. The files under `private/`
+mentioned here are local data (game files, films, generated layouts) that
+aren't in the repository.
 
 ## Next steps
 
-1. **Film library (6.1).** The user is recording one Theater film per
-   campaign mission. For each film (tools/films/README.md, "Adding a
-   film"): find its Theater category/index, record ~6 replays with
-   `run_film.sh --record`, learn a mask with `learn_mask.py learn`, check
-   two fresh replays match (`compare_hashes.py`), keep the mask and a
-   reference `hash.txt` in `private/films/`. Then a batch script that runs
-   every film against its reference (and with `check_native.sh`), so every
-   replacement is tested on every mission. Records are ~280 MB each: delete
-   after learning; watch disk space.
-   - Unknowns: which Theater category saved campaign films land in
-     (probably CAMPAIGN = category 3); masks are per film (array names and
-     object tags come from the level); menu navigation is frame-timed and
-     only tried for Recent Films.
+1. **Film library (6.1): done.** Ten films (the nine playable campaign
+   missions, Sierra 117 to Halo, and an Oddball match recorded with the
+   60 Hz fixes), each with a learned mask and reference hashes in
+   `private/films/`; `tools/films/run_library.sh` replays them all
+   (`--native` adds `check_native.sh`), and does before every release and
+   after any change that could touch the simulation ([Testing](testing.html)).
+   Last full run (2026-11-24): every film matches its reference on every
+   tick, except The Covenant's known start-of-level race on ticks 0-61.
 2. **Tag readers (6.3).** 13 of ~1,590 ported. Continue with the leaf,
    result-only ones (167): `tools/re/tag_readers.py <defs> --list
    --leaf-pure`, most-called first. Workflow below.

@@ -49,6 +49,9 @@ namespace h3::gpu::renderer
 
     namespace
     {
+        // One shader_manifest.txt line: which map region the microcode comes
+        // from, where it starts, how long it is, the hash to check, and the
+        // XOR patches that turn it into the bound variant.
         struct Entry
         {
             bool vertex = false;
@@ -60,6 +63,8 @@ namespace h3::gpu::renderer
 
         constexpr uint32_t kJunkDwords = 2;  // trailing dwords that aren't microcode (build_manifest.py)
 
+        // FNV-1a, 64-bit: the manifest's check that a rebuilt shader is the one
+        // recorded (build_manifest.py computes the same over the same bytes).
         uint64_t Fnv64(const uint8_t* bytes, size_t size)
         {
             uint64_t hash = 0xCBF29CE484222325ull;
@@ -68,6 +73,10 @@ namespace h3::gpu::renderer
             return hash;
         }
 
+        // Parses shader_manifest.txt (format: tools/shaders/build_manifest.py):
+        // "<vs|ps> <map> <region address> <offset> <dwords> <fnv64> [index:xor ...]"
+        // per line; '#' comments and the "V" version line are skipped, malformed
+        // lines are dropped. False if the file can't be opened.
         bool ReadManifest(const std::filesystem::path& path, std::vector<Entry>& entries)
         {
             std::ifstream file(path);
@@ -114,6 +123,7 @@ namespace h3::gpu::renderer
 
     namespace
     {
+        // A big-endian dword of map data.
         uint32_t Big32(const uint8_t* p)
         {
             return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
@@ -231,6 +241,9 @@ namespace h3::gpu::renderer
         }
     }
 
+    // `H3Recomp <xex> --precompile-shaders`: collects every shader from the
+    // maps and the manifest's variants, translates and compiles them on all
+    // cores into the shader cache, and installs the shipped pipeline list.
     int PrecompileShaders(const std::filesystem::path& manifestDirectory, const std::filesystem::path& mapsDirectory)
     {
         if (g_shaderCacheDirectory.empty())

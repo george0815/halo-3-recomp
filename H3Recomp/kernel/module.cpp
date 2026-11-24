@@ -8,6 +8,9 @@ namespace h3::kernel
 {
     ModuleInfo g_module;
 
+    // Reads what the kernel needs from the XEX optional headers: system
+    // flags, the default stack size and the TLS layout (slot count, the
+    // initial data's address and size).
     void LoadModuleInfo(const uint8_t* xex)
     {
         // Keys ending in 0x00 hold their value inline; others point at data.

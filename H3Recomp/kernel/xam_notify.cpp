@@ -30,14 +30,19 @@ namespace
     constexpr uint32_t kXnSysUi = 0x00000009;
     constexpr uint32_t kXnSysSigninChanged = 0x0000000A;
 
+    // The mask bit a notification id's area maps to.
     uint32_t AreaBit(uint32_t id) { return 1u << ((id >> 25) & 0x3F); }
 
+    // XNotifyCreateListener's object: a queue of notifications for the
+    // areas in its mask. Waiting on it waits for one to arrive.
     struct Listener : KernelObject
     {
+        // Acts as a notification event: signaled while notifications are queued.
         explicit Listener(uint64_t mask) : KernelObject(ObjectType::NotificationEvent), mask(mask) {}
         bool IsSignaled(uint32_t) const override { return !queue.empty(); }
         int32_t SignalState() const override { return !queue.empty(); }
 
+        // One queued notification: its id and parameter.
         struct Notification
         {
             uint32_t id;
@@ -82,6 +87,8 @@ PPC_FUNC(__imp__XamNotifyCreateListener)
     ctx.r3.u64 = CreateHandle(listener);
 }
 
+// Queues a notification (sign-in changed, system UI shown...) on every
+// listener whose mask includes its area, and wakes their waiters.
 void h3::kernel::BroadcastNotification(uint32_t id, uint32_t param)
 {
     std::vector<std::shared_ptr<Listener>> listeners;
@@ -145,6 +152,7 @@ PPC_FUNC(__imp__XNotifyDelayUI)
     ctx.r3.u64 = 0;
 }
 
+// Returns success: nothing to position.
 PPC_FUNC(__imp__XNotifyPositionUI)
 {
     ctx.r3.u64 = 0;

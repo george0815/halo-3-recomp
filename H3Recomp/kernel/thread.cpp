@@ -50,6 +50,8 @@ namespace h3::kernel
         void* g_backtrace[kMaxBacktraceFrames];
         std::atomic<int> g_backtraceFrames{ -1 };
 
+        // SIGUSR2 handler, on the thread being inspected: stores its own
+        // backtrace for the waiting DumpHostBacktrace (a debugging aid).
         void OnBacktraceSignal(int)
         {
             g_backtraceFrames.store(backtrace(g_backtrace, kMaxBacktraceFrames));
@@ -89,6 +91,9 @@ namespace h3::kernel
         constexpr uint32_t kStackTopReserve = 0x100;
     }
 
+    // Everything a guest thread needs in guest memory: its stack (at least
+    // kMinStackSize, page-aligned), the KPCR the game reaches through r13,
+    // the KTHREAD, and its TLS slots.
     GuestThread* AllocateGuestThread(uint32_t stackSize)
     {
         auto* thread = new GuestThread();
@@ -121,6 +126,9 @@ namespace h3::kernel
         return thread;
     }
 
+    // Makes the calling host thread run as this guest thread: r1 (stack
+    // pointer) and r13 (KPCR) point into its guest memory, and its floating
+    // point state starts as the console's.
     void BindGuestThread(GuestThread* thread, PPCContext& ctx)
     {
         ctx.r1.u64 = thread->stackBase - kStackTopReserve;
@@ -137,6 +145,8 @@ namespace h3::kernel
 #endif
     }
 
+    // Linux debugging aid (DumpThreadWaits on a hang): interrupts the thread
+    // and prints where its host code is.
     void DumpHostBacktrace(uint32_t kthread)
     {
 #ifndef H3_HOST_BACKTRACE
@@ -176,11 +186,13 @@ namespace h3::kernel
 #endif
     }
 
+    // The guest thread running on this host thread (thread-local).
     GuestThread* CurrentThread()
     {
         return t_currentThread;
     }
 
+    // Turns an existing host thread into a guest thread (main, interrupts).
     std::shared_ptr<Thread> AdoptHostThread(PPCContext& ctx, uint32_t stackSize)
     {
         GuestThread* guest = AllocateGuestThread(stackSize);
@@ -190,6 +202,10 @@ namespace h3::kernel
         return thread;
     }
 
+    // ExCreateThread: a new host thread running the guest's start routine
+    // (through XAPI's startup wrapper when given), starting suspended if
+    // asked. Its exit code and "exited" state are set when it returns or calls
+    // ExTerminateThread.
     std::shared_ptr<Thread> StartGuestThread(uint32_t stackSize, uint32_t xapiStartup, uint32_t start,
         uint32_t context, bool suspended)
     {
@@ -232,6 +248,8 @@ namespace h3::kernel
         return thread;
     }
 
+    // Calls each queued user APC routine on this thread, then restores the
+    // registers (the interrupted code continues as if nothing happened).
     void DeliverUserApcs(PPCContext& ctx)
     {
         auto thread = CurrentThreadObject();
@@ -253,6 +271,7 @@ namespace h3::kernel
         }
     }
 
+    // Counts a suspension down; at zero the thread runs (wakes its start).
     uint32_t ResumeThread(Thread& thread)
     {
         auto lock = DispatcherLock();
@@ -262,11 +281,14 @@ namespace h3::kernel
         return previous;
     }
 
+    // Throws ThreadExit, caught at the thread's entry (StartGuestThread):
+    // the C++ way to leave many recompiled frames at once.
     void ExitCurrentThread(uint32_t exitCode)
     {
         throw ThreadExit{ exitCode };
     }
 
+    // A free TLS slot index (KeTlsAlloc), or 0xFFFFFFFF when all are used.
     uint32_t TlsAlloc()
     {
         std::lock_guard lock(g_tlsMutex);
@@ -282,6 +304,7 @@ namespace h3::kernel
         return kTlsOutOfIndexes;
     }
 
+    // Frees a TLS slot (KeTlsFree); false if it wasn't allocated.
     bool TlsFree(uint32_t slot)
     {
         std::lock_guard lock(g_tlsMutex);

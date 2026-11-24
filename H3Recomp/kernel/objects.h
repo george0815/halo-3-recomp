@@ -40,6 +40,7 @@ namespace h3::kernel
     // signal state is kept in sync for guest code that reads it directly.
     struct KernelObject
     {
+        // Each subclass passes its type (the guest sees it in DISPATCHER_HEADER).
         explicit KernelObject(ObjectType type) : type(type) {}
         virtual ~KernelObject() = default;
 
@@ -60,52 +61,75 @@ namespace h3::kernel
         std::string name;
     };
 
+    // KEVENT. A notification (manual-reset) event stays signaled until it's
+    // cleared, so it releases every waiter; a synchronization (auto-reset)
+    // event releases one waiter and clears itself.
     struct Event : KernelObject
     {
+        // manualReset picks the kind (above); signaled is the initial state.
         Event(bool manualReset, bool signaled)
             : KernelObject(manualReset ? ObjectType::NotificationEvent : ObjectType::SynchronizationEvent), signaled(signaled) {}
 
+        // A wait succeeds while the event is set.
         bool IsSignaled(uint32_t) const override { return signaled; }
+        // An auto-reset event clears itself for the waiter it released.
         void Satisfy(uint32_t) override
         {
             if (type == ObjectType::SynchronizationEvent)
                 signaled = false;
         }
+        // 1 when set, 0 when clear.
         int32_t SignalState() const override { return signaled; }
 
         bool signaled;
     };
 
+    // KSEMAPHORE: a counter. Each satisfied wait takes one; releasing adds
+    // some back, up to limit.
     struct Semaphore : KernelObject
     {
+        // The initial count and the most it can hold.
         Semaphore(int32_t count, int32_t limit) : KernelObject(ObjectType::Semaphore), count(count), limit(limit) {}
 
+        // A wait succeeds while the count is above zero.
         bool IsSignaled(uint32_t) const override { return count > 0; }
+        // A satisfied wait takes one.
         void Satisfy(uint32_t) override { count--; }
+        // The guest sees the current count.
         int32_t SignalState() const override { return count; }
 
         int32_t count;
         int32_t limit;
     };
 
+    // KMUTANT (a mutex): owned by one thread at a time; the owner may take it
+    // again (recursion counts how often) and must release it as often.
     struct Mutant : KernelObject
     {
+        // Starts free.
         Mutant() : KernelObject(ObjectType::Mutant) {}
 
+        // Free, or already owned by the waiting thread (recursive acquire).
         bool IsSignaled(uint32_t thread) const override { return owner == 0 || owner == thread; }
+        // The waiter becomes (or stays) the owner.
         void Satisfy(uint32_t thread) override
         {
             owner = thread;
             recursion++;
         }
+        // 1 when free; 0 or below while owned (as the console keeps it).
         int32_t SignalState() const override { return 1 - recursion; }
 
         uint32_t owner = 0;
         int32_t recursion = 0;
     };
 
+    // An I/O completion port: finished asynchronous I/O queues a packet, and
+    // threads waiting on the port (NtRemoveIoCompletion) take them in order.
     struct IoCompletion : KernelObject
     {
+        // One completed operation: the file's completion key, the caller's APC
+        // context, the NTSTATUS and the bytes transferred.
         struct Packet
         {
             uint32_t key;
@@ -114,19 +138,27 @@ namespace h3::kernel
             uint32_t information;
         };
 
+        // Starts with no packets.
         IoCompletion() : KernelObject(ObjectType::IoCompletion) {}
 
+        // A wait succeeds while a packet is queued.
         bool IsSignaled(uint32_t) const override { return !packets.empty(); }
+        // The number of queued packets.
         int32_t SignalState() const override { return int32_t(packets.size()); }
 
         std::deque<Packet> packets;
     };
 
+    // A guest thread as a kernel object: waiting on it waits for it to exit.
+    // Also holds its queued user APCs and scheduling details.
     struct Thread : KernelObject
     {
+        // Filled in by thread creation (kernel/thread.cpp).
         Thread() : KernelObject(ObjectType::Thread) {}
 
+        // A wait on a thread succeeds once it has exited.
         bool IsSignaled(uint32_t) const override { return exited; }
+        // 1 once exited.
         int32_t SignalState() const override { return exited; }
 
         // User APCs: routine(arg1, arg2, arg3), run on this thread during an
@@ -203,6 +235,8 @@ namespace h3::kernel
     std::shared_ptr<KernelObject> LookupHandle(uint32_t handle);
     bool CloseHandle(uint32_t handle);
 
+    // The object behind a handle as a T (an event, a thread...); null if the
+    // handle is invalid or names another kind of object.
     template <typename T>
     std::shared_ptr<T> LookupHandleAs(uint32_t handle)
     {

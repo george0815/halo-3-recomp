@@ -457,6 +457,8 @@ void main()
             uint32_t* offset;  // receives the dword offset in the arena
         };
 
+        // Records every queued memexport dispatch into the frame's command
+        // buffer as one batch (definition below).
         void RecordPendingDispatches();
 
         // Records the upload of what's been staged into this frame's arena
@@ -585,6 +587,7 @@ void main()
             return slot;
         }
 
+        // Frees a slot's GPU buffers (for a slot that's dropped, not recycled).
         void ReleaseSlot(Slot& slot)
         {
             SDL_ReleaseGPUBuffer(g_device, slot.exports);
@@ -882,6 +885,15 @@ void main()
             return false;
         }
 
+        // The queued memexport dispatches, as one batch: uploads their staged
+        // input, zeroes each one's record count, replays this frame's earlier
+        // exports into their input, dispatches each into its own region of one
+        // export buffer, then copies the records back to the arena (for later
+        // draws this frame) and queues the download that writes guest memory.
+        // Called when a new dispatch depends on the queued ones or the batch
+        // is full, when draws are flushed, and before every submission of
+        // the command buffer (FenceMemExports: resolves, queries, the
+        // frame's end).
         void RecordPendingDispatches()
         {
             InputArena& arena = g_arenas[g_swaps % kArenaFrames];
@@ -995,6 +1007,9 @@ void main()
         }
     }
 
+    // A draw whose vertex shader exports to memory (particles, water,
+    // occlusion tests): finds the streams it writes, stages its inputs and
+    // constants, and queues its compute version in the current batch.
     void RunMemExport(const Shader& vs, uint32_t initiator, uint32_t indexBase, uint32_t dmaSize)
     {
         static const bool disabled = EnvFlag("H3_NO_MEMEXPORT");
@@ -1105,6 +1120,8 @@ void main()
         g_pendingDispatches.push_back(std::move(dispatch));
     }
 
+    // H3_DEBUG_VS_POSITIONS: runs a logged draw's vertex shader as compute
+    // and logs where each vertex lands (waits for the GPU; debugging only).
     void DebugVertexPositions(const Shader& vs, uint32_t initiator)
     {
         if (vs.microcode.empty())
@@ -1191,6 +1208,9 @@ void main()
         SDL_ReleaseGPUBuffer(g_device, output);
     }
 
+    // Copies this frame's exports so far into a draw buffer's staged guest
+    // ranges, so draws see what this frame's dispatches wrote (guest memory
+    // only gets it a frame later).
     void ScatterFrameExports(SDL_GPUBuffer* target, const std::vector<std::pair<uint64_t, uint32_t>>& ranges)
     {
         static const bool disabled = EnvFlag("H3_NO_EXPORT_SCATTER");
@@ -1265,6 +1285,8 @@ void main()
         }
     }
 
+    // Whether any stream any dispatch has ever exported to overlaps
+    // [begin, end) (physical): such memory changes on the GPU.
     bool MemExportMayWrite(uint32_t begin, uint32_t end)
     {
         for (const Stream& stream : g_everStreams)
@@ -1273,6 +1295,7 @@ void main()
         return false;
     }
 
+    // Debugging: this frame's export streams overlapping [begin, end).
     std::string FrameExportsOverlapping(uint32_t begin, uint32_t end)
     {
         std::string text;
@@ -1290,6 +1313,7 @@ void main()
         return text;
     }
 
+    // Whether earlier frames' exports, still on the GPU, write [begin, end).
     bool MemExportPending(uint32_t begin, uint32_t end)
     {
         // Exports from earlier frames only: this frame's dispatches all
@@ -1325,6 +1349,8 @@ void main()
         }
     }
 
+    // Before a draw reads vertex data that earlier frames' exports are still
+    // writing: waits for those batches and applies them to guest memory.
     void SyncMemExportsFor(const Shader& shader)
     {
         // H3_MEMEXPORT_ASYNC=1: never wait (results land a frame or two
@@ -1363,11 +1389,15 @@ void main()
         g_memExportSyncs++;
     }
 
+    // Public name for recording the queued dispatches (internal.h).
     void RecordPendingMemExports()
     {
         RecordPendingDispatches();
     }
 
+    // Records the queued dispatches and submits the command buffer with a
+    // fence when export results wait in it, so their completion can be
+    // tracked (call before any other submit).
     void FenceMemExports()
     {
         RecordPendingDispatches();
@@ -1380,6 +1410,8 @@ void main()
         g_unfenced.clear();
     }
 
+    // A GPU fence write (the guest waits on it) while export results are in
+    // flight: delayed until they're in guest memory, as on the console.
     bool DeferFenceWrite(uint32_t address, uint32_t swapped)
     {
         // H3_MEMEXPORT_FENCE_ASYNC=1: fences land at once (the old
@@ -1416,6 +1448,7 @@ void main()
         }
     }
 
+    // Does the delayed fence writes whose GPU work has finished.
     void PollDeferredFenceWrites()
     {
         // Doesn't wait: the command processor calls this while idle or
@@ -1425,6 +1458,8 @@ void main()
             CompleteFinishedBatches();
     }
 
+    // Applies finished batches to guest memory (and their delayed fence
+    // writes); with H3_LOG_MEMEXPORT logs the buffer slots.
     void PollMemExports()
     {
         CompleteFinishedBatches();

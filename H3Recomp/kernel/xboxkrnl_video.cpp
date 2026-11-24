@@ -150,11 +150,13 @@ PPC_FUNC(__imp__VdIsHSIOTrainingSucceeded)
     ctx.r3.u64 = 1;
 }
 
+// No EDRAM link to retrain: success.
 PPC_FUNC(__imp__VdRetrainEDRAM)
 {
     ctx.r3.u64 = 0;
 }
 
+// Likewise.
 PPC_FUNC(__imp__VdRetrainEDRAMWorker)
 {
     ctx.r3.u64 = 0;

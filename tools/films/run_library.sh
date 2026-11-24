@@ -30,6 +30,7 @@ CATEGORY=3
 MENU_SECONDS=90
 TICKS_PER_SECOND=30
 
+# Prints the comment block at the top of this file (its manual) and exits.
 usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 [[ $# -ge 1 ]] || usage
 OUT="$1"; shift

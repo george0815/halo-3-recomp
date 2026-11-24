@@ -48,12 +48,17 @@ namespace
     constexpr uint32_t kTlsGameTime = 188;
     constexpr uint32_t kGameTimeTick = 12;
 
+    // The current game tick (game time globals: TLS slot +188, tick at +12),
+    // or 0 before the game time exists.
     uint32_t GameTick(const PPCContext& ctx)
     {
         uint32_t gameTime = h3::GuestRef<uint32_t>(uint32_t(h3::GuestRef<uint32_t>(ctx.r13.u32)) + kTlsGameTime);
         return gameTime ? uint32_t(h3::GuestRef<uint32_t>(gameTime + kGameTimeTick)) : 0u;
     }
 
+    // Scales this update's blend rate (the parameters in r28, +12) by
+    // g_rateScale before the blend that reads it, and remembers the original
+    // so the update restores it after; at most once per update.
     void SlowRate(const PPCContext& ctx)
     {
         if (g_patchedRate || g_rateScale >= 1.0f)
@@ -66,6 +71,9 @@ namespace
 }
 
 PPC_FUNC_IMPL(__imp__sub_8216AE48);
+// Runs once per rendered frame, around both exposure updates: works out
+// this frame's rate scale (ticks since the last frame over ticks per
+// 30 Hz tick, at most 1; 1 without the content fixes).
 PPC_FUNC(sub_8216AE48)
 {
     uint32_t tick = GameTick(ctx);
@@ -82,6 +90,8 @@ PPC_FUNC(sub_8216AE48)
 }
 
 PPC_FUNC_IMPL(__imp__sub_8216B4B8);
+// The auto exposure update (see the top of the file): puts the patched
+// rate back when it returns.
 PPC_FUNC(sub_8216B4B8)
 {
     // H3_LOG_EXPOSURE=1 (testing): updates per game tick.
@@ -104,6 +114,8 @@ PPC_FUNC(sub_8216B4B8)
 }
 
 PPC_FUNC_IMPL(__imp__sub_8216BC40);
+// The second exposure blend (five more values, rate at r3 + 12): scaled
+// for its duration the same way.
 PPC_FUNC(sub_8216BC40)
 {
     if (g_rateScale >= 1.0f)
@@ -119,6 +131,8 @@ PPC_FUNC(sub_8216BC40)
 }
 
 PPC_FUNC_IMPL(__imp__sub_8216BA68);
+// Exposure rising: the rate is loaded right after this call returns to
+// kRisingCall, so scale it here.
 PPC_FUNC(sub_8216BA68)
 {
     if (uint32_t(ctx.lr) == kRisingCall)
@@ -127,6 +141,7 @@ PPC_FUNC(sub_8216BA68)
 }
 
 PPC_FUNC_IMPL(__imp__sub_8244DAB8);
+// Exposure falling: the same at kFallingCall.
 PPC_FUNC(sub_8244DAB8)
 {
     if (uint32_t(ctx.lr) == kFallingCall)

@@ -13,6 +13,7 @@ nav_order: 1
     <li><a href="{{ '/ARCHITECTURE.html' | relative_url }}" data-desc="How the recompiled game, the runtime and the hooks fit together.">How it works</a></li>
     <li><a href="{{ '/testing.html' | relative_url }}" data-desc="Every change checked tick by tick against recorded Theater films.">Testing</a></li>
     <li><a href="{{ '/building.html' | relative_url }}" data-desc="Build it yourself, and how the releases are made.">Building</a></li>
+    <li><a href="{{ '/contributing.html' | relative_url }}" data-desc="Work on the project: conventions, step-by-step recipes, testing.">Contributing</a></li>
     <li><a href="{{ '/ROADMAP.html' | relative_url }}" data-desc="Where the project is going: the release, then the native port.">Roadmap</a></li>
     <li><a href="{{ '/blog.html' | relative_url }}" data-desc="Monthly notes on what changed and what's next.">Updates</a></li>
     <li><a href="https://github.com/george0815/halo-3-recomp" data-desc="The source code, issues and releases.">GitHub</a></li>
@@ -37,26 +38,26 @@ nav_order: 1
 
 The Xbox 360 game's own code, **statically recompiled** to C++ and running
 directly on your CPU, on Linux and Windows. The hardware and operating
-system around it, the GPU, XMA audio and the 360's kernel, are emulated at a
-high level, built on [Xenia](https://github.com/xenia-project/xenia)'s
-research. A true native port, hand-written C++ in place of the recompiled
-code, is the long-term goal. No part of Halo 3 is distributed: the
+system around it (the GPU, XMA audio and the 360's kernel) are emulated at a
+high level, building on [Xenia](https://github.com/xenia-project/xenia)'s
+research. The long-term goal is a true native port: hand-written C++ in
+place of the recompiled code. No part of Halo 3 is distributed: the
 installer builds the game from **your own disc image**, on your PC.
 
 <div class="feature-grid">
-  <div class="panel"><h3>The whole game</h3><p>Campaign solo and co-op, multiplayer Custom Games, Forge and Theater, on Halo 3's own engine and rules.</p></div>
-  <div class="panel"><h3>60 frames per second</h3><p>With fixes for everything the 360 tied to 30 ticks, checked tick by tick against recorded films.</p></div>
+  <div class="panel"><h3>The whole game</h3><p>The campaign solo and in co-op, multiplayer Custom Games, Forge and Theater, on Halo 3's own engine and rules.</p></div>
+  <div class="panel"><h3>60 frames per second</h3><p>With fixes for everything the 360 version tied to 30 ticks a second, checked tick by tick against recorded films.</p></div>
   <div class="panel"><h3>Made for PC</h3><p>Direct mouse look, a pointer in the menus, your keys in the game's prompts, FOV, centered crosshair.</p></div>
   <div class="panel"><h3>Play together</h3><p>Split screen for four, and system link over your LAN or the internet, Linux and Windows together.</p></div>
   <div class="panel"><h3>Sharper</h3><p>2x and 3x the 360's resolution, FXAA, any window size, fullscreen.</p></div>
-  <div class="panel"><h3>Bring your own disc</h3><p>The installer checks your disc image, translates the game's code and compiles it in a few minutes.</p></div>
+  <div class="panel"><h3>Bring your own disc</h3><p>The installer checks your disc image, then translates and compiles the game's code in a few minutes.</p></div>
 </div>
 
 <div class="panel" markdown="1">
 ### Where things stand
 
-**Version 0.75:** campaign, co-op, multiplayer, Forge and Theater play
-through at 60 Hz on Linux and Windows, with keyboard and mouse made for PC,
-split screen and system link. **Next:** the native port, rewriting the
+**Version 0.75:** the campaign, co-op, multiplayer, Forge and Theater all
+play through at 60 Hz on Linux and Windows, with keyboard and mouse controls
+made for PC, split screen and system link. **Next:** the native port, rewriting the
 recompiled code as hand-written C++, subsystem by subsystem.
 </div>

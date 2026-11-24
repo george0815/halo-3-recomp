@@ -16,6 +16,7 @@
 
 namespace h3::gpu::renderer::internal
 {
+    // XXH3 of the bytes, built with AVX2 (see the top of the file).
     uint64_t ContentHashAvx2(const void* data, size_t size)
     {
         return XXH3_64bits(data, size);

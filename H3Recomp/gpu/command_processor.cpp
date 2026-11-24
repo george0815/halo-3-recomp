@@ -196,6 +196,7 @@ namespace h3::gpu
             uint32_t end;
             bool ring;
 
+            // Dwords left to read: in a ring, the distance to end going around.
             uint32_t Remaining() const { return ring ? (end + size - index) % size : end - index; }
 
             // The next dword (wrapping in the ring).
@@ -430,6 +431,13 @@ namespace h3::gpu
             return range;
         }
 
+        // A register write from the command stream (type 0 packets and the
+        // register-setting type 3 packets). Besides storing the value it keeps
+        // the host copy of the ALU constants current (their generation counter
+        // tells the renderer what changed), forwards gamma ramp writes, logs
+        // the H3_LOG_REG_WRITES range, feeds frame captures, and mirrors
+        // scratch registers to memory when the scratch mask says so (the
+        // guest polls them).
         void CpWriteRegister(uint32_t index, uint32_t value)
         {
             if (index - kRegShaderConstantAlu < 2 * kAluConstantsPerStage)
@@ -887,6 +895,8 @@ namespace h3::gpu
         struct CpTimes
         {
             double wall = 0, cpu = 0;
+            // Now, as wall time and this thread's CPU time (user + kernel), so the
+            // H3_LOG_FPS line can show how busy the thread really was.
             static CpTimes Now()
             {
                 double wall = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -991,6 +1001,8 @@ namespace h3::gpu
         }
     }
 
+    // Boot: presets the registers D3D reads before it sets the GPU up (EDRAM
+    // timing, display size), with the values Xenia uses.
     void Initialize()
     {
         // The values Xenia's graphics system returns for these registers
@@ -1003,37 +1015,50 @@ namespace h3::gpu
         WriteRegister(kRegD1ModeViewportSize, (kDisplayWidth << 16) | kDisplayHeight);
     }
 
+    // Type 3 packet header: bits 30-31 = 3, 16-29 = payload dwords - 1,
+    // 8-14 = opcode.
     uint32_t MakePacketType3(uint32_t opcode, uint32_t payloadDwords)
     {
         return (3u << 30) | (((payloadDwords - 1) & 0x3FFF) << 16) | ((opcode & 0x7F) << 8);
     }
 
+    // A copy of the display gamma ramp (written by the command stream, read
+    // by the presenting thread).
     GammaRamp CurrentGammaRamp()
     {
         std::lock_guard lock(g_gammaMutex);
         return g_gammaRamp;
     }
 
+    // The GPU registers live in guest memory (as the console maps them), so
+    // the game can read them directly; index wraps to the register file.
     uint32_t ReadRegister(uint32_t index)
     {
         return GuestRef<uint32_t>(kGpuRegisterBase + (index % kRegisterCount) * 4);
     }
 
+    // A counter bumped on every float constant write (CpWriteRegister), so
+    // the renderer can tell whether constants changed since a draw.
     uint32_t AluConstantGeneration(uint32_t stage)
     {
         return g_aluConstantGeneration[stage];
     }
 
+    // The host-endian copy CpWriteRegister keeps of the float constants.
     const uint32_t* AluConstantsHost()
     {
         return g_aluConstantsHost;
     }
 
+    // Stores a register without side effects (CpWriteRegister also handles
+    // the side effects of a command stream write).
     void WriteRegister(uint32_t index, uint32_t value)
     {
         GuestRef<uint32_t>(kGpuRegisterBase + (index % kRegisterCount) * 4) = value;
     }
 
+    // D3D's ring buffer setup: where the command stream lives and how big it
+    // is (2^sizeLog2 quadwords). The command processor thread starts here.
     void InitializeRingBuffer(uint32_t physicalAddress, uint32_t sizeLog2)
     {
         g_ringBase = PhysicalToGuest(physicalAddress);
@@ -1045,6 +1070,8 @@ namespace h3::gpu
         std::call_once(started, [] { std::thread(CommandProcessorThread).detach(); });
     }
 
+    // Where to write the read pointer as packets are consumed (D3D polls it
+    // to know how far the GPU is).
     void EnableReadPointerWriteBack(uint32_t physicalAddress, uint32_t blockSizeLog2)
     {
         g_writeback = PhysicalToGuest(physicalAddress);
@@ -1052,6 +1079,8 @@ namespace h3::gpu
             fprintf(stderr, "[gpu] read pointer write-back to 0x%08X (block 2^%u)\n", g_writeback.load(), blockSizeLog2);
     }
 
+    // The guest function to call on GPU interrupts (vblank, swap and fence
+    // interrupts), and its argument. Starts the 60 Hz vblank thread.
     void SetInterruptCallback(uint32_t callback, uint32_t userData)
     {
         g_interruptData = userData;

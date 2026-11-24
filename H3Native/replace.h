@@ -33,6 +33,8 @@
 
 namespace h3::native
 {
+    // One registered replacement: the guest function's address and the name
+    // H3_ORIGINAL uses.
     struct Replacement
     {
         uint32_t address;
@@ -46,11 +48,18 @@ namespace h3::native
         return list;
     }
 
+    // The H3_REPLACE_* macros declare one of these at namespace scope: its
+    // constructor registers the replacement before main() runs.
     struct Registration
     {
+        // Adds the replacement to the registry.
         Registration(uint32_t address, const char* name) { Replacements().push_back({ address, name }); }
     };
 
+    // H3_REPLACE_INT's body: runs the original when H3_ORIGINAL names this
+    // function or the native body declines (nullopt); with H3_CHECK_NATIVE
+    // runs both, keeps the original's result and logs a mismatch; otherwise
+    // returns the native result in r3.
     template <typename Body>
     void ReplaceInt(PPCContext& ctx, uint8_t* base, PPCFunc* original, const char* name, NativeCheck& checker, Body&& body)
     {
@@ -125,14 +134,17 @@ namespace h3::native
     class GuestStores
     {
     public:
+        // Records a store of each size (applied later by Apply).
         void Store8(uint32_t address, uint8_t value) { m_stores.push_back({ address, 1, value }); }
         void Store16(uint32_t address, uint16_t value) { m_stores.push_back({ address, 2, value }); }
         void Store32(uint32_t address, uint32_t value) { m_stores.push_back({ address, 4, value }); }
+        // Big-endian, as the guest stores it: high word first.
         void Store64(uint32_t address, uint64_t value)
         {
             Store32(address, uint32_t(value >> 32));
             Store32(address + 4, uint32_t(value));
         }
+        // A float is stored as its bit pattern.
         void StoreFloat(uint32_t address, float value)
         {
             uint32_t bits;
@@ -197,10 +209,12 @@ namespace h3::native
         }
 
     private:
+        // One recorded store: where, how many bytes, and the value.
         struct Store
         {
             uint32_t address, size, value;
         };
+        // Writes one recorded store to guest memory (byte-swapped by GuestRef).
         static void Write(const Store& s)
         {
             if (s.size == 1)
@@ -210,6 +224,8 @@ namespace h3::native
             else
                 GuestRef<uint32_t>(s.address) = s.value;
         }
+        // What guest memory holds now at a store's address and size (the check
+        // compares it with the recorded value after the original ran).
         static uint32_t Read(const Store& s)
         {
             if (s.size == 1)
@@ -218,6 +234,8 @@ namespace h3::native
                 return GuestRef<uint16_t>(s.address);
             return GuestRef<uint32_t>(s.address);
         }
+        // What guest memory held at a store's address before the original ran
+        // (check mode compares the stores against it).
         struct Watched
         {
             uint32_t address;

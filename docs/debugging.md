@@ -13,13 +13,14 @@ settings.ini), which the game applies at start.
 
 `H3_MOUSE_SENSITIVITY=<factor>` overrides the launcher's mouse sensitivity.
 `H3_TEST_MENU_CURSOR=<frame>:<x>,<y>;...` and `H3_TEST_MENU_CLICKS=<frame>,...`
-place and click the menu cursor without a mouse (frame fractions).
+place and click the menu cursor without a mouse (positions as fractions of
+the frame).
 
 `H3_INPUT_SCRIPT="40-40.4:down,f900-905:a"` holds buttons between two
-times (seconds since start, or presented frames with `f`) for testing
-without a keyboard (names: a b x y start
-back up down left right lb rb ls rs; sticks and triggers: lup ldown lleft
-lright rup rdown rleft rright lt rt). A `p2.` to `p4.` prefix presses it
+times (seconds since start, or presented frames with `f`), for testing
+without a keyboard. Button names: a b x y start back up down left right lb
+rb ls rs; sticks and triggers: lup ldown lleft lright rup rdown rleft rright
+lt rt. A `p2.` to `p4.` prefix presses it
 on another controller (`f2300-2306:p2.start` joins player 2), and `unplug`
 disconnects that controller while held. `H3_VIRTUAL_PADS=<n>` connects
 controllers 2 to n+1 with no gamepad behind them, for split screen tests.
@@ -151,6 +152,14 @@ Environment variables:
 | `H3_LAUNCHER_SIZE=<w>x<h>` | The launcher's window size |
 | `H3_SCAN_FLOAT=<frame>:<value>[,...]` / `H3_POKE_FLOAT=<frame>:<hex address>=<value>[,...]` | Log every guest address holding a float near those values at that frame / write floats from that frame on (finding game state by value: the FOV) |
 | `H3_FOV=<degrees>` / `H3_LOG_FOV=1` | Override the FOV setting / log the unit FOVs scaled per map |
+| `H3_SCAN_FLOAT_AGAIN=<frame>,...` | With `H3_SCAN_FLOAT`: at those frames, the values now at the addresses the scan found (what changed since, e.g. zoomed in) |
+| `H3_RECORD_SHADERS=<dir>` | Write every shader the game binds, as the GPU runs it (`<vs\|ps>_<hash>.bin`, big-endian dwords): the input of `tools/shaders/build_manifest.py` (assets/shaders/README.md) |
+| `H3_LOG_PRECOMPILE=1` | With `--precompile-shaders`: log each distinct translation error |
+| `H3_NATIVE_MOUSE=1` | Native mouse look whatever the settings say |
+| `H3_LOG_AUTOLEVEL=1` | Each time look auto-centering was cleared for the native mouse |
+| `H3_LOG_FP_WEAPONS=<first>-<last>` | First-person weapon updates and animation starts in that level time range |
+| `H3_LOG_UNIT=1` / `H3_LOG_WEAPON_RATE=1` | Research: player 1's unit fields that flip between -1 and 0..7 / player 1's weapon turn cap when it changes |
+| `H3_CROSSHAIR_Y=<-1..1>` / `H3_TEST_UNZOOM_AT=<call>` | Testing: the centered crosshair's height / hold to zoom's release at that look call |
 | `H3_LOG_PC_TEXT=1` / `H3_LOG_NET=1` / `H3_LOG_LOOK=<calls>` / `H3_LOG_MOUSE=1` | How many English strings were reworded / system link calls and datagrams / what player 1's look function changed at those calls (research) / native mouse look per tick (movement, weapon rate, zoom scale) |
 
 ## Turning a fix off
@@ -180,6 +189,9 @@ switch for the area it's in and report whether it changes.
 | `H3_MEMEXPORT_FENCE_ASYNC=1` | Waiting for memexport fences (they land at once, as before) |
 | `H3_SYNC_WRITEBACK=1` | Asynchronous resolve write-back (waits instead) |
 | `H3_SPIN_WAITS=1` | Sleeping in long GPU waits (always spins) |
+| `H3_NO_SNAP_CENTERS=1` | Snapping vertices that sit on guest pixel centres at a render scale (the hard line in Sierra 117's far water at 2x) |
+| `H3_NO_MENU_CURSOR=1` | The mouse pointer in menus (as "Mouse in menus" off) |
+| `H3_FP_READY_BLEND=1` | The weapon raise pop fix (keeps the movement blend in the tick a raise starts) |
 
 CMake option `-DH3_TRACE_D3D=ON` counts and samples calls into the game's
 statically linked D3D library and writes `d3d_trace.txt` at frame 150 (or

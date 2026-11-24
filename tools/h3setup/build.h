@@ -19,6 +19,7 @@ namespace h3setup
         std::u8string text = path.generic_u8string();
         return std::string(text.begin(), text.end());
     }
+    // And back: a UTF-8 string as a path.
     inline std::filesystem::path FromUtf8(const std::string& text)
     {
         return std::filesystem::path(std::u8string(text.begin(), text.end()));

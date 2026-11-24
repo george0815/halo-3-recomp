@@ -74,6 +74,7 @@ namespace
         return fixed;
     }
 
+    // H3_RANDOM_SEED's value (used only when Fixed()).
     uint64_t Seed()
     {
         static const uint64_t seed = h3::EnvNumber("H3_RANDOM_SEED");
@@ -106,6 +107,7 @@ PPC_FUNC(sub_821F6BA0)
     }
 }
 
+// Puts the local random seed back to H3_RANDOM_SEED (films replay alike).
 void h3::hooks::ResetLocalRandomSeed()
 {
     if (Fixed())

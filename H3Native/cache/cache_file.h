@@ -59,6 +59,7 @@ namespace h3::native::cache
     constexpr uint32_t kNoDatum = 0xFFFFFFFF;    // datum index of nothing
     constexpr uint16_t kEmptySlot = 0xFFFF;      // tag table slot without a tag
 
+    // What kind of map a cache file is (header 0x13C).
     enum class MapType : uint16_t
     {
         Campaign = 0,
@@ -67,6 +68,7 @@ namespace h3::native::cache
         Shared = 3,
     };
 
+    // The four sections of a cache file's data.
     enum class Section
     {
         Debug,     // string ids, tag names
@@ -76,21 +78,27 @@ namespace h3::native::cache
         Count,
     };
 
+    // Where a section is: its address range in its own address space, and the
+    // mask that turns one of its addresses into a file offset.
     struct SectionBounds
     {
         uint32_t address = 0;  // within the section's own address space
         uint32_t size = 0;
         uint32_t offsetMask = 0;  // address + mask = file offset
 
+        // The file offset of an address in this section.
         uint32_t FileOffset(uint32_t sectionAddress) const { return sectionAddress + offsetMask; }
     };
 
+    // One of the tag section's six partitions (the game write-protects them
+    // after loading).
     struct Partition
     {
         uint32_t address = 0;  // virtual
         uint32_t size = 0;
     };
 
+    // The header fields this reader uses (layout at the top of the file).
     struct Header
     {
         uint32_t version = 0;
@@ -108,6 +116,8 @@ namespace h3::native::cache
         uint32_t tagNameCount = 0, tagNameTableAddress = 0, tagNameTableSize = 0, tagNameIndexAddress = 0;
     };
 
+    // A tag group (bitm, scnr...): its four-character tag, the groups it
+    // derives from (kNoGroup when none), and its name as a string id.
     struct TagGroup
     {
         uint32_t tag = 0;
@@ -116,21 +126,28 @@ namespace h3::native::cache
         uint32_t nameId = 0;  // string id
     };
 
+    // One slot of the tag table: which group the tag is, its salt (the upper
+    // half of its datum index, so stale indices don't match a reused slot),
+    // and where its data is.
     struct TagInstance
     {
         uint16_t groupIndex = kEmptySlot;  // into TagIndex::groups
         uint16_t salt = 0;
         uint32_t address = 0;  // virtual address of its data (0: not in this map)
 
+        // An unused slot.
         bool Empty() const { return groupIndex == kEmptySlot; }
     };
 
+    // A tag the game finds by group alone (one per group: globals, the
+    // scenario...), through the index's global tag table.
     struct GlobalTag
     {
         uint32_t group = 0;
         uint32_t datum = kNoDatum;
     };
 
+    // The tag index: the groups, every tag slot, and the global tags.
     struct TagIndex
     {
         uint32_t checksum = 0;
@@ -139,6 +156,9 @@ namespace h3::native::cache
         std::vector<GlobalTag> globals;
     };
 
+    // An open cache file: Open() reads the header and index, the accessors
+    // answer questions about tags, and ReadTagData() reads tag data by its
+    // virtual address.
     class CacheFile
     {
     public:
@@ -148,6 +168,7 @@ namespace h3::native::cache
         static std::unique_ptr<CacheFile> Open(const std::string& path, std::string* error = nullptr);
         ~CacheFile();
 
+        // The parsed header and tag index.
         const Header& GetHeader() const { return m_header; }
         const TagIndex& Index() const { return m_index; }
 

@@ -1,5 +1,3 @@
-#pragma once
-
 // Xenos shader microcode decoding. Field layouts follow Xenia's
 // src/xenia/gpu/ucode.h (BSD license), which documents the instruction set in
 // detail; the semantics notes in translator.cpp come from the same place.
@@ -9,15 +7,21 @@
 // instructions (96 bits, three dwords each) follow, addressed in units of
 // three dwords from the start of the shader.
 
+#pragma once
+
 #include <cstdint>
 
 namespace h3::gpu::ucode
 {
+    // count bits of value from bit shift up, as unsigned and as two's
+    // complement (sign-extended from the field's top bit).
     constexpr uint32_t Bits(uint32_t value, uint32_t shift, uint32_t count)
     {
         return (value >> shift) & ((1u << count) - 1);
     }
 
+    // The same field read as a signed number: shifted up to bit 31, then an
+    // arithmetic shift down copies its top bit into the bits above it.
     constexpr int32_t SignedBits(uint32_t value, uint32_t shift, uint32_t count)
     {
         return int32_t(value << (32 - shift - count)) >> (32 - count);
@@ -25,6 +29,9 @@ namespace h3::gpu::ucode
 
     // --- Control flow ----------------------------------------------------
 
+    // Control flow opcodes. A shader's control flow program decides which runs
+    // of ALU/fetch instructions execute ("exec" family), loops, calls and
+    // jumps. The *End variants also end the shader after their instructions.
     enum class CfOpcode : uint32_t
     {
         Nop = 0,
@@ -50,6 +57,7 @@ namespace h3::gpu::ucode
     {
         uint32_t word0 = 0, word1 = 0;
 
+        // Which control flow instruction this is (word1 bits 12-15).
         CfOpcode Opcode() const { return CfOpcode(Bits(word1, 12, 4)); }
         bool AddressRelative() const { return Bits(word1, 11, 1) == 0; }  // aL rather than a0
 
@@ -58,6 +66,8 @@ namespace h3::gpu::ucode
         uint32_t ExecCount() const { return Bits(word0, 12, 3); }
         uint32_t ExecSequence() const { return Bits(word0, 16, 12); }  // 2 bits per instruction
         uint32_t BoolAddress() const { return Bits(word1, 2, 8); }  // CondExec / CondCall / CondJmp
+        // For conditional execs/calls/jumps: run when the tested bool constant
+        // (or predicate) equals this value.
         bool Condition() const { return Bits(word1, 10, 1) != 0; }
 
         // Loops, calls and jumps.
@@ -72,6 +82,8 @@ namespace h3::gpu::ucode
         uint32_t AllocSize() const { return Bits(word0, 0, 3); }
         uint32_t AllocType() const { return Bits(word1, 9, 2); }
 
+        // An exec of some kind: runs a run of ALU/fetch instructions
+        // (the address and count fields), conditionally or not.
         bool IsExec() const
         {
             switch (Opcode())
@@ -90,6 +102,7 @@ namespace h3::gpu::ucode
             }
         }
 
+        // The exec variants that end the shader after their instructions.
         bool EndsShader() const
         {
             CfOpcode op = Opcode();
@@ -110,6 +123,9 @@ namespace h3::gpu::ucode
 
     // --- Fetch -----------------------------------------------------------
 
+    // Fetch instruction opcodes: vertex fetches read vertex buffers, texture
+    // fetches sample textures; the others query or set texture sampling state
+    // (LOD, gradients, filter weights) for the next texture fetch.
     enum class FetchOpcode : uint32_t
     {
         VertexFetch = 0,
@@ -123,6 +139,8 @@ namespace h3::gpu::ucode
         SetTextureGradientsVert = 26,
     };
 
+    // The shape a texture fetch samples: 1D, 2D, 3D (or a stacked 2D array,
+    // told apart by the fetch constant) and cube maps.
     enum class TextureDimension : uint32_t
     {
         D1 = 0,
@@ -160,6 +178,8 @@ namespace h3::gpu::ucode
     constexpr uint32_t kTextureFilterBaseMap = 2;
     constexpr uint32_t kTextureFilterUseFetchConstant = 3;
 
+    // One 96-bit fetch instruction (three dwords, d[0]..d[2]). The accessors
+    // below pull each field out of its bits; the layout is Xenia's ucode.h.
     struct FetchInstruction
     {
         uint32_t d[3] = {};
@@ -171,7 +191,9 @@ namespace h3::gpu::ucode
         uint32_t DstReg() const { return Bits(d[0], 12, 6); }
         bool DstRelative() const { return Bits(d[0], 18, 1) != 0; }
         uint32_t DstSwizzle() const { return Bits(d[1], 0, 12); }  // 3 bits per component, absolute
+        // Only runs where the predicate register equals PredicateCondition().
         bool IsPredicated() const { return Bits(d[1], 31, 1) != 0; }
+        // The predicate value IsPredicated() fetches run for.
         bool PredicateCondition() const { return Bits(d[2], 31, 1) != 0; }
 
         // Vertex fetch.
@@ -179,10 +201,19 @@ namespace h3::gpu::ucode
         uint32_t VertexSrcSwizzle() const { return Bits(d[0], 30, 2); }
         bool VertexIsSigned() const { return Bits(d[1], 12, 1) != 0; }
         bool VertexIsInteger() const { return Bits(d[1], 13, 1) != 0; }  // num_format_all = 1
+        // Signed normalized formats: x / max, so 0 is exact and the most
+        // negative value clamps to -1 (true), or (2x + 1) / (2^n - 1), which
+        // spreads the values evenly but has no exact 0 (false).
         bool VertexSignedRfZeroClamp() const { return Bits(d[1], 14, 1) == 0; }
+        // Round the fetch index to the nearest integer instead of truncating.
         bool VertexIndexRounded() const { return Bits(d[1], 15, 1) != 0; }
+        // The element's packed format (VertexFormat above).
         VertexFormat VertexDataFormat() const { return VertexFormat(Bits(d[1], 16, 6)); }
+        // Scales the fetched value by 2^this (a signed exponent).
         int32_t VertexExpAdjust() const { return SignedBits(d[1], 24, 6); }
+        // A "mini" fetch: takes its fetch constant and stride from the
+        // previous full (non-mini) fetch, fetching another element of the
+        // same vertex at its own offset.
         bool VertexIsMini() const { return Bits(d[1], 30, 1) != 0; }
         uint32_t VertexStride() const { return Bits(d[2], 0, 8); }      // dwords
         int32_t VertexOffset() const { return SignedBits(d[2], 8, 23); }  // dwords
@@ -206,6 +237,8 @@ namespace h3::gpu::ucode
 
     // --- ALU -------------------------------------------------------------
 
+    // The vector (4-component) ALU operations. Each ALU instruction runs one
+    // vector op and one scalar op side by side.
     enum class VectorOpcode : uint32_t
     {
         Add = 0, Mul = 1, Max = 2, Min = 3, Seq = 4, Sgt = 5, Sge = 6, Sne = 7,
@@ -215,6 +248,9 @@ namespace h3::gpu::ucode
         KillEq = 24, KillGt = 25, KillGe = 26, KillNe = 27, Dst = 28, MaxA = 29,
     };
 
+    // The scalar (1-component) ALU operations. "Prev" variants read the
+    // previous scalar result (ps); Setp* set the predicate register; Kill*
+    // discard the pixel.
     enum class ScalarOpcode : uint32_t
     {
         Adds = 0, AddsPrev = 1, Muls = 2, MulsPrev = 3, MulsPrev2 = 4, Maxs = 5, Mins = 6,
@@ -269,6 +305,9 @@ namespace h3::gpu::ucode
         }
     }
 
+    // Scalar ops that read two components of their source rather than one:
+    // its swizzle's W and X (W and Z when the vector op takes three
+    // sources), as adds = a + b.
     inline bool ScalarIsTwoComponent(ScalarOpcode op)
     {
         switch (op)
@@ -297,6 +336,8 @@ namespace h3::gpu::ucode
     constexpr uint32_t kExportData0 = 33;  // .. 37
     constexpr uint32_t kMemExportElements = 5;  // eM0-eM4
 
+    // One 96-bit ALU instruction (three dwords, d[0]..d[2]): a vector op and a
+    // scalar op, their destinations, write masks and up to three sources.
     struct AluInstruction
     {
         uint32_t d[3] = {};
@@ -316,16 +357,25 @@ namespace h3::gpu::ucode
 
         // Word 1.
         uint32_t SrcSwizzle(uint32_t i) const { return Bits(d[1], 16 - (i - 1) * 8 + 0, 8); }  // i = 1..3
+        // Negate source i (1..3).
         bool SrcNegate(uint32_t i) const { return Bits(d[1], 26 - (i - 1), 1) != 0; }
+        // The predicate value this instruction runs for when IsPredicated().
         bool PredicateCondition() const { return Bits(d[1], 27, 1) != 0; }
+        // Only runs where the predicate register equals PredicateCondition().
         bool IsPredicated() const { return Bits(d[1], 28, 1) != 0; }
         bool ConstAddressRegisterRelative() const { return Bits(d[1], 29, 1) != 0; }  // a0 rather than aL
+        // The second constant operand is relatively addressed (see
+        // SrcConstAddressed).
         bool Const1RelAbs() const { return Bits(d[1], 30, 1) != 0; }
+        // The first constant operand is relatively addressed (see
+        // SrcConstAddressed).
         bool Const0RelAbs() const { return Bits(d[1], 31, 1) != 0; }
 
         // Word 2.
         uint32_t SrcReg(uint32_t i) const { return Bits(d[2], 16 - (i - 1) * 8, 8); }  // i = 1..3
+        // The vector operation (word 2 bits 24-28).
         VectorOpcode VectorOp() const { return VectorOpcode(Bits(d[2], 24, 5)); }
+        // Source i (1..3) is a temporary register (true) or a float constant.
         bool SrcIsTemp(uint32_t i) const { return Bits(d[2], 31 - (i - 1), 1) != 0; }
 
         // Whether constant operand i uses relative addressing (see Xenia's
@@ -345,19 +395,27 @@ namespace h3::gpu::ucode
             return (uint32_t(ScalarOp()) & 1) | (Bits(d[2], 29, 1) << 1) | (SrcSwizzle(3) & 0x3C);
         }
 
-        // Export write masks (Xenia's GetVectorOpResultWriteMask etc.).
+        // Export write masks (Xenia's GetVectorOpResultWriteMask etc.). An
+        // export's components come from the vector op where only its mask
+        // has them, from the scalar op where only the scalar's has them,
+        // are the constant 1 where both masks have them, and (with a
+        // relative scalar destination) the constant 0 where neither does.
         uint32_t VectorResultMask() const
         {
             return IsExport() ? VectorWriteMask() & ~ScalarWriteMask() : VectorWriteMask();
         }
+        // Components the scalar op's result goes to (an export's components
+        // that the vector op doesn't also claim).
         uint32_t ScalarResultMask() const
         {
             return IsExport() ? ScalarWriteMask() & ~VectorWriteMask() : ScalarWriteMask();
         }
+        // Export components written with the constant 0.
         uint32_t Constant0Mask() const
         {
             return IsExport() && ScalarDestRelative() ? 0xF & ~(VectorWriteMask() | ScalarWriteMask()) : 0;
         }
+        // Export components written with the constant 1.
         uint32_t Constant1Mask() const { return IsExport() ? VectorWriteMask() & ScalarWriteMask() : 0; }
     };
 

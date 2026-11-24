@@ -115,6 +115,10 @@ namespace h3::gpu::renderer
         }
     }
 
+    // Sets the renderer up on the window's GPU device (H3_RENDER=0 turns
+    // rendering off): the shader compiler, the sampler, the render scale,
+    // placeholder textures, background shader compilation, and the shader
+    // cache warm-up.
     bool Initialize(SDL_GPUDevice* device)
     {
         const char* setting = EnvString("H3_RENDER");
@@ -171,6 +175,8 @@ namespace h3::gpu::renderer
         return true;
     }
 
+    // Creates the shader cache folder (main.cpp: shadercache/ next to the
+    // XEX); empty if that fails (no cache then).
     void SetShaderCacheDirectory(const std::filesystem::path& directory)
     {
         std::error_code error;
@@ -227,6 +233,8 @@ namespace h3::gpu::renderer
         }
     }
 
+    // The command stream loaded a shader: it becomes the current vertex or
+    // pixel shader for the next draws.
     void OnShaderLoad(uint32_t type, const uint32_t* dwords, uint32_t dwordCount)
     {
         if (!g_enabled)
@@ -235,6 +243,8 @@ namespace h3::gpu::renderer
         (type == 0 ? g_vertexShader : g_pixelShader) = shader;
     }
 
+    // A draw from the command stream: counts it (H3_SKIP_DRAWS can drop
+    // some, for bisecting), then Draw (draw.cpp).
     void OnDraw(uint32_t initiator, uint32_t indexBase, uint32_t dmaSize)
     {
         // H3_SKIP_DRAWS=<first>-<last>[,<first>-<last>...]: drop those draws
@@ -268,6 +278,8 @@ namespace h3::gpu::renderer
         g_frameDraws++;
     }
 
+    // EDRAM copy mode: copies a render target out to guest memory
+    // (resolve.cpp), after recording queued exports that might read it.
     void OnResolve()
     {
         // Queued memory exports first: a resolve may overwrite a texture
@@ -278,6 +290,9 @@ namespace h3::gpu::renderer
         g_frameDraws++;
     }
 
+    // End of a frame: flushes the draws, finds the front buffer texture,
+    // hands it to the window for presenting, and does the per-frame
+    // bookkeeping (buffers, debug dumps, logs).
     void OnSwap(uint32_t frontbuffer, uint32_t width, uint32_t height)
     {
         g_frameDraws = 0;
@@ -398,6 +413,7 @@ namespace h3::gpu::renderer
         }
     }
 
+    // An occlusion query result the game will read (queries.cpp).
     bool OnOcclusionReport(uint32_t address)
     {
         if (!g_enabled)
@@ -406,17 +422,20 @@ namespace h3::gpu::renderer
         return true;
     }
 
+    // A fence the guest waits on (see DeferFenceWrite).
     bool OnFenceWrite(uint32_t address, uint32_t swapped)
     {
         return g_enabled && internal::DeferFenceWrite(address, swapped);
     }
 
+    // Lets fences that were waiting on GPU work complete.
     void OnCommandProcessorIdle()
     {
         if (g_enabled)
             internal::PollDeferredFenceWrites();
     }
 
+    // False until the first frame is presented.
     bool AcquireFrame(Frame& frame)
     {
         std::lock_guard lock(g_frameMutex);

@@ -137,8 +137,11 @@ namespace
     // XamEnumerate's source: items already in guest layout.
     struct Enumerator : KernelObject
     {
+        // itemSize: bytes per item; itemsPerCall: how many XamEnumerate returns
+        // at most per call.
         explicit Enumerator(uint32_t itemSize, uint32_t itemsPerCall)
             : KernelObject(ObjectType::Enumerator), itemSize(itemSize), itemsPerCall(std::max(itemsPerCall, 1u)) {}
+        // Not waitable: enumeration completes synchronously.
         bool IsSignaled(uint32_t) const override { return false; }
         int32_t SignalState() const override { return 0; }
 
@@ -352,6 +355,9 @@ namespace
     constexpr uint32_t kAchievementEarned = 0x20000, kAchievementEarnedOnline = 0x10000;
 }
 
+// The player's earned achievements (see above): none, or with "unlock all
+// armor" all 49 (ids from the game's own table), earned, 25 gamerscore
+// each.
 PPC_FUNC(__imp__XamUserCreateAchievementEnumerator)
 {
     uint32_t count = ctx.r8.u32, bufferSize = ctx.r9.u32, handleOut = ctx.r10.u32;

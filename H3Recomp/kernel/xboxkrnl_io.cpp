@@ -132,13 +132,13 @@ namespace
     constexpr uint32_t kShareWrite = 0x2;
     constexpr uint32_t kShareDelete = 0x4;
 
+    struct File;
+
     // NT's SHARE_ACCESS for one host file, shared by all its open handles
     // (IoCheckShareAccess). Halo 3 relies on it: its autosave queue deletes
     // every *.temp in cache1:\autosave it can open for DELETE, and the film
     // being recorded right now survives only because the recorder's handle
     // doesn't share delete access.
-    struct File;
-
     struct ShareAccess
     {
         std::vector<File*> handles;  // the open Files, so a rename can move them all
@@ -160,6 +160,8 @@ namespace
     std::mutex g_shareMutex;
     std::unordered_map<std::string, ShareAccess> g_shareAccess;  // by host path
 
+    // The share-access table's key for a host file: its normalized path, so
+    // two spellings of one file share one entry.
     std::string ShareKey(const std::filesystem::path& path)
     {
         return path.lexically_normal().string();
@@ -226,9 +228,15 @@ namespace
         return remove;
     }
 
+    // An open file or directory: the host stream, its paths, access rights
+    // and position. Waits on a file handle (for async I/O) succeed at once:
+    // all I/O here completes synchronously.
     struct File : KernelObject
     {
+        // Filled in by NtCreateFile.
         File() : KernelObject(ObjectType::File) {}
+        // Closing the last handle: closes the stream, releases its share access
+        // and deletes the file if it was opened delete-on-close.
         ~File() override
         {
             if (stream != nullptr)
@@ -241,6 +249,7 @@ namespace
             }
         }
 
+        // I/O completes synchronously, so a wait on a file is always satisfied.
         bool IsSignaled(uint32_t) const override { return true; }
         int32_t SignalState() const override { return 1; }
 
@@ -316,6 +325,7 @@ namespace
         return kUnixEpochAsFileTime + uint64_t(sinceEpoch / 100);
     }
 
+    // What the file information queries return about a host file.
     struct FileInfo
     {
         uint64_t time = 0;  // used for creation, access, write and change

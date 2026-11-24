@@ -161,6 +161,7 @@ namespace h3::gpu::renderer::internal
         constexpr uint32_t kDownloadBufferSize = kMaxWriteBackPixels * kMaxWriteBackBpp;
         std::vector<SDL_GPUTransferBuffer*> g_freeDownloads;
 
+        // A download buffer for a write-back, from the free list or new.
         SDL_GPUTransferBuffer* AcquireDownload()
         {
             if (!g_freeDownloads.empty())
@@ -457,6 +458,9 @@ namespace h3::gpu::renderer::internal
         }
     }
 
+    // The resolved texture (a render target copied out to memory, kept on
+    // the GPU) that covers an address, so texture fetches of that memory use
+    // it instead of decoding guest memory. Null if none.
     ResolvedTexture* FindResolved(uint32_t address)
     {
         // Addresses may come as physical (resolve registers) or through a
@@ -479,6 +483,8 @@ namespace h3::gpu::renderer::internal
         return containing;
     }
 
+    // Something other than a resolve (memory export) wrote [begin, end): the
+    // resolved textures there are stale, so fetches decode memory again.
     void InvalidateResolved(uint32_t begin, uint32_t end)
     {
         for (auto it = g_resolved.begin(); it != g_resolved.end();)
@@ -510,6 +516,7 @@ namespace h3::gpu::renderer::internal
         }
     }
 
+    // Frees resolved views unused for a while (once per frame).
     void TrimResolvedViews()
     {
         static_assert(kMaxViewIdleFrames > kMinViewIdleFrames);
@@ -526,11 +533,13 @@ namespace h3::gpu::renderer::internal
         }
     }
 
+    // How many views exist (logs).
     size_t ResolvedViewCount()
     {
         return g_subTextures.size();
     }
 
+    // Video memory held by resolved textures / by their views (logs).
     VideoMemoryUse ResolvedMemory()
     {
         VideoMemoryUse use;
@@ -542,6 +551,7 @@ namespace h3::gpu::renderer::internal
         return use;
     }
 
+    // (And their views.)
     VideoMemoryUse ResolvedViewMemory()
     {
         VideoMemoryUse use;
@@ -553,6 +563,8 @@ namespace h3::gpu::renderer::internal
         return use;
     }
 
+    // Finishes resolve write-backs (resolved pixels the CPU must see in guest
+    // memory) whose GPU downloads are done; wait: all of them.
     void PollWriteBacks(bool wait)
     {
         size_t done = 0;
@@ -568,6 +580,9 @@ namespace h3::gpu::renderer::internal
         g_pendingWriteBacks.erase(g_pendingWriteBacks.begin(), g_pendingWriteBacks.begin() + done);
     }
 
+    // A fetch that reads part of a resolved texture, or reads it at another
+    // size or format: a copy of that region, made on the GPU and kept while
+    // it's used.
     SDL_GPUTexture* ResolvedView(ResolvedTexture& resolved, const texture::FetchConstant& fetch, uint32_t address)
     {
         GpuTimedScope timed{ "resolved view" };  // H3_GPU_TIMING
@@ -634,6 +649,9 @@ namespace h3::gpu::renderer::internal
         return sub.texture;
     }
 
+    // RB_COPY_*: copies (or clears) the current render target region into
+    // a resolved texture at the destination address, and writes it back to
+    // guest memory when the CPU needs it.
     void Resolve()
     {
         GpuTimedScope timed{ "resolve" };  // H3_GPU_TIMING

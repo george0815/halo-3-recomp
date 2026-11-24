@@ -80,6 +80,7 @@ namespace h3::config
             return items;
         }
 
+        // A key binding list: comma-separated key names, at most kMaxBindings.
         std::vector<std::string> ParseBindings(std::string_view value)
         {
             return ParseList(value, kMaxBindings);
@@ -196,14 +197,17 @@ namespace h3::config
             }
         }
 
+        // How settings.ini spells a bool.
         const char* BoolText(bool value) { return value ? "true" : "false"; }
     }
 
+    // An action's settings.ini name and launcher label (kActions).
     const ActionInfo& Describe(Action action)
     {
         return kActions[size_t(action)];
     }
 
+    // Every setting's default, including the default key bindings.
     Settings Defaults()
     {
         Settings settings;
@@ -238,6 +242,9 @@ namespace h3::config
         return settings;
     }
 
+    // Reads settings.ini line by line ("key = value" under [section]
+    // headers); unknown keys are ignored and missing ones keep their
+    // defaults, so old and new files both work.
     bool Load(const std::filesystem::path& path, Settings& settings)
     {
         settings = Defaults();
@@ -263,6 +270,8 @@ namespace h3::config
         return true;
     }
 
+    // Writes every setting, with comments, to a temporary file and renames
+    // it over settings.ini, so a crash never leaves a half-written file.
     bool Save(const std::filesystem::path& path, const Settings& settings)
     {
         std::ostringstream out;
@@ -354,11 +363,13 @@ namespace h3::config
         return !error;
     }
 
+    // The running game's settings (set once at boot).
     const Settings& Active()
     {
         return g_active;
     }
 
+    // Called by main.cpp after loading settings.ini.
     void SetActive(const Settings& settings)
     {
         g_active = settings;

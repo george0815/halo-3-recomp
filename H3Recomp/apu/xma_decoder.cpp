@@ -45,6 +45,8 @@ namespace h3::apu
         constexpr uint32_t kBytesPerSubframeChannel = kSamplesPerSubframe * kBytesPerSample;
         constexpr uint32_t kMaxFrameLength = 0x7FFF;
 
+        // The XMA hardware works with physical addresses (the context data and
+        // buffers hold them); this is where one is in guest memory.
         uint8_t* Physical(uint32_t address) { return GuestPtr<uint8_t>(PhysicalToGuest(address)); }
 
         // H3_LOG_XMA=1: per-context diagnostics (loops, buffer swaps, bad
@@ -132,9 +134,13 @@ namespace h3::apu
         class BitStream
         {
         public:
+            // A reader over sizeBits bits of buffer, starting at bit 0.
             BitStream(uint8_t* buffer, size_t sizeBits) : m_buffer(buffer), m_sizeBits(sizeBits) {}
+            // Moves the read position (clamped to the end).
             void SetOffset(size_t offset) { m_offset = std::min(offset, m_sizeBits); }
+            // The read position, in bits from the start.
             size_t Offset() const { return m_offset; }
+            // Bits left to read.
             size_t BitsRemaining() const { return m_sizeBits - m_offset; }
             // The next `bits` bits (at most 57) without advancing.
             uint64_t Peek(size_t bits) const
@@ -153,6 +159,7 @@ namespace h3::apu
                 Advance(bits);
                 return value;
             }
+            // Skips bits.
             void Advance(size_t bits) { SetOffset(m_offset + bits); }
             // Copies bits keeping their position within a byte; returns it.
             size_t Copy(uint8_t* dest, size_t bits)
@@ -220,6 +227,8 @@ namespace h3::apu
         {
             return uint32_t(((packet[0] & 3) << 13) | (packet[1] << 5) | (packet[2] >> 3)) + 32;
         }
+        // How many following packets belong to other streams (skip them to find
+        // this stream's next packet).
         uint32_t PacketSkipCount(const uint8_t* packet) { return packet[3]; }
 
         // ContextData::sample_rate to Hz.
@@ -229,6 +238,11 @@ namespace h3::apu
             return kRates[id & 3];
         }
 
+        // One XMA hardware decoder context. The game fills in its ContextData in
+        // guest memory (input buffers of packets, an output ring buffer, loop and
+        // sample rate settings) and "kicks" it; the worker thread then decodes
+        // frames with FFmpeg into the output ring and updates the guest's copy,
+        // as the console's XMA hardware does.
         class Context
         {
         public:
@@ -818,21 +832,28 @@ namespace h3::apu
             static constexpr uint8_t kSkipWholePacket = 0xFF;
             static constexpr uint32_t kDecodeError = 4;  // error_status
 
+            // Whether the subframe model above runs (H3_XMA_SUBFRAMES=0: the
+            // whole-frame model, for comparison).
             static bool SubframeModel()
             {
                 static const bool enabled = EnvNumber("H3_XMA_SUBFRAMES", 1) != 0;
                 return enabled;
             }
 
+            // Whether the game has given the context any input to decode.
             static bool AnyInputValid(const ContextData& data) { return data.input_buffer_0_valid || data.input_buffer_1_valid; }
+            // Input buffer 0 or 1's fields (the context alternates between the two:
+            // the game refills one while the other is decoded).
             static bool InputValid(const ContextData& data, uint32_t buffer)
             {
                 return buffer == 0 ? data.input_buffer_0_valid : data.input_buffer_1_valid;
             }
+            // Input buffer 0 or 1's physical address.
             static uint32_t InputAddress(const ContextData& data, uint32_t buffer)
             {
                 return buffer == 0 ? data.input_buffer_0_ptr : data.input_buffer_1_ptr;
             }
+            // How many 2 KB packets input buffer 0 or 1 holds.
             static uint32_t InputPackets(const ContextData& data, uint32_t buffer)
             {
                 return buffer == 0 ? data.input_buffer_0_packet_count : data.input_buffer_1_packet_count;
@@ -984,6 +1005,8 @@ namespace h3::apu
                 packet = index;
                 return true;
             }
+            // The packet `index` packets past the current position (continuing into
+            // the other input buffer), or null if the game hasn't supplied it yet.
             const uint8_t* NextPacket(const ContextData& data, uint32_t index) const
             {
                 uint32_t buffer, packet;
@@ -1010,6 +1033,7 @@ namespace h3::apu
                 }
                 return kBitsPerPacketHeader;
             }
+            // The same, across the context's two input buffers.
             uint32_t NextFrameOffset(const ContextData& data, uint32_t index) const
             {
                 uint32_t buffer, packet;
@@ -1024,8 +1048,12 @@ namespace h3::apu
             struct PacketInfo
             {
                 uint32_t frameCount = 0, frame = 0, frameLength = 0;
+                // Whether the frame found is the packet's last (it may continue into the
+                // next packet).
                 bool LastFrame() const { return frameCount == 0 || frame == frameCount - 1; }
             };
+            // Walks a packet's frames (each starts with a 15-bit length) to find the
+            // one at frameOffset and how many the packet holds.
             static PacketInfo ReadPacketInfo(const uint8_t* packet, uint32_t frameOffset)
             {
                 PacketInfo info;
@@ -1279,6 +1307,8 @@ namespace h3::apu
         }
     }
 
+    // Boot: allocates the guest's context array in physical memory (the game
+    // gets context addresses from it) and starts the decoder worker thread.
     void InitXma()
     {
         // 256-aligned physical memory for the context array.
@@ -1301,6 +1331,8 @@ namespace h3::apu
         std::thread(Worker).detach();
     }
 
+    // XMACreateContext: the first free context's guest address (0 if all
+    // are taken).
     uint32_t AllocateXmaContext()
     {
         std::lock_guard lock(g_allocMutex);
@@ -1317,6 +1349,7 @@ namespace h3::apu
         return 0;
     }
 
+    // XMAReleaseContext: frees a context by its guest address.
     void ReleaseXmaContext(uint32_t guestAddress)
     {
         if (guestAddress < g_arrayBase || guestAddress >= g_arrayBase + kContextCount * sizeof(ContextData))
@@ -1324,6 +1357,8 @@ namespace h3::apu
         g_contexts[(guestAddress - g_arrayBase) / sizeof(ContextData)].Release();
     }
 
+    // The game wrote the kick register: start decoding this context and wake
+    // the worker.
     void EnableXmaContext(uint32_t id)
     {
         if (id >= kContextCount)
@@ -1333,6 +1368,7 @@ namespace h3::apu
         g_wake.notify_one();
     }
 
+    // The lock register: stop decoding this context.
     void DisableXmaContext(uint32_t id)
     {
         if (id < kContextCount)

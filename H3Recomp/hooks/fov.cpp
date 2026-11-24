@@ -35,6 +35,9 @@ namespace h3::hooks
         float g_applied = 0;  // the scale written
     }
 
+    // Once per frame: when a map loads, scales every unit's camera FOV by the
+    // configured FOV over 70 (with one player on this PC; split screen
+    // keeps the game's own, as MCC does).
     void UpdateFov()
     {
         static const float scale = [] {

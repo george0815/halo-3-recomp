@@ -108,6 +108,7 @@ namespace
     constexpr uint32_t kObjectHandleData = 12;
     constexpr uint32_t kObjectHandleSize = 6;  // u16: the object's size in bytes
 
+    // A big-endian word of the state (the guest's byte order).
     uint32_t Load32(const uint8_t* p)
     {
         uint32_t value;
@@ -115,6 +116,7 @@ namespace
         return __builtin_bswap32(value);
     }
 
+    // A data array found in the state: where it is and its name.
     struct DataArray
     {
         uint32_t start, end;  // offsets in the state
@@ -139,6 +141,7 @@ namespace
 
     constexpr uint32_t kGapBlockBytes = 64;
 
+    // A parsed mask file: one list per kind of rule.
     struct Mask
     {
         std::vector<std::string> arrays, after;
@@ -146,6 +149,7 @@ namespace
         std::unordered_map<uint32_t, std::vector<uint32_t>> objectFields;  // tag -> offsets
         std::vector<uint32_t> words;
         bool freeObjectMemory = false;
+        // No rules at all (no mask file, or an empty one).
         bool Empty() const
         {
             return arrays.empty() && after.empty() && afterBlocks.empty() && objectFields.empty() && words.empty() &&
@@ -153,6 +157,8 @@ namespace
         }
     };
 
+    // Reads a mask file (the rules at the top of this file). Unreadable or
+    // unparsable lines are reported and skipped; the rest still apply.
     Mask ReadMask(const char* path)
     {
         Mask mask;
@@ -196,6 +202,7 @@ namespace
         return mask;
     }
 
+    // Whether a mask rule names this array (exact name).
     bool Contains(const std::vector<std::string>& names, const std::string& name)
     {
         for (const std::string& n : names)
@@ -204,8 +211,7 @@ namespace
         return false;
     }
 
-    // Zeroes what the mask names in out (a copy of the state at address).
-    // "free object memory": zeroes the object memory after the "object"
+    // The "free object memory" rule: zeroes the object memory after the "object"
     // array (up to the next array) that no live object covers, from the
     // first live object on (what comes before is the pool's own header).
     void ClearFreeObjectMemory(const std::vector<DataArray>& arrays, const DataArray& objects, uint8_t* out,
@@ -244,6 +250,10 @@ namespace
             memset(out + cursor, 0, gapEnd - cursor);
     }
 
+    // Zeroes what the mask names in out (a copy of the state, which lives
+    // at guest address): masked arrays and the gaps after them, the named
+    // object fields of every live object, single words, and free object
+    // memory. Zeroed rather than skipped, so offsets stay put in dumps.
     void ApplyMask(const Mask& mask, uint8_t* out, uint32_t bytes, uint32_t address)
     {
         // PERF: rescans 4 MB for array headers every tick (~1 ms); the
@@ -340,11 +350,15 @@ namespace
     std::atomic<uint32_t> g_levelTime{ 0 };
 }
 
+// The level time from the last copy (0 outside a level).
 uint32_t h3::debug::CurrentLevelTime()
 {
     return g_levelTime.load();
 }
 
+// Every tick's game state copy: advances the level time, then (when
+// asked) masks and hashes the state, records or dumps it, and requests
+// the snapshots and captures due at this level time.
 void h3::debug::OnGameStateCopy(const uint8_t* state, uint32_t bytes, uint32_t address)
 {
     static FILE* out = [] {

@@ -36,15 +36,21 @@ import re
 import struct
 import sys
 
+# Sign-extends a bits-wide field.
 def sext(v, bits):
     return v - (1 << bits) if v & (1 << (bits - 1)) else v
 
 
+# Whether instruction word i is bctr (branch to the count register: how a
+# compiled switch jumps through its table).
 def is_bctr(i):
     return i >> 26 == 19 and (i >> 1) & 0x3FF == 528 and not i & 1 and (i >> 21) & 0x14 == 0x14
 
 
+# The dumped executable image (h3xexinfo --dump: image.bin + .json) with
+# its known function entry points.
 class Image:
+    # Loads image.bin and its layout, and collects the entry points.
     def __init__(self, path):
         self.data = open(path, "rb").read()
         layout = json.load(open(path + ".json"))
@@ -67,6 +73,7 @@ class Image:
         self.entry_set = set(self.pdata) | self.bl_targets
         self.entries = sorted(self.entry_set)
 
+    # The big-endian word at guest address a.
     def u32(self, a):
         return struct.unpack_from(">I", self.data, a - self.base)[0]
 
@@ -134,12 +141,15 @@ def parse_tables(path):
     return tables
 
 
+# The first bctr at or after address a (a jump table's dispatch).
 def bctr_after(img, a):
     while not is_bctr(img.u32(a)):
         a += 4
     return a
 
 
+# `tables`: re-reads every jump table XenonAnalyse found against the
+# code and writes the corrected switch table file.
 def cmd_tables(img_path, toml_path):
     img = Image(img_path)
     tables = parse_tables(toml_path)
@@ -207,6 +217,9 @@ def extent(img, start, switches):
     return max(seen) + 4
 
 
+# `functions`: sizes the leaf functions whose switch cases XenonRecomp's
+# analyser cut off (the recompile log's "jumping outside function"
+# reports) and prints `functions` entries for halo3.toml.
 def cmd_functions(img_path, toml_path, mapping_path, log_path):
     img = Image(img_path)
     switches = {bctr_after(img, base): labels for _, base, _, _, labels in parse_tables(toml_path)}

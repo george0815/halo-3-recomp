@@ -30,6 +30,7 @@ namespace h3::d3dtrace
         }
         constexpr size_t kSamples = 4;
 
+        // One sampled call: the frame, its caller and its first arguments.
         struct Sample
         {
             uint32_t frame, lr, r[6];
@@ -38,6 +39,8 @@ namespace h3::d3dtrace
             bool done;
         };
 
+        // One function's call counts (in total and in the sampled window) and
+        // who called it.
         struct Stats
         {
             uint64_t total = 0, window = 0;
@@ -120,6 +123,8 @@ namespace h3::d3dtrace
         }
     }
 
+    // Counts a call and its caller, and samples the first kSamples calls
+    // (arguments, f1) in the 50 frames before the report frame.
     void Enter(size_t index, PPCContext& ctx)
     {
         ThreadStats& thread = Current();
@@ -140,6 +145,9 @@ namespace h3::d3dtrace
         thread.open.push_back({ index, slot });
     }
 
+    // The call returned: a sampled call gets its return value (r3). After
+    // Swap (the last hooked function), counts the frame and writes the
+    // report at the chosen one.
     void Leave(size_t index, PPCContext& ctx)
     {
         ThreadStats& thread = Current();

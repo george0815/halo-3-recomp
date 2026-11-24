@@ -36,6 +36,8 @@ namespace
 {
     const char* const kSectionNames[] = { "debug", "resource", "tags", "locale" };
 
+    // A group tag from its text ("bitm"; shorter names are space-padded,
+    // as "snd " is).
     uint32_t ParseGroupTag(const char* text)
     {
         char name[5] = "    ";
@@ -43,6 +45,8 @@ namespace
         return GroupTag(name);
     }
 
+    // `h3tags <map> header`: the header's fields, sections, partitions and
+    // the tag index's counts.
     void PrintHeader(const CacheFile& file)
     {
         const Header& h = file.GetHeader();
@@ -60,6 +64,7 @@ namespace
             index.globals.size(), index.checksum);
     }
 
+    // `groups`: each tag group with its parent, grandparent and name.
     void PrintGroups(const CacheFile& file)
     {
         for (const TagGroup& g : file.Index().groups)
@@ -68,6 +73,7 @@ namespace
                 g.grandparent == kNoGroup ? "----" : GroupTagString(g.grandparent).c_str(), file.StringId(g.nameId).c_str());
     }
 
+    // One tag: datum, group, address and name.
     void PrintTag(const CacheFile& file, uint32_t slot)
     {
         const TagInstance& t = file.Index().tags[slot];
@@ -75,6 +81,7 @@ namespace
             file.TagName(slot).c_str());
     }
 
+    // `tags [group]`: every tag, or those of a group (and its children).
     void PrintTags(const CacheFile& file, const char* group)
     {
         uint32_t groupTag = group ? ParseGroupTag(group) : 0;
@@ -85,6 +92,8 @@ namespace
     }
 }
 
+// h3tags <map> <command> [args]: header, groups, tags [group], shaders
+// <out dir>.
 int main(int argc, char** argv)
 {
     if (argc < 3)

@@ -34,6 +34,7 @@ namespace h3::video
         }
     }
 
+    // The intro movie's current frame buffers (the debug Bink view).
     bool GetBinkFrame(BinkFrame& frame)
     {
         uint32_t sets = Read(kFrameBuffers);

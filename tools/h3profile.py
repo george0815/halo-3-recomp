@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 
+# (address, name) of every function symbol in a binary (nm), sorted.
 def load_symbols(path, dynamic):
     args = ["nm", "-C", "--defined-only", "-n"] + (["-D"] if dynamic else []) + [path]
     symbols = []
@@ -23,12 +24,15 @@ def load_symbols(path, dynamic):
     return [a for a, _ in symbols], symbols
 
 
+# The function containing offset: the last symbol at or before it.
 def nearest(table, offset):
     addresses, symbols = table
     i = bisect.bisect_right(addresses, offset) - 1
     return symbols[i][1] if i >= 0 else "?"
 
 
+# Reads the samples and prints samples per thread and the hottest
+# functions, overall and per thread (usage at the top of the file).
 def main():
     binary, profile = sys.argv[1], sys.argv[2]
     top = int(sys.argv[3]) if len(sys.argv) > 3 else 30
@@ -57,6 +61,8 @@ def main():
     libraries = {}
     binary_name = os.path.basename(binary)
 
+    # A sampled address as a function name (through the memory mappings the
+    # profile recorded).
     def name(address):
         if not maps:  # old format: offsets into the executable
             return nearest(executable, address)
@@ -73,6 +79,7 @@ def main():
 
     names_cache = {}
 
+    # name(), memoized (millions of samples, few distinct addresses).
     def cached(address):
         if address not in names_cache:
             names_cache[address] = name(address)
@@ -90,6 +97,7 @@ def main():
     for function, count in names.most_common(top):
         print(f"  {100 * count / total:5.1f}%  {function[:110]}")
 
+    # Whether an address is in the game executable (not a shared library).
     def in_executable(address):
         if not maps:
             return True

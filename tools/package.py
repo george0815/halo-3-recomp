@@ -56,6 +56,8 @@ def collect_licenses(pkg, windows):
     os.makedirs(lic, exist_ok=True)
     notes = []
 
+    # One third-party component's license files and its line in
+    # THIRD-PARTY.txt.
     def add(name, files, note):
         os.makedirs(os.path.join(lic, name), exist_ok=True)
         for f in files:
@@ -147,6 +149,10 @@ def bundle_closure(binary, destination, done):
         bundle_closure(real, destination, done)
 
 
+# package.py <build dir> <package dir> [--llvm <dir>] [--xwin <dir>]
+# [--archive <dir>]: copies the build's outputs, the runtime library and
+# headers, the recompiler and configs, the shaders and licenses into a
+# release folder, writes runtime/build.txt, and optionally the archive.
 def main():
     build = os.path.abspath(sys.argv[1])
     pkg = os.path.abspath(sys.argv[2])
@@ -165,6 +171,7 @@ def main():
         match = re.search(r'/imsvc\s+"?([^"\s]+)/crt/include', commands[0]["command"])
         xwin = match.group(1) if match else None
 
+    # The first compile command (compile_commands.json) for a matching file.
     def find(predicate, what):
         for entry in commands:
             if predicate(entry["file"]):
@@ -199,6 +206,8 @@ def main():
             return "{pkg}/runtime/include/" + os.path.relpath(path, ROOT)
         return arg
 
+    # A compile command turned into a build.txt template: paths of this
+    # machine replaced by placeholders ({pkg}, {in}, {out}...).
     def template(entry, kind):
         args = shlex.split(entry["command"])
         # Headers this compile reads (from our tree, not the generated code).
@@ -291,6 +300,12 @@ def main():
             out.append("/WHOLEARCHIVE:{pkg}/runtime/lib/" + os.path.basename(source))
             i += 1
             continue
+        if windows and a.lower().endswith(".res"):
+            # This build's compiled resources (cmake/icon.rc): the package
+            # links its own runtime/utf8.res instead (below), which holds
+            # the same icon and the UTF-8 manifest.
+            i += 1
+            continue
         if a.endswith((".o", ".obj")):
             if not exe_objects_placed:
                 out.append("{exe_objects}")
@@ -324,11 +339,14 @@ def main():
         out.append(a)
         i += 1
     if windows:
-        # The UTF-8 code page manifest (cmake/utf8.manifest) as a resource:
-        # lld-link links it like an object (CMake merged it in this build).
+        # The UTF-8 code page manifest (cmake/utf8.manifest) and the Halo 3
+        # icon (assets/icon.ico, the .exe's file icon) as compiled resources:
+        # lld-link links them like an object (CMake added both to this build
+        # through cmake/utf8.manifest and cmake/icon.rc).
         rc = os.path.join(pkg, "runtime", "utf8.rc")
         with open(rc, "w") as f:
             f.write('1 24 "%s"\n' % os.path.join(ROOT, "cmake", "utf8.manifest"))
+            f.write('1 ICON "%s"\n' % os.path.join(ROOT, "assets", "icon.ico"))
         subprocess.run(["llvm-rc", "/fo", os.path.join(pkg, "runtime", "utf8.res"), rc], check=True)
         os.remove(rc)
         out += ["/manifest:no", "{pkg}/runtime/utf8.res"]

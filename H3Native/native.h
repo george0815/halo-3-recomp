@@ -25,6 +25,8 @@ namespace h3::native
         return list.find("," + std::string(name) + ",") != std::string::npos;
     }
 
+    // H3_CHECK_NATIVE=1: run each native replacement and the original side
+    // by side and log where they differ (tools/films/check_native.sh).
     inline bool CheckNative()
     {
         static const bool check = EnvFlag("H3_CHECK_NATIVE");

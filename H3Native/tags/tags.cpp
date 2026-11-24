@@ -60,14 +60,18 @@ namespace h3::native::tags
         constexpr uint32_t kSlotMask = 0xFFFF;
     }
 
+    // Where the game keeps the loaded tag index header's address.
     uint32_t LoadedIndexHeader() { return GuestRef<uint32_t>(kTagIndexHeader); }
 
+    // The loaded index's checksum (0 with none loaded).
     uint32_t LoadedIndexChecksum()
     {
         uint32_t header = LoadedIndexHeader();
         return header ? uint32_t(GuestRef<uint32_t>(header + kHeaderChecksum)) : 0;
     }
 
+    // The map file on disk the game loaded, found by its index checksum (for
+    // H3_CHECK_TAGS and the native tag cache).
     const cache::CacheFile* LoadedCacheFile()
     {
         // Every map with a tag index, opened once (headers and tables only).
@@ -112,6 +116,7 @@ namespace h3::native::tags
         return 0;
     }
 
+    // A slot's tag data address, unchecked (as the game reads it inline).
     uint32_t TagDataBySlot(uint32_t slot)
     {
         return GuestRef<uint32_t>(GuestRef<uint32_t>(kTagInstances) + slot * kInstanceBytes + kInstanceAddress);

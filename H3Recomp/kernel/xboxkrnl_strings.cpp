@@ -32,7 +32,9 @@ namespace
     class VaListArguments : public ArgumentSource
     {
     public:
+        // address: the guest va_list (the first slot).
         explicit VaListArguments(uint32_t address) : m_address(address) {}
+        // The next slot.
         uint64_t Next() override
         {
             uint64_t value = GuestRef<uint64_t>(m_address);
@@ -51,7 +53,9 @@ namespace
     class RegisterArguments : public ArgumentSource
     {
     public:
+        // firstRegister: the first register holding a variadic argument (3-10).
         RegisterArguments(PPCContext& ctx, uint32_t firstRegister) : m_ctx(ctx), m_index(firstRegister - kFirstArgumentRegister) {}
+        // The next register, then the stack slots.
         uint64_t Next() override
         {
             uint32_t index = m_index++;

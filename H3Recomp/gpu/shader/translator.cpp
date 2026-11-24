@@ -463,6 +463,8 @@ void main()
 }
 )";
 
+        // One ALU source as GLSL: the register or constant expression, then the
+        // modifiers and swizzle applied to it.
         struct SourceOperand
         {
             std::string base;  // the vec4 expression before swizzling
@@ -471,6 +473,9 @@ void main()
             uint32_t swizzle = 0;
         };
 
+        // Turns one shader's microcode into GLSL: reads the control flow, emits
+        // the declarations the shader needs (ShaderInfo), then its instructions
+        // as structured GLSL (ifs and loops where possible) in main().
         class Translator
         {
         public:
@@ -489,8 +494,9 @@ void main()
                 // normally. Deep captures (F10) replay each draw once per
                 // variant (debug.cpp DumpAfterDraw) and save the values per
                 // pixel.
+                static const char* const debugSpec = std::getenv("H3_DEBUG_PS");
                 if (!isVertex)
-                    if (const char* spec = std::getenv("H3_DEBUG_PS"))
+                    if (const char* spec = debugSpec)
                     {
                         uint64_t hash = 0xCBF29CE484222325ull;
                         for (uint32_t i = 0; i < count; i++)
@@ -541,6 +547,7 @@ void main()
                 return result;
             }
 
+            // A readable listing of the control flow and instructions (h3shader).
             std::string Disassemble()
             {
                 ScanControlFlow();
@@ -681,7 +688,8 @@ void main()
                 out.append(body, at, std::string::npos);
                 // H3_LOG_COMPACT_CONSTANTS=1: print each compact index's
                 // hardware constant (XE_C(i) in the GLSL is c<list[i]>).
-                if (getenv("H3_LOG_COMPACT_CONSTANTS"))
+                static const bool logCompact = std::getenv("H3_LOG_COMPACT_CONSTANTS") != nullptr;
+                if (logCompact)
                 {
                     fprintf(stderr, "[shader] compact constants:");
                     for (size_t i = 0; i < m_info.compactConstants.size(); i++)
@@ -1218,6 +1226,9 @@ void main()
                 return Apply(op, op.base + "." + kSwizzleChars[SwizzledComponent(op.swizzle, component)]);
             }
 
+            // The GLSL expression for an ALU instruction's vector op on sources
+            // a, b, c (Xenia's semantics). Also reports whether it sets the address
+            // register, the predicate, or kills the pixel.
             std::string VectorOperation(const AluInstruction& alu, const std::string s[3], bool& writesA0,
                 bool& writesPredicate, bool& kills)
             {
@@ -1280,6 +1291,7 @@ void main()
                 return "vec4(0.0)";
             }
 
+            // The same for the scalar op (a, b: its one or two components).
             std::string ScalarOperation(const AluInstruction& alu, const std::string& a, const std::string& b,
                 bool& writesA0, bool& writesPredicate, bool& kills)
             {
@@ -2374,11 +2386,13 @@ vec3 xe_linear_to_pwl_gamma(vec3 v)
 }
 )";
 
+    // The public entry points: one Translator per shader.
     TranslationResult Translate(bool isVertex, const uint32_t* dwords, uint32_t dwordCount, bool compute)
     {
         return Translator(isVertex, dwords, dwordCount, compute).Run();
     }
 
+    // A shader's disassembly (h3shader --disasm).
     std::string Disassemble(bool isVertex, const uint32_t* dwords, uint32_t dwordCount)
     {
         return Translator(isVertex, dwords, dwordCount).Disassemble();

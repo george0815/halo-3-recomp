@@ -34,6 +34,7 @@ namespace h3setup
 
     namespace
     {
+        // A whole file as bytes (empty if it can't be read).
         std::string ReadText(const fs::path& path)
         {
             std::ifstream in(path, std::ios::binary);
@@ -42,6 +43,8 @@ namespace h3setup
             return text.str();
         }
 
+        // Writes a generated file only when its text changed, so its timestamp
+        // doesn't make the incremental build recompile what depends on it.
         bool WriteIfDifferent(const fs::path& path, const std::string& text)
         {
             if (fs::exists(path) && ReadText(path) == text)
@@ -65,6 +68,8 @@ namespace h3setup
             return id;
         }
 
+        // The functions an import_stubs.cpp defines as weak fallbacks
+        // (PPC_WEAK_FUNC(name)).
         std::vector<std::string> WeakNames(const std::string& stubs)
         {
             std::vector<std::string> names;
@@ -74,6 +79,7 @@ namespace h3setup
             return names;
         }
 
+        // The recompiled sources XenonRecomp wrote into dir, in a stable order.
         std::vector<fs::path> Sources(const fs::path& dir)
         {
             std::vector<fs::path> files;
@@ -85,6 +91,8 @@ namespace h3setup
             return files;
         }
 
+        // One recompiled DLL: its name, a C identifier made from it, its image
+        // base and size, and the folder its generated code is in.
         struct Module
         {
             std::string name, ident, base, size;
@@ -167,6 +175,7 @@ namespace h3setup
             return manifest;
         }
 
+        // Replaces every {key} placeholder in a build.txt argument with its value.
         std::string Expand(std::string arg, const std::map<std::string, std::string>& values)
         {
             for (const auto& [key, value] : values)
@@ -178,6 +187,7 @@ namespace h3setup
             return arg;
         }
 
+        // One compile: the command line, the source and the object it writes.
         struct Job
         {
             std::vector<std::string> args;
@@ -186,11 +196,15 @@ namespace h3setup
         };
     }
 
+    // <install>/toolchain/sdk.
     fs::path SdkDirectory(const fs::path& install)
     {
         return fs::absolute(install) / "toolchain" / "sdk";
     }
 
+    // `h3setup sdk`: runs the package's xwin to download and unpack
+    // Microsoft's CRT and Windows SDK (only with accepted: the player agreed
+    // to Microsoft's license). Skipped if they're already there.
     int FetchSdk(const fs::path& install, const fs::path& package, bool accepted)
     {
         fs::path sdk = SdkDirectory(install);
@@ -236,6 +250,9 @@ namespace h3setup
         return 0;
     }
 
+    // Starts a program directly (CreateProcessW on Windows, posix_spawnp
+    // elsewhere: no shell, so paths with spaces need no quoting games),
+    // with its output going to the log, and waits for it.
     int RunProgram(const std::vector<std::string>& args, const fs::path& log)
     {
 #ifdef _WIN32
@@ -306,6 +323,8 @@ namespace h3setup
 #endif
     }
 
+    // The compiler: $CXX if set, else the release's own clang-cl (Windows),
+    // else clang++/clang-cl from the PATH.
     std::string FindCompiler(const fs::path& package)
     {
         if (const char* cxx = getenv("CXX"); cxx && *cxx)
@@ -341,6 +360,9 @@ namespace h3setup
         return "";
     }
 
+    // `h3setup build`: generates the glue sources, compiles everything that's
+    // missing or out of date in parallel (jobs threads), links H3Recomp and
+    // copies the libraries it needs next to it.
     int Build(const fs::path& installArg, const fs::path& packageArg, int jobs)
     {
         fs::path install = fs::absolute(installArg), package = fs::absolute(packageArg);

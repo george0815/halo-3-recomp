@@ -33,6 +33,7 @@ namespace h3::kernel
     void AddSymbolicLink(std::string_view link, std::string_view target);
     bool RemoveSymbolicLink(std::string_view link);
 
+    // Where a guest path lands on the host, and whether it's there.
     struct HostPath
     {
         std::filesystem::path path;

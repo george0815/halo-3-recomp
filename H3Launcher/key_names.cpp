@@ -76,6 +76,8 @@ namespace h3::launcher
         };
     }
 
+    // The settings.ini name for a pressed key ("W", "Left Shift", "F1"), or
+    // "" for keys that can't be bound.
     QString BindingNameForKey(const QKeyEvent& event)
     {
         const int key = event.key();
@@ -106,6 +108,7 @@ namespace h3::launcher
         return {};
     }
 
+    // The name for a mouse button ("Mouse Left"...), or "".
     QString BindingNameForMouse(int button)
     {
         switch (button)

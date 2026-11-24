@@ -51,6 +51,8 @@ namespace h3::gpu::renderer::internal
 
     }
 
+    // FNV-1a style, eight bytes at a time. Must never change: the shader
+    // cache's file names are this hash.
     uint64_t Hash(const void* data, size_t size, uint64_t hash)
     {
         const uint8_t* bytes = static_cast<const uint8_t*>(data);
@@ -66,6 +68,8 @@ namespace h3::gpu::renderer::internal
         return hash;
     }
 
+    // Cache name for one of the renderer's own shaders: "<prefix>_<hash>.spv",
+    // the hash of its source, so an edited shader gets a new file.
     std::string InternalCacheName(const char* prefix, const char* glsl)
     {
         char hash[17];
@@ -73,6 +77,8 @@ namespace h3::gpu::renderer::internal
         return std::string(prefix) + "_" + hash + ".spv";
     }
 
+    // Cache name for a translated game shader: the hash of its GLSL (seeded
+    // by stage), so a translator change that alters the GLSL gets a new file.
     std::string ShaderCacheName(bool vertex, const std::string& glsl)
     {
         char name[32];
@@ -80,6 +86,8 @@ namespace h3::gpu::renderer::internal
         return name;
     }
 
+    // SPIR-V for GLSL: read from the shader cache when there, else compiled
+    // with shaderc and written there. Any thread.
     std::vector<uint8_t> CompileSpirv(ShaderStage stage, const std::string& glsl, const std::string& cacheName)
     {
         // H3_DUMP_GLSL=1: write each shader's GLSL as <cache name>.glsl in
@@ -136,6 +144,8 @@ namespace h3::gpu::renderer::internal
 
     namespace
     {
+        // Whether the AVX2 content hash can run: the CPU has AVX2 and the OS
+        // saves the YMM registers.
         bool CpuHasAvx2()
         {
 #if defined(_MSC_VER)
@@ -154,6 +164,8 @@ namespace h3::gpu::renderer::internal
         }
     }
 
+    // XXH3 of a block of memory (texture and vertex data change checks),
+    // with the AVX2 build when the CPU has it.
     uint64_t ContentHash(const void* data, size_t size)
     {
         // Both variants compute the same XXH3 value; the AVX2 one is
@@ -162,6 +174,8 @@ namespace h3::gpu::renderer::internal
         return avx2 ? ContentHashAvx2(data, size) : XXH3_64bits(data, size);
     }
 
+    // Prints a message the first time only (for problems that repeat every
+    // draw).
     void LogOnce(const std::string& message)
     {
         static std::mutex mutex;
@@ -173,6 +187,7 @@ namespace h3::gpu::renderer::internal
         fprintf(stderr, "[render] %s\n", message.c_str());
     }
 
+    // H3_LOG_SLOW: logs the work if it took longer than kSlowThresholdMs.
     SlowTimer::~SlowTimer()
     {
         static const bool enabled = EnvFlag("H3_LOG_SLOW");
@@ -181,6 +196,7 @@ namespace h3::gpu::renderer::internal
             fprintf(stderr, "[render] slow %s: %.0f ms (frame %u) %s\n", what, ms, g_swaps, detail.c_str());
     }
 
+    // A vertex fetch constant: buffer address, size and byte order.
     VertexFetch ReadVertexFetch(uint32_t index)
     {
         // Vertex fetch constants share the fetch constant registers with
@@ -195,6 +211,7 @@ namespace h3::gpu::renderer::internal
         return fetch;
     }
 
+    // Float i of the buffer a vertex fetch constant describes.
     float VertexFloat(const VertexFetch& fetch, uint32_t i)
     {
         uint32_t raw;
@@ -205,6 +222,10 @@ namespace h3::gpu::renderer::internal
         return value;
     }
 
+    // The Shader for some microcode: found by content hash, or made now:
+    // translated to GLSL, and its host shader requested by cache name
+    // (loaded from the shader cache or compiled, possibly on a worker
+    // thread; warm-up may already have made it).
     Shader* LoadShader(bool vertex, const uint32_t* dwords, uint32_t count)
     {
         // XXH3 for the lookup: the command stream loads shaders ~1,700 times
@@ -269,11 +290,14 @@ namespace h3::gpu::renderer::internal
         return shader;
     }
 
+    // Distinct guest shaders seen (for logs).
     size_t ShaderCount()
     {
         return g_shaders.size();
     }
 
+    // Compiles one of the renderer's own GLSL shaders (copies, clears, FXAA)
+    // straight to an SDL_GPU shader.
     SDL_GPUShader* CompileInternal(const char* glsl, bool vertex, uint32_t samplers, uint32_t uniformBuffers)
     {
         shaderc_compile_options_t options = CompileOptions(false);

@@ -84,6 +84,10 @@ namespace h3
         }
     }
 
+    // Reserves 4 GiB of address space for the guest (Windows: placeholder
+    // pages; elsewhere mmap), and maps the 512 MB of physical memory at
+    // 0xA0000000, 0xC0000000 and 0xE0000000: the same memory three times,
+    // as the console shows it.
     bool InitGuestMemory()
     {
         // Pages are committed lazily by the OS, so reserving the whole range
@@ -168,11 +172,13 @@ namespace h3
     }
 
 
+    // An empty heap over [base, end).
     GuestHeap::GuestHeap(uint32_t base, uint32_t end, uint32_t pageSize)
         : m_base(base), m_end(end), m_pageSize(pageSize)
     {
     }
 
+    // address 0: anywhere in the heap; otherwise exactly there, if free.
     uint32_t GuestHeap::Alloc(uint32_t size, uint32_t alignment, uint32_t address)
     {
         if (address == 0)
@@ -199,6 +205,8 @@ namespace h3
         return uint32_t(start);
     }
 
+    // First fit: walks the allocations in address order for a gap big
+    // enough (from the top when topDown).
     uint32_t GuestHeap::AllocInRange(uint32_t size, uint32_t alignment, uint32_t low, uint32_t high, bool topDown)
     {
         std::lock_guard lock(m_mutex);
@@ -248,6 +256,8 @@ namespace h3
         return uint32_t(candidate);
     }
 
+    // Forgets the allocation and zeroes its pages (the next user expects
+    // fresh, zeroed memory).
     bool GuestHeap::Free(uint32_t address)
     {
         uint32_t size;
@@ -263,12 +273,14 @@ namespace h3
         return true;
     }
 
+    // MEM_DECOMMIT: the pages read as zero again, but stay allocated.
     void GuestHeap::Decommit(uint32_t address, uint32_t size)
     {
         uint32_t start = address & ~(m_pageSize - 1);
         ZeroPages(start, uint32_t(AlignUp64(uint64_t(address) + size, m_pageSize) - start));
     }
 
+    // Total size of live allocations (memory statistics).
     uint64_t GuestHeap::AllocatedBytes() const
     {
         std::lock_guard lock(m_mutex);
@@ -278,6 +290,7 @@ namespace h3
         return total;
     }
 
+    // The allocation containing an address (NtQueryVirtualMemory).
     bool GuestHeap::Find(uint32_t address, uint32_t* allocBase, uint32_t* allocSize) const
     {
         std::lock_guard lock(m_mutex);
@@ -325,6 +338,7 @@ namespace h3
         return heap;
     }
 
+    // Which heap an address belongs to (by range).
     GuestHeap* HeapForAddress(uint32_t address)
     {
         for (GuestHeap* heap : { &VirtualHeap(kPageSize4K), &VirtualHeap(kPageSize64K), &PhysicalHeap(), &SystemHeap() })
@@ -335,6 +349,7 @@ namespace h3
         return nullptr;
     }
 
+    // Guest memory the runtime itself needs (kernel objects, thread blocks).
     uint32_t SystemAlloc(uint32_t size)
     {
         // Fresh pages are already zero.

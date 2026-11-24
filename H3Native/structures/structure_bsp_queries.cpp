@@ -19,6 +19,8 @@ namespace
     constexpr uint32_t kActiveBspMask = 0x828A1ECC;  // u32: bit i = structure BSP i is loaded
     constexpr uint32_t kMaxMaskedBsps = 16;
 
+    // Whether structure BSP index is loaded (bits past the mask's 16 read
+    // as not loaded).
     bool BspActive(int32_t index)
     {
         uint32_t mask = GuestRef<uint32_t>(kActiveBspMask);

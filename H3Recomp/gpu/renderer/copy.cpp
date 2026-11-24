@@ -327,12 +327,16 @@ void main()
         }
     }
 
+    // A nearest-neighbor, clamped sampler, made on first use.
     SDL_GPUSampler* PointSampler()
     {
         EnsurePointSampler();
         return g_pointSampler;
     }
 
+    // Copies a rectangle between textures of different formats or sample
+    // layouts with a small draw (a plain copy can't convert): mode picks the
+    // conversion; samplesX/Y average texels (MSAA resolves).
     void ConvertCopy(SDL_GPUTexture* source, SDL_GPUTexture* destination, SDL_GPUTextureFormat destinationFormat,
         uint32_t destinationWidth, uint32_t destinationHeight, int32_t sx, int32_t sy, int32_t dx, int32_t dy, uint32_t w,
         uint32_t h, CopyMode mode, bool depthFloat, float scale, int32_t samplesX, int32_t samplesY, uint32_t sampleMask)
@@ -344,6 +348,8 @@ void main()
             constants);
     }
 
+    // A rectangle of a target filled with one color (clears and resolves
+    // with clear).
     void FillRect(SDL_GPUTexture* destination, SDL_GPUTextureFormat format, int32_t x, int32_t y, uint32_t w, uint32_t h,
         const float color[4])
     {
@@ -355,6 +361,9 @@ void main()
             constants);
     }
 
+    // Halo draws its depth buffer's bytes as color to rewrite it: turns that
+    // color target back into real depth (see the EDRAM aliasing notes in
+    // ARCHITECTURE.md).
     void RestoreDepthFromBytes(SDL_GPUTexture* source, SDL_GPUTexture* depth, uint32_t width, uint32_t height, const SDL_Rect& rect,
         bool depthFloat)
     {
@@ -406,6 +415,7 @@ void main()
         SDL_EndGPURenderPass(pass);
     }
 
+    // The same for the stencil byte (drawn as red): one pass per stencil bit.
     void RestoreStencilFromBytes(SDL_GPUTexture* source, SDL_GPUTexture* depth, uint32_t width, uint32_t height, const SDL_Rect& rect)
     {
         GpuTimedScope timed{ "stencil restore" };  // H3_GPU_TIMING
@@ -471,6 +481,8 @@ void main()
         SDL_EndGPURenderPass(pass);
     }
 
+    // Presentation: the front buffer through the display gamma ramp the game
+    // set, as the console's display hardware applies it.
     void ApplyGammaRamp(SDL_GPUTexture* source, int32_t sourceX, int32_t sourceY, SDL_GPUTexture* destination, uint32_t width,
         uint32_t height, const GammaRamp& ramp)
     {

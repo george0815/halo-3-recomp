@@ -31,6 +31,8 @@ namespace
 }
 
 PPC_FUNC_IMPL(__imp__sub_820C51D0);
+// Runs at the call after the burst length is picked (return address
+// kAfterBurstCall): raises the actor's burst ticks to one 30 Hz tick.
 PPC_FUNC(sub_820C51D0)
 {
     if (uint32_t(ctx.lr) == kAfterBurstCall && h3::hooks::ContentFixes())

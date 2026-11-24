@@ -1,12 +1,15 @@
-#pragma once
-
 // Debug aid: with -DH3_TRACE_MODULE_CALLS=ON, every function in the
 // recompiled DLLs logs its entry (r3-r5) and return value (r3) to stderr.
 // Force-included into the module libraries before ppc_context.h.
 
+#pragma once
+
 #include <cstdint>
 #include <cstdio>
 
+// Constructed at each function's entry (PPC_FUNC_PROLOGUE below): logs
+// the call with its first arguments, indented by call depth, and its
+// return value (r3) when the scope ends.
 struct H3TraceScope
 {
     static inline thread_local int depth = 0;
@@ -21,6 +24,7 @@ struct H3TraceScope
         depth++;
     }
 
+    // On return: logs the function's result (r3).
     ~H3TraceScope()
     {
         depth--;

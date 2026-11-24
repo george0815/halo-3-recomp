@@ -61,6 +61,7 @@ namespace
         { "927a8c49062a55179d84116e33f8a5a0b3db13c1", "Halo 3 (disc, version 0.0.0.42)" },
     };
 
+    // The command summary (docs/ISO_TOOL.md describes each).
     int Usage()
     {
         fprintf(stderr, "usage: h3setup check <iso>\n"
@@ -73,6 +74,7 @@ namespace
         return 2;
     }
 
+    // Opens and indexes the disc image, printing why when it can't.
     bool OpenIso(h3setup::Iso& iso, const std::filesystem::path& path)
     {
         if (iso.Open(path))
@@ -113,6 +115,8 @@ namespace
         return false;
     }
 
+    // `extract`: copies every file of the disc into <install>/game, skipping
+    // files an earlier run already copied (same size), with progress lines.
     int Extract(h3setup::Iso& iso, const std::filesystem::path& directory)
     {
         uint64_t total = 0, done = 0;
@@ -185,6 +189,7 @@ namespace
         return status == 0;
     }
 
+    // A whole file as bytes (empty if it can't be read).
     std::string ReadText(const std::filesystem::path& path)
     {
         std::ifstream in(path, std::ios::binary);
@@ -243,6 +248,10 @@ namespace
             Run({ Utf8(info), Utf8(input), "--stubs", Utf8(output / "import_stubs.cpp") }, build / "stubs.log");
     }
 
+    // `recompile`: runs XenonRecomp over default.xex and each DLL the
+    // package has a config for, into <install>/build (ppc/ and modules/),
+    // plus each one's import stubs.
+    // Prints "progress recompile <percent>" lines for the launcher.
     int Recompile(std::filesystem::path install, std::filesystem::path configs, std::filesystem::path tools)
     {
         // XenonRecomp reads a config's paths relative to the config itself.
@@ -294,8 +303,11 @@ namespace
     // start doesn't stutter on each new shader. Optional: on failure the
     // game still compiles them as it meets them. Relays the game's
     // "progress shaders <percent>" lines from its log.
-    int PrecompileShaders(const std::filesystem::path& install, const std::filesystem::path& package)
+    int PrecompileShaders(const std::filesystem::path& installArg, const std::filesystem::path& packageArg)
     {
+        // Absolute, as the other steps use them: Windows' CreateProcess
+        // doesn't find a program by a relative path with forward slashes.
+        std::filesystem::path install = std::filesystem::absolute(installArg), package = std::filesystem::absolute(packageArg);
         std::filesystem::path exe = install /
 #ifdef _WIN32
             "H3Recomp.exe";
@@ -340,6 +352,8 @@ namespace
     }
 }
 
+// The commands (Usage). Arguments are UTF-8 on every platform (Windows
+// reads its wide command line).
 int main(int argcNarrow, char** argvNarrow)
 {
     // The arguments as UTF-8 (Windows: from the UTF-16 command line; argv

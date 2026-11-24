@@ -42,6 +42,7 @@ MAX_OFFSET = 1024
 JUNK_DWORDS = 2         # trailing dwords that aren't microcode
 
 
+# FNV-1a, 64-bit: the same hash precompile.cpp checks.
 def fnv64(data):
     h = 0xCBF29CE484222325
     for b in data:
@@ -65,6 +66,8 @@ def load_regions(dumps):
     return regions
 
 
+# Matches each recorded shader to its map region, verifies the rebuilt
+# GLSL, and writes the manifest (usage at the top of the file).
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('recorded')

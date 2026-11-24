@@ -37,6 +37,8 @@ GLOBALS_TAG = 0x827CF604
 WIDTH = {'lbz': 1, 'lhz': 2, 'lha': 2, 'lwz': 4, 'lfs': 4, 'lfd': 8, 'ld': 8}
 
 
+# {address: disassembly lines} for every recompiled function (the
+# generated code keeps each instruction as a comment).
 def load_functions():
     functions = {}
     for path in glob.glob(os.path.join(PPC, 'ppc_recomp.*.cpp')):
@@ -54,6 +56,7 @@ def load_functions():
     return functions
 
 
+# An instruction's 16-bit immediate as printed (already signed).
 def signed16(text):
     return int(text)
 
@@ -62,16 +65,19 @@ class Layouts:
     """Field lookup in the 360 layouts: flattened (embedded structs and
     arrays expanded) field starts per struct."""
 
+    # defs: the layout JSON; flat_cache: flattened structs, computed once.
     def __init__(self, defs):
         self.defs = defs
         self.flat_cache = {}
 
+    # {offset: field} for a struct with embedded structs and arrays expanded.
     def flat(self, sid):
         if sid in self.flat_cache:
             return self.flat_cache[sid]
         out = {}
         structs = self.defs['structs']
 
+        # Adds a struct's fields at their absolute offsets, named by path.
         def walk(sid, at, prefix):
             for f in structs[sid]['fields']:
                 o = at + f['offset']
@@ -99,6 +105,7 @@ class Layouts:
             at += self.defs['structs'][sid]['size']
         return out
 
+    # The same for a whole tag group, its ancestors' fields included.
     def group_flat(self, tag):
         out = {}
         for sid, at in self.group_chain(tag):
@@ -139,6 +146,7 @@ class Layouts:
                 return False
         return True
 
+    # The groups whose layout fits every (offset, width) read.
     def candidates(self, reads):
         return [tag for tag in self.defs['groups'] if reads and self.fits(self.group_flat(tag), reads)]
 
@@ -151,6 +159,7 @@ def annotate(name, body, layouts, out=print):
     tags = {}   # key -> {'group': tag or None, 'struct': sid or None, 'reads': [(offset, width, line)]}
     keyn = [0]
 
+    # A new symbolic tag pointer to track reads through.
     def new_tag(group=None, struct=None, origin=''):
         keyn[0] += 1
         k = f'T{keyn[0]}'
@@ -264,6 +273,7 @@ def annotate(name, body, layouts, out=print):
                 out(f'      {g}: ' + '; '.join(f'{o:#x} {layouts.describe(gf, o, w)}' for o, w in reads))
 
 
+# The two forms at the top of the file: annotate functions, or --list.
 def main():
     if len(sys.argv) < 3:
         sys.exit(__doc__)

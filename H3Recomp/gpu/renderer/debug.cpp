@@ -222,6 +222,8 @@ namespace h3::gpu::renderer::internal
         }
     }
 
+    // Saves a host texture as a PNG (waits for the GPU: debugging only).
+    // Half-float textures are converted to 8 bits per channel.
     void DumpTexture(SDL_GPUTexture* texture, uint32_t width, uint32_t height, const char* path, SDL_GPUTextureFormat format)
     {
         FenceMemExports();  // this submits g_commands
@@ -289,6 +291,7 @@ namespace h3::gpu::renderer::internal
         SDL_ReleaseGPUTransferBuffer(g_device, download);
     }
 
+    // H3_DUMP_DRAWS: after each queued draw in range, saves a color target.
     void DumpAfterDraw()
     {
         // H3_DUMP_DRAWS=<first>-<last> (with H3_DUMP_FRAME): save color
@@ -365,6 +368,7 @@ namespace h3::gpu::renderer::internal
             targets.colorFormat[index]);
     }
 
+    // H3_DUMP_PRIM: saves a color target around draws of one primitive type.
     void DumpAroundPrimitive(uint32_t primitive, bool after)
     {
         // H3_DUMP_PRIM=<primitive type> (with H3_DUMP_FRAME): save color
@@ -385,6 +389,7 @@ namespace h3::gpu::renderer::internal
         DumpTexture(targets.color[0], kDumpTargetWidth * g_renderScale, kDumpTargetHeight * g_renderScale, path, targets.colorFormat[0]);
     }
 
+    // H3_DUMP_RESTORE: saves both sides of each depth restore in a frame.
     void DumpDepthAfterRestore(SDL_GPUTexture* bytes, SDL_GPUTextureFormat bytesFormat, SDL_GPUTexture* depth)
     {
         // H3_DUMP_RESTORE=<frame>: after each depth restore in that frame,
@@ -416,6 +421,7 @@ namespace h3::gpu::renderer::internal
         DumpTexture(floats, kDumpTargetWidth * g_renderScale, kDumpTargetHeight * g_renderScale, path, SDL_GPU_TEXTUREFORMAT_R32_FLOAT);
     }
 
+    // H3_HIGHLIGHT_VS's pixel shader: solid magenta.
     SDL_GPUShader* HighlightFragmentShader()
     {
         static SDL_GPUShader* shader = CompileInternal(R"(#version 450
@@ -425,6 +431,8 @@ void main() { xe_color = vec4(1.0, 0.0, 1.0, 1.0); }
         return shader;
     }
 
+    // H3_HIGHLIGHT_VS=<hash prefix>: whether this draw's vertex shader is the
+    // one to draw in magenta (to find it on screen).
     bool HighlightDraw(const Shader& vs)
     {
         // Matched by the capture's microcode hash (gpu_shaders/vs_<hash>.bin:
@@ -451,6 +459,8 @@ void main() { xe_color = vec4(1.0, 0.0, 1.0, 1.0); }
 
     std::vector<VsDataCheck> g_vsDataChecks;
 
+    // H3_VERIFY_VS_DATA: reads the logged draws' vertex data back from the
+    // draw buffer and reports records that came out all zero.
     void VerifyVsData(SDL_GPUBuffer* buffer, const std::unordered_map<uint64_t, uint32_t>& staged)
     {
         for (const VsDataCheck& check : g_vsDataChecks)
@@ -525,6 +535,8 @@ void main() { xe_color = vec4(1.0, 0.0, 1.0, 1.0); }
         g_vsDataChecks.clear();
     }
 
+    // H3_LOG_VS_DATA=<vs hash prefix>: logs the vertex data the matching
+    // draws fetch.
     void LogVertexData(const Shader& vs, uint32_t initiator)
     {
         static const char* wanted = EnvString("H3_LOG_VS_DATA");
@@ -616,6 +628,7 @@ void main() { xe_color = vec4(1.0, 0.0, 1.0, 1.0); }
         }
     }
 
+    // H3_POKE: writes bytes into guest memory at a chosen frame.
     void PokeMemoryAtSwap()
     {
         // H3_POKE=<frame>:<address>:<hex bytes>[,...]: write those bytes
@@ -654,6 +667,7 @@ void main() { xe_color = vec4(1.0, 0.0, 1.0, 1.0); }
         }
     }
 
+    // H3_DUMP_MEMORY: saves guest memory ranges at a chosen frame.
     void DumpMemoryAtSwap()
     {
         // H3_DUMP_MEMORY=<frame>:<address>:<bytes>[,...]: save guest memory
@@ -687,6 +701,8 @@ void main() { xe_color = vec4(1.0, 0.0, 1.0, 1.0); }
         }
     }
 
+    // At each swap: H3_DUMP_FRAME / H3_SNAPSHOT_* screenshots of the
+    // presented frame.
     void DumpFrameAtSwap(uint32_t frontbuffer, SDL_GPUTexture* texture, uint32_t width, uint32_t height, SDL_GPUTextureFormat format)
     {
         // H3_DUMP_FRAME=<n>: save the n-th presented frame as frame_<n>.png

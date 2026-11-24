@@ -18,6 +18,8 @@
 #include <iterator>
 #include <vector>
 
+// Translates each file and writes the GLSL (usage at the top of the
+// file); --disasm prints disassembly instead.
 int main(int argc, char** argv)
 {
     bool disasm = false, compute = false;

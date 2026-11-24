@@ -99,6 +99,7 @@ def ancestors(defs, tag):
     return out
 
 
+# A group tag's four characters ("bitm" from 0x6269746D).
 def tag_string(value):
     return value.to_bytes(4, 'big').decode('latin1')
 
@@ -109,6 +110,8 @@ class Image:
     """tool.exe as it is after static initialization: .data/.rdata from the
     gdb dumps, everything else from the file."""
 
+    # Maps tool.exe's sections from the file, then overlays the memory dumps
+    # of its initialized data.
     def __init__(self, work):
         d = open(f'{work}/tool.exe', 'rb').read()
         pe = struct.unpack_from('<I', d, 0x3C)[0]
@@ -128,20 +131,25 @@ class Image:
                 content = d[raw:raw + raw_size]
             self.regions.append((self.base + address, content))
 
+    # (bytes, offset) holding a virtual address, or (None, None).
     def locate(self, address):
         for start, content in self.regions:
             if start <= address < start + len(content):
                 return content, address - start
         return None, None
 
+    # A little-endian 64-bit value at a virtual address (tool.exe is x64), or
+    # None if unmapped.
     def q(self, address):
         content, o = self.locate(address) if address else (None, None)
         return struct.unpack_from('<Q', content, o)[0] if content is not None and o + 8 <= len(content) else None
 
+    # A little-endian 32-bit value, or None.
     def u32(self, address):
         content, o = self.locate(address) if address else (None, None)
         return struct.unpack_from('<I', content, o)[0] if content is not None else None
 
+    # A null-terminated string at an address, or None.
     def string(self, address, limit=1024):
         content, o = self.locate(address) if address else (None, None)
         if content is None:
@@ -160,10 +168,14 @@ class Image:
 class Definitions:
     """Walks the definitions in an Image and produces the JSON layout."""
 
+    # image: tool.exe's memory; lazy: structs whose fields are filled in by
+    # another definition at runtime.
     def __init__(self, image):
         self.image = image
         self.lazy = {}  # struct definition -> the one its fields come from
 
+    # A struct definition's field list: walks its field entries (type,
+    # name, details) up to the terminator.
     def fields(self, struct_def):
         out, entry = [], self.image.q(self.resolve(struct_def) + 0x30)
         while entry:
@@ -175,6 +187,7 @@ class Definitions:
             entry += 32
         return out
 
+    # The definition a lazily filled struct takes its fields from.
     def resolve(self, struct_def):
         return self.lazy.get(struct_def, struct_def)
 
@@ -201,6 +214,7 @@ class Definitions:
                     i = content.find(pattern, i + 1)
         return found
 
+    # A tag group definition's root struct.
     def group_struct(self, group_def):
         return self.image.q(self.image.q(group_def + 0x20) + 0x20)
 
@@ -214,6 +228,7 @@ class Definitions:
                 if parent in structs:
                     self.lazy[structs[tag]] = structs[parent]
 
+    # An enum or flags definition's names (at most 64).
     def string_list(self, definition):
         count, strings = self.image.q(definition + 8), self.image.q(definition + 16)
         if not count or count > 64 or not strings:
@@ -224,6 +239,8 @@ class Definitions:
         """The JSON layout: groups, and every struct they reach."""
         ids, structs, order = {}, {}, []
 
+        # The JSON id for a struct definition (its name, made unique), adding it
+        # to the output the first time.
         def struct_id(struct_def):
             struct_def = self.resolve(struct_def)
             if struct_def in ids:
@@ -291,6 +308,8 @@ def layout(defs):
     structs = defs['structs']
     done = {}
 
+    # A struct's 360 size: its fields' sizes in order, embedded structs
+    # recursively (memoized).
     def size(sid, depth=0):
         if sid in done:
             return done[sid]
@@ -317,6 +336,7 @@ class Map:
     """Just enough of a cache file for validation (H3Native/cache has the
     real reader)."""
 
+    # Reads the header, the tag section and the tag table.
     def __init__(self, path):
         f = open(path, 'rb')
         h = f.read(0x3000)
@@ -332,15 +352,18 @@ class Map:
         self.groups = [struct.unpack('>4I', self.read(group_table + 16 * i, 16)) for i in range(group_count)]
         self.tags = [struct.unpack('>HHI', self.read(tag_table + 8 * i, 8)) for i in range(tag_count)]
 
+    # Whether a range is inside the tag section.
     def contains(self, address, size=1):
         return self.base <= address and address - self.base + size <= len(self.data)
 
+    # Bytes from the tag section (ValueError outside it).
     def read(self, address, size):
         if not self.contains(address, size):
             raise ValueError(f'{address:08x} is outside the tag section')
         o = address - self.base
         return self.data[o:o + size]
 
+    # Whether a tag reference names a real tag of that group (or none).
     def datum_ok(self, datum, group):
         if datum == NO_GROUP:
             return True
@@ -357,6 +380,7 @@ class Validator:
     """Checks a map's tags against the layouts; counts failures per struct."""
     MAX_ELEMENTS = 256  # per block, to bound the walk
 
+    # Failure and check counters per struct, and an example failure each.
     def __init__(self, defs, cache):
         self.defs, self.cache = defs, cache
         self.failures = collections.Counter()
@@ -364,10 +388,13 @@ class Validator:
         self.strong = collections.Counter()  # passes that zeros or garbage rarely produce
         self.examples = {}
 
+    # Counts a failed check on a struct and keeps the first example.
     def fail(self, sid, what):
         self.failures[sid] += 1
         self.examples.setdefault(sid, what)
 
+    # Checks one struct instance at an address against its layout: block
+    # counts and addresses, references, string ids; recurses into blocks.
     def walk(self, sid, address, depth=0):
         if depth > 16:
             return
@@ -463,6 +490,7 @@ def plugin_tree(path):
     import xml.etree.ElementTree as ET
     root = ET.parse(path).getroot()
 
+    # The tag blocks directly under an XML node, with their children.
     def blocks(node):
         out = []
         for child in node:
@@ -478,6 +506,7 @@ def flat_blocks(defs, sids, base=0):
     arrays flattened, as the plugins have them): [(offset, struct id, name)]."""
     out = []
     for sid in sids:
+        # Collects block fields, flattening embedded structs.
         def walk(sid, at):
             for f in defs['structs'][sid]['fields']:
                 if f['type'] == 'block':
@@ -500,6 +529,8 @@ def compare(defs, plugins):
         st.pop('plugin', None)
     verdicts = {}  # struct id -> (360 size, plugin path)
 
+    # Pairs our struct(s) for a plugin block with it: records the plugin's
+    # 360 size per struct, then recurses into matching child blocks.
     def match(sids, our_size, size, blocks, path):
         if len(sids) == 1:
             verdicts.setdefault(sids[0], (size, path))
@@ -623,6 +654,7 @@ def merge(defs, plugins, log=print):
     structs = defs['structs']
     rebuilt = {}  # struct id -> (plugin path, size) it was rebuilt from
 
+    # A struct's block fields.
     def block_fields(sid):
         return [f for f in structs[sid]['fields'] if f['type'] == 'block']
 
@@ -667,10 +699,13 @@ def merge(defs, plugins, log=print):
     def same_shape(sid, fields):
         """Whether the plugin's tag references and blocks sit where ours
         have the same kind of field (a same-size struct can still differ)."""
+        # The fields that must line up (references, blocks, data) as
+        # (offset, type).
         def anchors(fs):
             return {(f['offset'], f['type']) for f in fs if f['type'] in ('tag reference', 'block', 'data')}
         ours = set()
 
+        # Our fields with embedded structs flattened, as plugins have them.
         def flat(sid, at):  # embedded structs flattened, as plugins have them
             for f in structs[sid]['fields']:
                 if f['type'] == 'struct':
@@ -680,6 +715,7 @@ def merge(defs, plugins, log=print):
         flat(sid, 0)
         return anchors(fields) <= ours
 
+    # A new struct id for a rebuilt block (unique, "<name>_block_360").
     def new_struct(path, fields):
         base, n = identifier(path.split('/')[-1], 'block') + '_block_360', 2
         sid = base
@@ -697,6 +733,7 @@ def merge(defs, plugins, log=print):
         # them: (absolute offset, the field) so pairing can update the field.
         flat = []
 
+        # Flattens a struct's block fields with their absolute offsets.
         def collect(sid, at):
             for f in structs[sid]['fields']:
                 if f['type'] == 'block':
@@ -721,6 +758,7 @@ def merge(defs, plugins, log=print):
         for t in chain[1:]:
             name = defs['groups'][t]['name'].replace('_', ' ').upper()
 
+            # Whether a plugin section comment's title names this group.
             def titled(title):  # "BIPED", or "MACHINE" for device_machine
                 title = title.strip().upper()
                 return title == name or (title.split() or [''])[0] == name.split()[-1]
@@ -751,6 +789,8 @@ def merge(defs, plugins, log=print):
     return rebuilt
 
 
+# A deep copy of an XML element (the plugin trees are edited while
+# merging).
 def copy_element(element):
     import copy
     return copy.deepcopy(element)
@@ -839,6 +879,8 @@ HOST_SCALARS = {'string_id': 'uint32_t', 'tag_reference': 'TagReference', 'tag_d
     'pageable_resource': 'PageableResource', 'int8_t': 'int8_t', 'uint8_t': 'uint8_t'}
 
 
+# The host (native-endian) C++ type for a layout field type: be<T> -> T,
+# special scalars from HOST_SCALARS.
 def host_type(layout_type):
     if layout_type in HOST_SCALARS:
         return HOST_SCALARS[layout_type]
@@ -851,6 +893,7 @@ def struct_order(defs):
     structs = defs['structs']
     order, state = [], {}
 
+    # Depth-first: a struct's embedded structs are emitted before it.
     def visit(sid):
         if state.get(sid) == 'done':
             return
@@ -1016,12 +1059,15 @@ def convert_source(defs):
     return '\n'.join(out)
 
 
+# The `header` command's tag_layouts.h text: every struct in the cache
+# file's layout, embedded structs first.
 def header(defs):
     structs = defs['structs']
     names = {sid: identifier(sid, 'struct') for sid in structs}
     # Embedded structs must be complete before use; blocks only need a name.
     order, state = [], {}
 
+    # (The same ordering for the layout header.)
     def visit(sid):
         if state.get(sid) == 'done':
             return
@@ -1075,6 +1121,8 @@ def header(defs):
 
 # --- main -----------------------------------------------------------------
 
+# The commands at the top of the file: extract, validate, compare, merge,
+# header.
 def main():
     if len(sys.argv) >= 5 and sys.argv[1] == 'extract':
         work, map_path, out = sys.argv[2:5]

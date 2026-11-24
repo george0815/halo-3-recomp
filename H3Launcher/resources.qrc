@@ -2,5 +2,6 @@
 <RCC version="1.0">
     <qresource prefix="/">
         <file alias="launcher_background.jpg">../assets/launcher_background_hd.jpg</file>
+        <file alias="icon.png">../assets/icon.png</file>
     </qresource>
 </RCC>

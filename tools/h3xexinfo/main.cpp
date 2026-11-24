@@ -27,6 +27,8 @@
 
 namespace
 {
+    // A setting XenonRecomp needs (a register save/restore helper's address)
+    // and the instruction bytes that find it.
     struct HelperPattern
     {
         const char* key;
@@ -48,6 +50,8 @@ namespace
 
     constexpr std::string_view kImportPrefix = "__imp__";
 
+    // Every 4-byte-aligned address in the code sections where the pattern
+    // starts.
     std::vector<size_t> FindPattern(const Image& image, const std::vector<uint8_t>& pattern)
     {
         std::vector<size_t> matches;
@@ -66,6 +70,7 @@ namespace
         return matches;
     }
 
+    // The image's import thunks (XenonRecomp names them __imp__<name>).
     std::vector<const Symbol*> CollectImports(const Image& image)
     {
         std::vector<const Symbol*> imports;
@@ -108,6 +113,9 @@ namespace
         return libraries;
     }
 
+    // --stubs: one weak definition per import, so the build links before the
+    // runtime implements them (strong definitions in kernel/ win). Imports
+    // from the game's own DLLs call into the loaded module instead.
     bool WriteStubs(const std::vector<const Symbol*>& imports, const std::map<size_t, std::string>& moduleImports,
         const char* path)
     {
@@ -138,8 +146,11 @@ namespace
         }
         return true;
     }
+
 }
 
+// Prints the image layout and the helper addresses, then does whatever
+// the options ask (--imports, --stubs, --dump).
 int main(int argc, char* argv[])
 {
     if (argc < 2)

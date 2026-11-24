@@ -63,6 +63,8 @@ def objects(state):
     return out
 
 
+# {datum: tag path} from h3tags' tag listing of a map (empty without
+# --tags), to print names instead of numbers.
 def tag_names(map_path):
     if not map_path:
         return {}
@@ -76,6 +78,8 @@ def tag_names(map_path):
     return names
 
 
+# Parses the arguments (top of the file), loads both records at the
+# ticks asked for, and prints the per-tag comparison for each tick.
 def main():
     args = sys.argv[1:]
     names = {}

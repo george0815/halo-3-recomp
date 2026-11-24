@@ -7,8 +7,11 @@ add_executable(H3Launcher
     halo_font.cpp
     key_names.cpp
     launcher_window.cpp
-    resources.qrc   # the background art, embedded
+    resources.qrc   # the background art and the icon, embedded
 )
+if (WIN32)
+    target_sources(H3Launcher PRIVATE ${PROJECT_SOURCE_DIR}/cmake/icon.rc)  # the .exe's file icon
+endif()
 set_target_properties(H3Launcher PROPERTIES AUTORCC ON)
 find_package(SDL3 REQUIRED CONFIG)  # gamepad navigation
 target_link_libraries(H3Launcher PRIVATE H3Config Qt6::Widgets SDL3::SDL3)

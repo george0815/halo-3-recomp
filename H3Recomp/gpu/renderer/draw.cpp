@@ -32,21 +32,27 @@ namespace h3::gpu::renderer::internal
         template <typename T>
         struct UninitializedAllocator : std::allocator<T>
         {
+            // What std::vector needs from an allocator: the same allocator for
+            // another element type.
             template <typename U>
             struct rebind
             {
                 using other = UninitializedAllocator<U>;
             };
             UninitializedAllocator() = default;
+            // Converting copy (stateless allocator: nothing to copy).
             template <typename U>
             UninitializedAllocator(const UninitializedAllocator<U>&) noexcept
             {
             }
+            // The trick: construct with no arguments default-initializes (leaves a
+            // uint32_t as garbage) instead of value-initializing it to zero.
             template <typename U>
             void construct(U* p) noexcept
             {
                 ::new (static_cast<void*>(p)) U;
             }
+            // Construction with arguments works as usual.
             template <typename U, typename... Args>
             void construct(U* p, Args&&... args)
             {
@@ -296,6 +302,7 @@ namespace h3::gpu::renderer::internal
                     Grow(uint32_t(needed - m_flushStart));
                 return reinterpret_cast<uint32_t*>(m_mapped + m_cursor);
             }
+            // After writing into Reserve's space: how many dwords were actually used.
             void Commit(uint32_t dwords) { m_cursor += dwords * 4; }
             // Reserve + Commit: dwords to fill in.
             uint32_t* Append(uint32_t dwords)
@@ -402,6 +409,9 @@ namespace h3::gpu::renderer::internal
         // Range alignment in the buffer (bytes).
         constexpr uint32_t kResidentAlign = 16;
 
+        // A vertex range kept in the resident buffer across frames (see the
+        // comment above): where it is, its size, the hash of the guest data it
+        // was uploaded from, and the frame it was last drawn in.
         struct ResidentRange
         {
             uint32_t offset = 0;  // bytes into g_residentBuffer
@@ -568,6 +578,10 @@ namespace h3::gpu::renderer::internal
         void EndFrameResident();
     }
 
+    // Drops resident vertex ranges overlapping [begin, end) (physical
+    // addresses) because memory export is about to write there: their copies
+    // would go stale. Their buffer space is retired, then freed once the GPU
+    // can no longer be using it.
     void ForgetResident(uint32_t begin, uint32_t end)
     {
         std::erase_if(g_resident, [&](const auto& item) {
@@ -583,6 +597,9 @@ namespace h3::gpu::renderer::internal
 
     namespace
     {
+        // Once per frame: frees resident-buffer space whose last uploads are
+        // old enough to have finished (kTransferAge frames), and every
+        // kResidentIdleFrames frames retires ranges no draw used in that long.
         void EndFrameResident()
         {
             std::erase_if(g_residentRetired, [](const RetiredSpace& space) {
@@ -701,6 +718,11 @@ namespace h3::gpu::renderer::internal
         std::unique_ptr<PendingDraw> g_lastDebugDraw;
         uint32_t g_lastDebugVariants = 0;
 
+        // Adds a translated draw to the pending list with a snapshot of the
+        // constants its two shaders read (the guest may change them before the
+        // flush). With uniform constants each draw gets its own snapshot;
+        // otherwise draws whose snapshots didn't change share one header naming
+        // them. Keeps a copy of the last draw with debug variants (F10 captures).
         void QueueDraw(std::unique_ptr<PendingDraw> draw)
         {
             const shader::ShaderInfo* infos[2] = { &g_vertexShader->info, &g_pixelShader->info };
@@ -1172,6 +1194,8 @@ namespace h3::gpu::renderer::internal
         }
     }
 
+    // The bool and loop constants (shader control flow: if/loop counts), from
+    // the registers into the system constants a draw carries.
     void SetControlConstants(SystemConstants& system)
     {
         for (uint32_t i = 0; i < kBoolConstantWords; i++)
@@ -1180,6 +1204,8 @@ namespace h3::gpu::renderer::internal
             system.loops[i] = ReadRegister(kRegShaderConstantLoop + i);
     }
 
+    // A draw's indices as a plain vector (for code outside the draw path:
+    // memory export, debugging), see internal.h.
     std::vector<uint32_t> GuestDrawIndices(uint32_t initiator, uint32_t indexBase, uint32_t dmaSize)
     {
         StagingVector indices = GuestIndices(initiator, indexBase, dmaSize);
@@ -1222,6 +1248,10 @@ namespace h3::gpu::renderer::internal
         }
     }
 
+    // Records every pending draw into the command buffer: uploads this
+    // flush's staged data, begins one render pass on the current targets and
+    // records the draws in order (internal.h: call before anything that can't
+    // happen inside a render pass, like resolves and copies).
     void Flush()
     {
         // Queued memory exports first: the draws may read their results
@@ -1431,8 +1461,12 @@ namespace h3::gpu::renderer::internal
         g_constantArena.clear();
     }
 
+    // Whether the last draw's pixel shader has H3_DEBUG_PS variants to replay.
     bool HasDebugVariants() { return g_lastDebugDraw && g_lastDebugVariants; }
 
+    // Deep captures (F10): draws the last draw again once per H3_DEBUG_PS
+    // variant, calling readback(variant) after each so the capture can save
+    // what that variant wrote.
     void ReplayDebugVariants(const std::function<void(uint32_t)>& readback)
     {
         if (!g_lastDebugDraw || !g_lastDebugVariants)
@@ -1454,6 +1488,8 @@ namespace h3::gpu::renderer::internal
         g_lastDebugVariants = 0;
     }
 
+    // At each swap: the frame's upload buffers are done, so forget every
+    // offset into them, and retire/free resident space (EndFrameResident).
     void EndFrameBuffers()
     {
         g_memoryBase = g_indexBase = g_constantBase = 0;
@@ -1477,6 +1513,9 @@ namespace h3::gpu::renderer::internal
         RetireTransfers();
     }
 
+    // The current draw's depth bias (decals, shadow maps): PA_SU_POLY_OFFSET's
+    // scale and offset for front or back faces, converted to the host's depth
+    // units (pixelScale: host texels per guest pixel).
     PolygonOffset CurrentPolygonOffset(uint32_t modeControl, float pixelScale)
     {
         // One offset per draw: the host can't pick per facing, so the front
@@ -1505,6 +1544,7 @@ namespace h3::gpu::renderer::internal
         return offset;
     }
 
+    // GPU buffers the draw path holds (for the memory log).
     VideoMemoryUse DrawBufferMemory()
     {
         VideoMemoryUse use;
@@ -1513,6 +1553,8 @@ namespace h3::gpu::renderer::internal
         return use;
     }
 
+    // Upload (transfer) buffers the draw path holds, free and in flight (for
+    // the memory log).
     VideoMemoryUse UploadBufferMemory()
     {
         VideoMemoryUse use;
@@ -1529,11 +1571,17 @@ namespace h3::gpu::renderer::internal
         return use;
     }
 
+    // The render targets the pending draws go to (draw dumps).
     const TargetSet& CurrentTargetSet()
     {
         return g_targets;
     }
 
+    // A draw command from the command processor (DRAW_INDX): checks the
+    // EDRAM mode, picks the targets, translates the shaders, binds textures,
+    // stages vertices, indices and constants, and queues the draw for the
+    // next Flush. initiator is VGT_DRAW_INITIATOR (primitive type, index
+    // source and size); indexBase and dmaSize locate an index buffer.
     void Draw(uint32_t initiator, uint32_t indexBase, uint32_t dmaSize)
     {
         uint32_t primitive = initiator & 0x3F;

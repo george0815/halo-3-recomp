@@ -46,10 +46,12 @@ namespace h3::net
 #ifdef _WIN32
         using Socket = SOCKET;
         constexpr Socket kNoSocket = INVALID_SOCKET;
+        // Winsock and POSIX close sockets differently.
         void CloseSocket(Socket s) { closesocket(s); }
 #else
         using Socket = int;
         constexpr Socket kNoSocket = -1;
+        // (POSIX.)
         void CloseSocket(Socket s) { close(s); }
 #endif
 
@@ -63,6 +65,7 @@ namespace h3::net
         constexpr uint8_t kFlagSecure = 1;   // sent to the destination's secure address
         constexpr uint8_t kFlagRelayed = 2;  // forwarded by a game in between (not again)
 
+        // The tunnel header's fields (see WriteHeader for the byte layout).
         struct Header
         {
             uint8_t version = kVersion;
@@ -73,11 +76,15 @@ namespace h3::net
             uint16_t sourcePort = 0, destPort = 0;
         };
 
+        // Big-endian (network order) field writes and reads.
         void Put16(uint8_t* p, uint16_t v) { p[0] = uint8_t(v >> 8), p[1] = uint8_t(v); }
         void Put32(uint8_t* p, uint32_t v) { Put16(p, uint16_t(v >> 16)), Put16(p + 2, uint16_t(v)); }
         uint16_t Get16(const uint8_t* p) { return uint16_t(p[0] << 8 | p[1]); }
         uint32_t Get32(const uint8_t* p) { return uint32_t(Get16(p)) << 16 | Get16(p + 2); }
 
+        // The header's wire layout (kHeaderSize bytes): magic, version, flags,
+        // tick rate, build ID, source and destination virtual IP, source and
+        // destination port.
         void WriteHeader(uint8_t* out, const Header& h)
         {
             Put32(out, kMagic);
@@ -91,6 +98,8 @@ namespace h3::net
             Put16(out + 22, h.destPort);
         }
 
+        // False for anything else arriving on the port (too short, or without
+        // the magic): another program's datagrams are dropped, not delivered.
         bool ReadHeader(const uint8_t* in, size_t size, Header& h)
         {
             if (size < kHeaderSize || Get32(in) != kMagic)
@@ -114,6 +123,7 @@ namespace h3::net
         // FNV-1a of all three.
         constexpr uint32_t kGameCodeBegin = 0x82080000, kGameCodeEnd = 0x8270E554;  // .text of default.xex
 
+        // FNV-1a, 32-bit, continuing from hash.
         uint32_t Fnv(uint32_t hash, const uint8_t* bytes, size_t size)
         {
             for (size_t i = 0; i < size; i++)
@@ -121,6 +131,8 @@ namespace h3::net
             return hash;
         }
 
+        // The build ID described above, computed once when the link starts
+        // (the game's first network call; its code is loaded by then).
         uint32_t BuildId()
         {
             uint32_t hash = Fnv(2166136261u, reinterpret_cast<const uint8_t*>(H3_VERSION), strlen(H3_VERSION));
@@ -140,6 +152,7 @@ namespace h3::net
             }
         };
 
+        // "a.b.c.d:port", for the log.
         std::string Describe(const sockaddr_in& a)
         {
             char text[INET_ADDRSTRLEN] = "?";
@@ -183,12 +196,19 @@ namespace h3::net
             return true;
         }
 
+        // One datagram, header included. Failures are ignored: like a real LAN
+        // it's unreliable, and the game's own protocol retries.
         void SendTo(const Endpoint& endpoint, const uint8_t* packet, size_t size)
         {
             sendto(g_socket, reinterpret_cast<const char*>(packet), int(size), 0,
                 reinterpret_cast<const sockaddr*>(&endpoint.address), sizeof(endpoint.address));
         }
 
+        // The receive thread: every datagram on the host port. Drops our own
+        // broadcasts and other builds' packets (logged once per build), forwards
+        // packets meant for another game (see below), learns each sender's real
+        // address, and queues the payload on its virtual destination port for
+        // the game's recvfrom.
         void ReceiveLoop()
         {
             uint8_t packet[kHeaderSize + kMaxDatagram];
@@ -262,6 +282,9 @@ namespace h3::net
         }
     }
 
+    // Starts the link (from the game's first network call): a random virtual
+    // IP, the build ID, the UDP socket on the configured port with broadcast
+    // on, the friends list resolved, and the receive thread.
     bool Start()
     {
         const config::NetworkSettings& settings = config::Active().network;

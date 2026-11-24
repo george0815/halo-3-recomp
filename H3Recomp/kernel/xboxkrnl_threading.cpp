@@ -53,6 +53,7 @@ PPC_FUNC(__imp__KeEnterCriticalRegion)
 {
 }
 
+// Nothing to undo either.
 PPC_FUNC(__imp__KeLeaveCriticalRegion)
 {
 }
@@ -74,6 +75,9 @@ namespace
     constexpr uint32_t kCsRecursionCount = 0x14;
     constexpr uint32_t kCsOwningThread = 0x18;
 
+    // Where threads sleep while a critical section is held: one bucket per
+    // address hash, with a count of sleepers so the leaving thread only
+    // signals when someone waits.
     struct CsWaitBucket
     {
         std::mutex mutex;
@@ -252,6 +256,9 @@ namespace
         return std::atomic_ref<uint64_t>(*GuestPtr<uint64_t>(address));
     }
 
+    // The header's fields as this code reads it (64 bits, big-endian as one
+    // value): the first entry's address in the high word, then the depth
+    // and a sequence number that changes on every push.
     uint64_t SListNext(uint64_t header) { return header >> 32; }
     uint64_t SListDepth(uint64_t header) { return (header >> 16) & 0xFFFF; }
     uint64_t SListSequence(uint64_t header) { return header & 0xFFFF; }
@@ -362,12 +369,16 @@ namespace
     }
 }
 
+// Runs an interrupt handler: takes the interrupt lock (waiting while a
+// guest thread has raised IRQL) and marks this thread as at interrupt
+// level.
 void h3::kernel::EnterInterrupt()
 {
     g_interruptLock.lock();
     t_irql = kInterruptLevel;
 }
 
+// The handler finished: back to passive level, and the lock released.
 void h3::kernel::LeaveInterrupt()
 {
     t_irql = 0;

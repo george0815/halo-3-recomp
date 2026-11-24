@@ -1,0 +1,6 @@
+// The Halo 3 icon as the Windows executables' file icon (Explorer, the
+// taskbar, shortcuts): H3Launcher and H3Recomp (CMake adds this file to
+// both on Windows; tools/package.py compiles the same line into the
+// resources h3setup links into the player's H3Recomp.exe). The path is
+// relative to this file.
+1 ICON "../assets/icon.ico"

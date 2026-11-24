@@ -62,6 +62,8 @@ namespace h3
     // Returns false if the host can't reserve it.
     bool InitGuestMemory();
 
+    // A host pointer to guest memory. The bytes are as the guest stores
+    // them (big-endian); GuestRef<T> swaps on access.
     template <typename T>
     T* GuestPtr(uint32_t address)
     {
@@ -99,6 +101,7 @@ namespace h3
         // The allocation containing address, or false.
         bool Find(uint32_t address, uint32_t* allocBase, uint32_t* allocSize) const;
 
+        // Whether an address is in this heap's range.
         bool Contains(uint32_t address) const { return address >= m_base && address < m_end; }
         // Bytes in live allocations.
         uint64_t AllocatedBytes() const;

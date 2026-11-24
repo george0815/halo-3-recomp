@@ -20,6 +20,7 @@
 
 namespace h3::debug
 {
+    // Once per presented frame: runs a scan or poke due at this frame.
     void UpdateFloatScan(uint32_t frame)
     {
         static const char* poke = EnvString("H3_POKE_FLOAT");

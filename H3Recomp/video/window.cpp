@@ -14,6 +14,7 @@
 #include "hooks/fov.h"
 #include "hooks/pc_text.h"
 #include "kernel/imports.h"
+#include "window_icon.h"  // generated: kWindowIconPng
 
 #include <SDL3/SDL.h>
 
@@ -172,6 +173,27 @@ namespace h3::video
         }
     }
 
+    // The Halo 3 icon on the window and taskbar.
+    void SetWindowIcon()
+    {
+        if (!g_window)
+            return;
+        // Decode the embedded PNG (generated/window_icon.h, made by CMake
+        // from assets/icon.png) into an SDL surface; SDL copies it.
+        SDL_IOStream* stream = SDL_IOFromConstMem(kWindowIconPng, sizeof(kWindowIconPng));
+        SDL_Surface* icon = stream ? SDL_LoadPNG_IO(stream, true) : nullptr;  // true: closes the stream
+        if (!icon)
+        {
+            fprintf(stderr, "[video] window icon: %s\n", SDL_GetError());
+            return;
+        }
+        SDL_SetWindowIcon(g_window, icon);
+        SDL_DestroySurface(icon);
+    }
+
+    // Initializes SDL, creates the window (size and fullscreen from
+    // settings.ini) and its GPU device and renderer, and sets up the window's
+    // own state (cursor, fullscreen toggle, the frame texture).
     bool CreateMainWindow()
     {
         // NVIDIA's on-disk pipeline cache is 256 MiB per application by
@@ -225,6 +247,9 @@ namespace h3::video
         return true;
     }
 
+    // The main thread's loop: handles SDL events (input, resize, fullscreen
+    // toggles, debug hotkeys), updates input, and presents the newest frame
+    // the renderer finished, until the window closes or RequestQuit.
     int RunEventLoop()
     {
         using Clock = std::chrono::steady_clock;
@@ -293,6 +318,8 @@ namespace h3::video
         }
     }
 
+    // Any thread: pushes a quit event carrying the exit code into SDL's
+    // queue; RunEventLoop returns it.
     void RequestQuit(int exitCode)
     {
         SDL_Event event{};
@@ -301,6 +328,8 @@ namespace h3::video
         SDL_PushEvent(&event);
     }
 
+    // A frame finished (any thread): counts it for the title bar and the
+    // H3_LOG_FPS line.
     void OnFramePresented(uint32_t frame)
     {
         g_framesPresented.store(frame);
@@ -342,6 +371,8 @@ namespace h3::video
         hooks::UpdateFov();
     }
 
+    // For the menu cursor: maps a window point into the game picture
+    // (letterboxing and fullscreen scaling undone).
     bool WindowToFrame(float windowX, float windowY, float& frameX, float& frameY)
     {
         if (!g_renderer || g_frameDest.w <= 0 || g_frameDest.h <= 0)

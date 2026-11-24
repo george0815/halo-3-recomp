@@ -146,6 +146,8 @@ namespace h3::hooks
         // Player 1's action -> button bytes, as the rewrite last used them.
         std::array<uint8_t, kActionButtonCount> g_layout{};
 
+        // Player 1's action -> button bytes as the game holds them now; compared
+        // with g_layout to see when the player changed their button layout.
         std::array<uint8_t, kActionButtonCount> CurrentLayout()
         {
             std::array<uint8_t, kActionButtonCount> layout{};
@@ -316,6 +318,8 @@ namespace h3::hooks
         }
     }
 
+    // Once per frame: rewords the English language pack after a map loads it
+    // (see the top of the file).
     void UpdatePcText()
     {
         static const bool off = EnvFlag("H3_NO_PC_TEXT");

@@ -18,6 +18,10 @@ namespace h3::video
     // Creates the window. Call on the main thread before RunEventLoop.
     bool CreateMainWindow();
 
+    // Gives the window the Halo 3 icon (assets/icon.png, compiled in).
+    // Call after CreateMainWindow.
+    void SetWindowIcon();
+
     // Pumps window events until the window is closed or RequestQuit is
     // called. Returns the exit code passed to RequestQuit (0 when closed).
     int RunEventLoop();

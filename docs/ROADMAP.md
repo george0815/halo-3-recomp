@@ -7,6 +7,10 @@ nav_order: 7
 
 Rough phases. Each one is a large amount of work; that's fine.
 
+`[x]` done, `[~]` partly done, `[ ]` open, `[-]` deferred or dropped (the
+reason is given). Phases 0-5 are the recompiled release (0.75); phase 6 is
+the native port that follows it.
+
 ## 0. Ground truth
 - [x] Own dump of `default.xex` in `private/`; SHA-1 recorded
 - [x] `h3xexinfo` runs: sections, entry point, imports listed
@@ -95,16 +99,19 @@ Rough phases. Each one is a large amount of work; that's fine.
 - [x] Point sizes: point lists take PA_SU_POINT_SIZE's diameter times the
       render scale (Halo 3 draws a few one-pixel point lists per frame;
       no shader exports its own size). Needs Vulkan largePoints
-- [ ] Batch draws better (one render pass per render target change today).
-      Profiled 2026-10-13: ~54 draw passes per frame, and draw submission is a
-      few percent of the command processor thread, which spends a third of
-      its time waiting on the game; not the bottleneck at the moment
+- [-] Batch draws better (one render pass per render target change today).
+      Deferred: profiled 2026-10-13, ~54 draw passes per frame, and draw
+      submission is a few percent of the command processor thread, which
+      spends a third of its time waiting on the game; not the bottleneck
+      (the game holds 60 fps). The native renderer (6.5) replaces this path
 - [x] EDRAM render targets and resolves (Halo 3 renders 1152x640 in four
       predicated tiles, deferred: G-buffer, shadow maps, post-processing)
 - [x] EDRAM aliasing between formats at one base: 7e3 read as 2_10_10_10
       is reinterpreted bit for bit, other formats convert by value
-- [ ] EDRAM tile layout: surfaces of different pitches at one base don't
-      alias the way they do in tiled EDRAM
+- [-] EDRAM tile layout: surfaces of different pitches at one base don't
+      alias the way they do in tiled EDRAM. Deferred: no visible case in
+      Halo 3 so far (split screen's resolves of a different pitch inside
+      another texture get a texture of their own instead, 2026-11-17)
 - [x] Menu renders → mainmenu.map renders → a campaign level runs
 - [x] In-game frames are washed out (stale render target contents where
       nothing draws; confirmed fixed 2026-10-12)
@@ -124,13 +131,16 @@ Rough phases. Each one is a large amount of work; that's fine.
       renames (*.temp -> *.film); Theater lists and plays campaign films
 - [x] Launcher (`H3Launcher/`, Qt): video, controls, profile; writes
       `settings.ini`, which the runtime reads (`H3Recomp/config/settings.h`)
-- [ ] Xbox Live features
+- [-] Xbox Live features. Dropped: Xbox Live is gone; system link over
+      the internet (phase 5) covers playing with friends
 
 ## 5. Native improvements
 - [x] Internal resolution scale (1x-3x render targets and resolves;
       screen-space draws snap to guest pixels), window size, fullscreen
-- [~] Framerate unlock: experimental 60 Hz game tick (launcher Video >
-      Frame rate; `hooks/tick_rate.cpp`). Swaps present at once instead of
+- [x] Framerate unlock: 60 Hz game tick (launcher Video > Frame rate;
+      `hooks/tick_rate.cpp`; 30, the original, stays the default): the
+      whole campaign and multiplayer play at 60.
+      History: Swaps present at once instead of
       waiting for the next vblank (D3D's present interval 1 turned every
       frame slower than 16.7 ms into a 33 ms one): Sierra gameplay went from
       a locked 30 fps to 35-45. Needs play-testing (physics, animation, AI,
@@ -144,16 +154,19 @@ Rough phases. Each one is a large amount of work; that's fine.
       batches, resident vertex data, compact constants; draws that can't
       write anything skipped): the Sierra, Tsavo and Storm starts hold 60
       fps. Heavier scenes untested. Content tuned per tick misbehaves at 60
-      (play-through 2026-10-22, private/BUGS.md): MCC's own fixes for it
+      (found in a play-through, 2026-10-22): MCC's own fixes for it
       (the `tps / 30` sites in H3EK's halo3_tag_test.exe) are ported
       behind `hooks::ContentFixes()` (weapon fire pacing, camera shake and
       impulses, first-person weapon timing, AI burst minimum, auto exposure
       rate, biped ground push, Havok world step settings; every site checked
       by 2026-11-16, the rest MCC-only or not needed at 60);
-      30 fps cutscene animation under a 60 Hz follow camera makes objects
+      30 fps cutscene animation under a 60 Hz follow camera made objects
       jitter back and forth (Pelicans in Sierra 117's ending, The Ark's
-      intro, The Covenant)
-- [ ] Frame interpolation (MCC's approach, `halo_frame_interpolator.cpp`
+      intro, The Covenant): fixed, including the cutscene FOV stepping at
+      30 Hz (`hooks/cinematic_camera.cpp`, 2026-11-23)
+- [-] Frame interpolation (deferred to the native port, 2026-11-13: for
+      0.75 the 60 Hz tick and its content fixes are completed instead)
+      (MCC's approach, `halo_frame_interpolator.cpp`
       in halo3_tag_test.exe): keep the game at its original 30 ticks per
       second and render extra frames that blend object node matrices and
       the camera between the last two ticks (main thread captures per-tick
@@ -164,16 +177,17 @@ Rough phases. Each one is a large amount of work; that's fine.
       workarounds; the film library (recorded at 60 Hz ticks) would need
       films recorded at 30
 - [x] Split screen, up to four players (controllers 2-4 join with START)
-- [~] System link: LAN games and internet games by friends' addresses,
+- [x] System link: LAN games and internet games by friends' addresses,
       over one UDP port (`net/link.cpp`, `kernel/xnet.cpp`); finding,
-      joining and full matches work between two games on one PC
+      joining and full matches work on a LAN and over the internet, Linux
+      and Windows together (four players, 2026-11-23)
 - [x] Native mouse look (MCC's approach: no stick curve or acceleration)
 - [x] PC wording and key names in the English text
 - [x] PC options: skip intro videos, FOV slider, centered crosshair,
       vehicle mouse sensitivity, toggle crouch/zoom, zoomed mouse slowdown
 - [x] Mouse in menus: pointing selects a menu item, left click chooses it,
       right click goes back, the wheel moves up and down
-- [ ] Replace hot recompiled functions with hand-written source (started:
+- [~] Replace hot recompiled functions with hand-written source (started:
       the 4 MB per-tick game state copy, `hooks/block_copy.cpp`); this
       continues as phase 6
 
@@ -238,12 +252,12 @@ subsystems with the best references first.
       `H3_LOCKSTEP` fix those, and a mask learned from a few replays
       leaves out what depends on asynchronous load timing (effects, HUD,
       a few object fields). Sierra 117: fresh replays match on every tick
-- [ ] Deterministic replays: saved films replay the same game from the
+- [x] Deterministic replays: saved films replay the same game from the
       same inputs. A per-tick checksum of the game state (the 4 MB game
       state block and the object/AI data arrays) from the recompiled
       build, recorded once per film, is the reference; a replacement that
       changes any tick's checksum fails, at that tick
-- [ ] Film library: a few films per mission covering combat, vehicles,
+- [~] Film library: a few films per mission covering combat, vehicles,
       cutscenes and multiplayer variants, played headless at maximum
       speed in CI-style batch runs (`tools/films/run_film.sh`; masks and
       reference checksums per film). So far one film per campaign mission
@@ -253,8 +267,10 @@ subsystems with the best references first.
       (arguments, the guest memory it reads, its writes and result) and
       replay them against the replacement, so a mismatch points at the
       exact call rather than a tick
-- [ ] Differential mode: run both versions of a function on copies of
-      the state and compare (for pure and nearly pure functions)
+- [~] Differential mode: run both versions of a function on copies of
+      the state and compare (for pure and nearly pure functions). Started:
+      `H3_CHECK_NATIVE` runs both on every call and compares results and
+      stores, `H3_NATIVE_SHADOW` runs the replacement on a copy
 - [ ] Rendering checks: frame captures (`H3_GPU_CAPTURE`, snapshots)
       compared image by image against the oracle for render-side work
 
@@ -410,10 +426,11 @@ Statically linked into the executable; each needs its own answer.
 - [ ] Havok last: decompiled (from the x64 reference) or otherwise
       replaced; then H3RecompLib, XenonRecomp and the PPC context are
       dropped from the build
-- [ ] The game still needs the user's own disc data (maps, sounds,
-      videos): an asset loader reads them from the user's copy; no game
+- [ ] The game still needs the player's own disc data (maps, sounds,
+      videos): an asset loader reads them from the player's copy; no game
       content in the repository
-- [ ] Portability: Windows and macOS builds (SDL already abstracts the
-      window, input and GPU), ARM64 (no x86 intrinsics left in game code)
+- [~] Portability: Windows (done for 0.75: the recompiled build already
+      runs there) and macOS builds (SDL already abstracts the window, input
+      and GPU), ARM64 (no x86 intrinsics left in game code)
 - [ ] Afterwards (the point of a native port): mod support (tags from
       H3EK), new features, fixes the console version couldn't have

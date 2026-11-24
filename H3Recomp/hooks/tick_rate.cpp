@@ -114,6 +114,8 @@ namespace
 {
     uint32_t g_gameTimeInits = 0;  // game_time_initialize calls (1: menu, 2: first level)
 }
+// Runs with the configured tick rate in place, and resets the local
+// random seed so films replay identically.
 PPC_FUNC(sub_821D6F30)
 {
     g_gameTimeInits++;
@@ -141,6 +143,7 @@ PPC_FUNC(sub_821D7098)
 static std::atomic<uint32_t> g_captureRequestTick{ 0 };
 
 PPC_FUNC_IMPL(__imp__sub_820983E0);
+// game_time_update (see above).
 PPC_FUNC(sub_820983E0)
 {
     static const uint32_t delayMs = EnvNumber("H3_FRAME_DELAY_MS");
@@ -247,17 +250,20 @@ PPC_FUNC(sub_825A95B8)
 
 namespace h3::hooks
 {
+    // The configured tick rate, or 30.
     int GameTickRate()
     {
         int rate = ConfiguredTickRate();
         return rate ? rate : config::kOriginalTickRate;
     }
 
+    // 2 at 60 Hz: how many ticks one original tick spans.
     int TicksPerOriginalTick()
     {
         return std::max(1, GameTickRate() / config::kOriginalTickRate);
     }
 
+    // Decided once: on at 60 Hz unless H3_NO_60HZ_FIXES is set.
     bool ContentFixes()
     {
         static const bool enabled = [] {
@@ -304,6 +310,8 @@ namespace
 }
 PPC_FUNC_IMPL(__imp__sub_820AB8A0);  // script function return (r3 thread, r4 value)
 PPC_FUNC_IMPL(__imp__sub_822D7BB0);
+// game_reverted (see above): true for the whole original tick after a
+// revert, not just its first 60 Hz tick.
 PPC_FUNC(sub_822D7BB0)
 {
     uint32_t gameTime = GuestRef<uint32_t>(uint32_t(GuestRef<uint32_t>(ctx.r13.u32)) + kGameTimeSlot);

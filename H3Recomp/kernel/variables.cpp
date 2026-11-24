@@ -127,6 +127,7 @@ namespace h3::kernel
         }
     }
 
+    // A kernel data export's guest address by ordinal (made on first use).
     uint32_t KernelVariable(uint16_t ordinal)
     {
         static std::mutex mutex;

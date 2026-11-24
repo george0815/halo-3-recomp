@@ -11,9 +11,11 @@
 
 namespace h3setup
 {
+    // SHA-1 (RFC 3174), to check default.xex against the supported builds.
     class Sha1
     {
     public:
+        // Feeds bytes; every full 64-byte block is processed.
         void Update(const void* data, size_t size)
         {
             const uint8_t* bytes = static_cast<const uint8_t*>(data);
@@ -29,6 +31,7 @@ namespace h3setup
             }
         }
 
+        // Pads and finishes the hash, returned as 40 hex digits.
         std::string Hex()
         {
             uint64_t length = m_length;
@@ -53,8 +56,10 @@ namespace h3setup
         }
 
     private:
+        // Rotate left.
         static uint32_t Rol(uint32_t value, int bits) { return (value << bits) | (value >> (32 - bits)); }
 
+        // One 64-byte block through the 80 rounds.
         void Process()
         {
             uint32_t w[80];

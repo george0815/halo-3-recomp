@@ -24,6 +24,8 @@ namespace
 }
 
 PPC_FUNC_IMPL(__imp__sub_82642058);
+// The Havok world constructor: adjusts the step settings in its
+// construction info first (see above).
 PPC_FUNC(sub_82642058)
 {
     if (uint32_t(ctx.lr) == kWorldCall && h3::hooks::ContentFixes())

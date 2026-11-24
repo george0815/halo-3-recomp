@@ -8,6 +8,7 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QIcon>
 #include <QKeyEvent>
 #include <QLinearGradient>
 #include <QMap>
@@ -117,6 +118,7 @@ namespace h3::launcher
         constexpr const char* kApplication = "launcher";
         constexpr const char* kXexKey = "xex";
 
+        // A setting's value as the menus show it.
         QString OnOff(bool value) { return value ? QStringLiteral("On") : QStringLiteral("Off"); }
 
         // The art is dark; grey levels are lifted by this gamma before the
@@ -143,11 +145,15 @@ namespace h3::launcher
             return table;
         }
 
-        // Looks for default.xex where a source checkout keeps it
-        // (private/default.xex) above the launcher's own folder and the
-        // current directory.
+        // Looks for default.xex where an install keeps it (game/ next to the
+        // launcher, where INSTALL puts it), then where a source checkout
+        // keeps it (private/default.xex) above the launcher's own folder and
+        // the current directory.
         QString FindXex()
         {
+            QString installed = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("game/default.xex"));
+            if (QFileInfo::exists(installed))
+                return QFileInfo(installed).absoluteFilePath();
             QStringList starts = { QCoreApplication::applicationDirPath(), QDir::currentPath() };
             for (const QString& start : starts)
             {
@@ -198,12 +204,20 @@ namespace h3::launcher
             return dir.exists(QStringLiteral("game")) ? dir.filePath(QStringLiteral("game")) : dir.path();
         }
 
+        // Settings are std::string (shared with the game); Qt wants QString.
         QString FromStd(const std::string& text) { return QString::fromStdString(text); }
     }
 
+    // Sets up the window, the timers (key capture timeout, the cursor blink),
+    // gamepad polling through SDL, then finds default.xex (the argument, the
+    // path remembered from last time, or a search: FindXex) and loads its
+    // settings, and shows the main page.
     LauncherWindow::LauncherWindow(const QString& xexPath)
     {
-        setWindowTitle(QStringLiteral("Halo 3 Recomp"));
+        setWindowTitle(QStringLiteral("Halo 3 Launcher"));
+        // The Halo 3 icon (assets/icon.png, embedded by resources.qrc) for
+        // this window and the taskbar.
+        setWindowIcon(QIcon(QStringLiteral(":/icon.png")));
         setMinimumSize(kMinWidth, kMinHeight);
         resize(kDefaultWidth, kDefaultHeight);
         setMouseTracking(true);
@@ -244,6 +258,9 @@ namespace h3::launcher
 
     // --- Game files and settings ---------------------------------------------
 
+    // Points the launcher at a default.xex: remembers it for next time, loads
+    // the settings.ini next to it, Halo 3's fonts from its maps folder and the
+    // profile's gamer picture. An empty path leaves a hint in the status line.
     void LauncherWindow::SetXexPath(const QString& path)
     {
         xexPath_ = path;
@@ -268,6 +285,8 @@ namespace h3::launcher
         UpdateMetrics();  // font heights set the row height
     }
 
+    // GAME LOCATION: a file dialog for another default.xex. False if the player
+    // cancelled.
     bool LauncherWindow::ChooseXex()
     {
         QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Locate default.xex"), QDir::currentPath(),
@@ -285,11 +304,15 @@ namespace h3::launcher
         return true;
     }
 
+    // settings.ini, next to default.xex (where the game reads it).
     QString LauncherWindow::SettingsPath() const
     {
         return QFileInfo(xexPath_).absoluteDir().filePath(QString::fromLatin1(config::kFileName));
     }
 
+    // Writes settings.ini. Called after every change, so nothing is lost if
+    // the launcher is closed. The NETWORK page edits the port and friend list
+    // as text; they're parsed back into settings here.
     void LauncherWindow::Save()
     {
         if (networkText_)
@@ -318,6 +341,10 @@ namespace h3::launcher
             status_ = QStringLiteral("Can't write %1").arg(SettingsPath());
     }
 
+    // INSTALL: asks for the disc image, then runs `h3setup install` in the
+    // background (QProcess). Its "progress <stage> <percent>" lines become the
+    // status line; when it finishes, the installed game becomes the one to
+    // launch, or the error is shown.
     void LauncherWindow::InstallFromIso()
     {
         if (installer_)
@@ -393,6 +420,9 @@ namespace h3::launcher
         update();
     }
 
+    // LAUNCH: saves the settings and starts H3Recomp with the chosen
+    // default.xex, then closes the launcher. In a release that isn't installed
+    // yet, starts the install instead.
     void LauncherWindow::Launch()
     {
         if (installer_)
@@ -429,9 +459,12 @@ namespace h3::launcher
 
     // --- Pages ---------------------------------------------------------------
 
+    // The first page: INSTALL or LAUNCH, the settings pages, GAME LOCATION
+    // and QUIT. Each page is a list of MenuItems; an item's lambdas read and
+    // change settings_ (see MenuItem in launcher_window.h).
     LauncherWindow::Page LauncherWindow::MainPage()
     {
-        Page page{ QStringLiteral("HALO 3 RECOMP") };
+        Page page{ QStringLiteral("HALO 3 LAUNCHER") };
         auto open = [this](Page (LauncherWindow::*build)()) { return [this, build] { Push((this->*build)()); }; };
         if (FindGameExecutable().isEmpty() && !FindSetupTool().isEmpty())
             page.items.push_back({ MenuItem::Kind::Action, QStringLiteral("INSTALL"),
@@ -461,6 +494,9 @@ namespace h3::launcher
         return page;
     }
 
+    // VIDEO: window size, fullscreen, vsync, render resolution, frame rate,
+    // field of view, centered crosshair, PC wording and key names, skipping
+    // the intro, anti-aliasing and the shader compilation options.
     LauncherWindow::Page LauncherWindow::VideoPage()
     {
         Page page{ QStringLiteral("VIDEO") };
@@ -573,6 +609,8 @@ namespace h3::launcher
         return page;
     }
 
+    // CONTROLS: mouse options, then one row per action with its key/mouse
+    // bindings (MenuItem::Kind::Binding: up to kMaxBindings slots each).
     LauncherWindow::Page LauncherWindow::ControlsPage()
     {
         Page page{ QStringLiteral("CONTROLS") };
@@ -655,6 +693,9 @@ namespace h3::launcher
         return page;
     }
 
+    // PROFILE: player 1's gamertag and gamer picture, the profile options
+    // Halo 3 copies into a new profile (invert look, vibration, auto-aim,
+    // auto-center), unlocking all armor, and players 2-4's gamertags.
     LauncherWindow::Page LauncherWindow::ProfilePage()
     {
         Page page{ QStringLiteral("PROFILE") };
@@ -757,6 +798,9 @@ namespace h3::launcher
         };
     }
 
+    // NETWORK: system link on/off, its UDP port and the friends list. The port
+    // and friends are edited as text (portText_, peersText_) and parsed back by
+    // Save().
     LauncherWindow::Page LauncherWindow::NetworkPage()
     {
         Page page{ QStringLiteral("NETWORK") };
@@ -796,6 +840,9 @@ namespace h3::launcher
         return page;
     }
 
+    // DEBUG: unlock all missions, the log file, the logging and tracing
+    // switches (H3_* variables the game reads from settings.ini), and one
+    // item that turns them all off.
     LauncherWindow::Page LauncherWindow::DebugPage()
     {
         Page page{ QStringLiteral("DEBUG") };
@@ -873,6 +920,9 @@ namespace h3::launcher
 
     // --- Gamepad ---------------------------------------------------------------
 
+    // Runs every kPadPollMs: reads SDL's gamepad events (connect, disconnect,
+    // button presses) and turns the d-pad or left stick into menu moves that
+    // repeat while held (a longer delay before the first repeat).
     void LauncherWindow::PollGamepad()
     {
         SDL_Event event;
@@ -933,6 +983,8 @@ namespace h3::launcher
         }
     }
 
+    // One gamepad button press, as the keyboard's equivalent: d-pad moves and
+    // changes values, A activates, B goes back, Y clears a key binding.
     void LauncherWindow::GamepadButton(int button)
     {
         if (capturing_)
@@ -969,6 +1021,7 @@ namespace h3::launcher
         }
     }
 
+    // Opens a page on top of the current one (a submenu).
     void LauncherWindow::Push(Page page)
     {
         pages_.push_back(std::move(page));
@@ -976,6 +1029,7 @@ namespace h3::launcher
         update();
     }
 
+    // Closes the current page, back to the one under it (never the main page).
     void LauncherWindow::Back()
     {
         if (pages_.size() > 1)
@@ -988,6 +1042,8 @@ namespace h3::launcher
 
     // --- Input ---------------------------------------------------------------
 
+    // Moves the selection to a row (clamped to the page) and scrolls so it's
+    // visible.
     void LauncherWindow::Select(int row)
     {
         Page& page = Current();
@@ -1004,6 +1060,8 @@ namespace h3::launcher
         update();
     }
 
+    // Left/right on the selected row: changes a choice's value (and saves), or
+    // moves between a binding row's slots.
     void LauncherWindow::Step(int delta)
     {
         MenuItem& item = Current().items[Current().selected];
@@ -1017,6 +1075,8 @@ namespace h3::launcher
         update();
     }
 
+    // Enter / A / click on the selected row: runs an action, steps a choice,
+    // starts editing a text field, or starts capturing a key for a binding.
     void LauncherWindow::Activate()
     {
         MenuItem& item = Current().items[Current().selected];
@@ -1039,6 +1099,9 @@ namespace h3::launcher
         update();
     }
 
+    // Waits for the next key, mouse button or wheel to bind to this slot
+    // (cancelled after kCaptureTimeoutMs). The mouse is grabbed so a click
+    // anywhere counts.
     void LauncherWindow::StartCapture(int slot)
     {
         slot_ = slot;
@@ -1049,6 +1112,8 @@ namespace h3::launcher
         update();
     }
 
+    // Ends a capture; a non-empty name is bound to the slot being captured
+    // (and removed from the action's other slots), then saved.
     void LauncherWindow::FinishCapture(const QString& name)
     {
         if (!capturing_)
@@ -1073,6 +1138,7 @@ namespace h3::launcher
         update();
     }
 
+    // Removes one binding from the selected action and saves.
     void LauncherWindow::ClearBinding(int slot)
     {
         std::vector<std::string>& bindings = settings_.controls.bindings[Current().items[Current().selected].action];
@@ -1085,6 +1151,9 @@ namespace h3::launcher
         update();
     }
 
+    // Keyboard: binds the key while capturing, types into a text field while
+    // editing, and otherwise navigates (arrows, Page Up/Down, Home/End, Enter,
+    // Escape/Backspace back, Delete clears a binding).
     void LauncherWindow::keyPressEvent(QKeyEvent* event)
     {
         if (event->isAutoRepeat() && capturing_)
@@ -1161,6 +1230,7 @@ namespace h3::launcher
         }
     }
 
+    // Hovering a row selects it.
     void LauncherWindow::mouseMoveEvent(QMouseEvent* event)
     {
         if (capturing_ || editing_)
@@ -1170,6 +1240,10 @@ namespace h3::launcher
             Select(row);
     }
 
+    // Clicks: binds the button while capturing; right-click goes back (or
+    // clears a binding slot under the pointer); left-click picks a binding
+    // slot, steps a choice (left or right half of its value) or activates the
+    // row.
     void LauncherWindow::mousePressEvent(QMouseEvent* event)
     {
         if (capturing_)
@@ -1233,6 +1307,7 @@ namespace h3::launcher
         update();
     }
 
+    // The wheel scrolls long pages (or is bound, while capturing).
     void LauncherWindow::wheelEvent(QWheelEvent* event)
     {
         if (capturing_)
@@ -1250,6 +1325,8 @@ namespace h3::launcher
 
     // --- Layout --------------------------------------------------------------
 
+    // Recomputes the layout (margins, menu width, row heights, text sizes)
+    // from the window size and the fonts. Called on resize and font changes.
     void LauncherWindow::UpdateMetrics()
     {
         Metrics& m = metrics_;
@@ -1266,6 +1343,8 @@ namespace h3::launcher
         m.footerHeight = 3 * smallHeight + 54;  // two description lines and the hints
     }
 
+    // Which of Halo 3's Conduit font sizes a text style uses (larger in a
+    // large window).
     const char* LauncherWindow::FontName(Style style) const
     {
         switch (style)
@@ -1278,6 +1357,7 @@ namespace h3::launcher
         return "conduit-16";
     }
 
+    // The area the menu rows are drawn in.
     QRect LauncherWindow::MenuRect() const
     {
         // Left-aligned; the menu column follows the window's size.
@@ -1285,17 +1365,20 @@ namespace h3::launcher
         return QRect(m.margin, m.menuTop, m.menuWidth, height() - m.menuTop - m.footerHeight);
     }
 
+    // Where a row is on screen, given the page's scroll position.
     QRect LauncherWindow::RowRect(int row) const
     {
         QRect menu = MenuRect();
         return QRect(menu.left(), menu.top() + (row - Current().scroll) * metrics_.rowHeight, menu.width(), metrics_.rowHeight);
     }
 
+    // How many rows fit in the menu area (at least one).
     int LauncherWindow::VisibleRows() const
     {
         return std::max(1, MenuRect().height() / metrics_.rowHeight);
     }
 
+    // The row under a point, or -1 for none.
     int LauncherWindow::RowAt(QPoint point) const
     {
         QRect menu = MenuRect();
@@ -1306,6 +1389,7 @@ namespace h3::launcher
         return row <= last ? row : -1;
     }
 
+    // How many binding slots a binding row shows.
     int LauncherWindow::SlotCount(const MenuItem& item) const
     {
         // The bindings plus one empty slot to add another, up to the limit.
@@ -1313,6 +1397,7 @@ namespace h3::launcher
         return int(std::min(bound + 1, config::kMaxBindings));
     }
 
+    // Where binding slot `slot` sits in a binding row.
     QRect LauncherWindow::SlotRect(const QRect& row, int slot) const
     {
         // The slots start after the page's longest binding label and share
@@ -1331,6 +1416,8 @@ namespace h3::launcher
 
     // --- Painting ------------------------------------------------------------
 
+    // Loads the background art (embedded, resources.qrc) and tints it into
+    // the menu's blue palette (grey levels through TintTable), once.
     void LauncherWindow::BuildBackground()
     {
         QImage art(QStringLiteral(":/launcher_background.jpg"));
@@ -1352,6 +1439,9 @@ namespace h3::launcher
         tinted_ = crop;
     }
 
+    // On every resize: rebuilds the background picture at the new size
+    // (scaled art plus the gradients that keep the text readable) and the
+    // layout.
     void LauncherWindow::resizeEvent(QResizeEvent*)
     {
         // Scale the art to cover the window, then darken where text goes.
@@ -1400,6 +1490,8 @@ namespace h3::launcher
         }
     }
 
+    // Height of a style's text above its baseline (Halo's font, or the
+    // system font if the game's fonts aren't available).
     int LauncherWindow::Ascent(Style style) const
     {
         if (!haveFonts_)
@@ -1407,6 +1499,7 @@ namespace h3::launcher
         return fonts_.Find(FontName(style))->ascent;
     }
 
+    // Width of text drawn in a style.
     int LauncherWindow::TextWidth(Style style, const QString& text) const
     {
         if (haveFonts_)
@@ -1414,6 +1507,8 @@ namespace h3::launcher
         return QFontMetrics(FallbackFont(FontName(style))).horizontalAdvance(text);
     }
 
+    // Breaks text into lines no wider than width, at spaces (item
+    // descriptions).
     QStringList LauncherWindow::Wrap(Style style, const QString& text, int width) const
     {
         QStringList lines;
@@ -1434,6 +1529,8 @@ namespace h3::launcher
         return lines;
     }
 
+    // Draws text at a baseline, left/right/center aligned on x, with Halo's
+    // bitmap font (halo_font.h) or the system font.
     void LauncherWindow::DrawText(QPainter& painter, Style style, int x, int baseline, const QString& text, const QColor& color,
         Align align) const
     {
@@ -1452,6 +1549,8 @@ namespace h3::launcher
         painter.drawText(x, baseline, text);
     }
 
+    // A binding row's slots: each bound key's name in a box, an empty box to
+    // add one, the active slot highlighted (blinking while capturing).
     void LauncherWindow::DrawBindingSlots(QPainter& painter, const MenuItem& item, const QRect& row, bool selected)
     {
         const std::vector<std::string>& bindings = settings_.controls.bindings[item.action];
@@ -1480,6 +1579,8 @@ namespace h3::launcher
         }
     }
 
+    // One menu row: the selection bar when selected, the label, and its value
+    // (‹ value › for choices, the text field, or the binding slots).
     void LauncherWindow::DrawRow(QPainter& painter, const MenuItem& item, const QRect& row, bool selected)
     {
         if (selected)
@@ -1532,6 +1633,7 @@ namespace h3::launcher
         }
     }
 
+    // The gamer picture and gamertag in the bottom right corner.
     void LauncherWindow::DrawProfileCard(QPainter& painter)
     {
         // A small gamercard in the bottom right: picture and gamertag.
@@ -1551,6 +1653,8 @@ namespace h3::launcher
         DrawText(painter, Style::Item, picture.right() + 16, picture.center().y() + Ascent(Style::Item) / 2 - 3, gamertag, kTitleColor);
     }
 
+    // The button hints at the bottom ("A Select  B Back"), as gamepad icons
+    // when a gamepad is connected or as keys otherwise.
     void LauncherWindow::DrawHints(QPainter& painter, int x, int baseline)
     {
         // Each hint is a button and what it does: the game's button icons
@@ -1590,6 +1694,9 @@ namespace h3::launcher
         }
     }
 
+    // Draws the whole window: background, page title, the visible rows, a
+    // scroll hint, the selected item's description, the status line, the
+    // hints and the profile card.
     void LauncherWindow::paintEvent(QPaintEvent*)
     {
         QPainter painter(this);

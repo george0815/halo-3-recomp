@@ -37,7 +37,9 @@ namespace h3::launcher
         struct Reader
         {
             const QByteArray& data;
+            // Whether size bytes at offset are inside the file.
             bool In(size_t offset, size_t size) const { return offset + size <= size_t(data.size()); }
+            // A little-endian value at offset (0 when out of range).
             uint32_t U32(size_t offset) const
             {
                 uint32_t value = 0;
@@ -45,6 +47,7 @@ namespace h3::launcher
                     memcpy(&value, data.constData() + offset, 4);
                 return value;
             }
+            // A little-endian 16-bit value at offset (0 when out of range).
             uint16_t U16(size_t offset) const
             {
                 uint16_t value = 0;
@@ -52,6 +55,7 @@ namespace h3::launcher
                     memcpy(&value, data.constData() + offset, 2);
                 return value;
             }
+            // Signed 16-bit and byte reads, same rules.
             int16_t S16(size_t offset) const { return int16_t(U16(offset)); }
             uint8_t U8(size_t offset) const { return In(offset, 1) ? uint8_t(data[qsizetype(offset)]) : 0; }
         };
@@ -122,12 +126,15 @@ namespace h3::launcher
         }
     }
 
+    // A character's glyph, or null if the font doesn't have it.
     const Glyph* HaloFont::Find(char32_t character) const
     {
         auto found = glyphs_.constFind(character);
         return found != glyphs_.constEnd() ? &found.value() : nullptr;
     }
 
+    // Kerning pairs are sorted by first character; kerningStart_ indexes
+    // where each first character's pairs begin (Latin-1 only).
     int HaloFont::Kerning(char32_t first, char32_t second) const
     {
         if (first > 0xFF || second > 0xFF)
@@ -140,6 +147,7 @@ namespace h3::launcher
         return 0;
     }
 
+    // Sum of advances plus kerning: what Draw takes.
     int HaloFont::Width(const QString& text) const
     {
         int width = 0;
@@ -153,6 +161,7 @@ namespace h3::launcher
         return width;
     }
 
+    // Draws the glyph masks for text in one color.
     void HaloFont::Draw(QPainter& painter, int x, int baseline, const QString& text, const QColor& color) const
     {
         // Masks are drawn into a scratch image, then the color is filled
@@ -180,6 +189,9 @@ namespace h3::launcher
         painter.drawImage(x - kPad, baseline - ascent - kPad, scratch);
     }
 
+    // Reads maps/fonts/font_package.bin: the font headers, then the glyph
+    // blocks (each glyph's key names its font and character), decoded
+    // into QImage masks.
     bool FontPackage::Load(const QString& path, QString* error)
     {
         auto fail = [&](const QString& reason)
@@ -249,6 +261,7 @@ namespace h3::launcher
         return true;
     }
 
+    // A font by name ("conduit-23"), or null.
     const HaloFont* FontPackage::Find(const QString& name) const
     {
         for (const HaloFont& font : fonts_)

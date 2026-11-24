@@ -86,6 +86,8 @@ namespace h3::gpu::shader
         bool forceLinear = false;
     };
 
+    // What a translated shader uses, for binding it: textures and their
+    // fetch constants, vertex fetches, constants, exports.
     struct ShaderInfo
     {
         bool isVertex = false;
@@ -115,6 +117,7 @@ namespace h3::gpu::shader
         std::vector<uint32_t> compactConstants;
     };
 
+    // Translate's output: the GLSL and its ShaderInfo, or the error.
     struct TranslationResult
     {
         bool ok = false;

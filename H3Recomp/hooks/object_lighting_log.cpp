@@ -22,12 +22,16 @@ namespace
     constexpr uint32_t kTlsGameTime = 188;
     constexpr uint32_t kGameTimeTick = 12;
 
+    // The current game tick: r13 points at the thread's TLS block, whose slot
+    // +188 is the game time globals; the tick count is at +12. 0 before the
+    // game time exists (loading).
     uint32_t GameTick(const PPCContext& ctx)
     {
         uint32_t gameTime = h3::GuestRef<uint32_t>(uint32_t(h3::GuestRef<uint32_t>(ctx.r13.u32)) + kTlsGameTime);
         return gameTime ? uint32_t(h3::GuestRef<uint32_t>(gameTime + kGameTimeTick)) : 0u;
     }
 
+    // A float from guest memory (big-endian: read as a word, then bit-copied).
     float GuestFloat(uint32_t address)
     {
         uint32_t bits = h3::GuestRef<uint32_t>(address);
@@ -36,12 +40,14 @@ namespace
         return value;
     }
 
+    // The tick range to log (H3_LOG_OBJLIGHT); enabled when it was set.
     struct Range
     {
         uint32_t first = 0, last = 0;
         bool enabled = false;
     };
 
+    // H3_LOG_OBJLIGHT=<first>[-<last>], parsed once (120 ticks if no last).
     const Range& LogRange()
     {
         static const Range range = [] {
@@ -60,6 +66,8 @@ namespace
 }
 
 PPC_FUNC_IMPL(__imp__sub_8215D3A0);
+// The geometry sampler: runs the original, then logs its arguments and
+// the lighting it wrote when the tick is in range.
 PPC_FUNC(sub_8215D3A0)
 {
     const Range& range = LogRange();
@@ -184,6 +192,7 @@ PPC_FUNC(sub_822B93B0)
 }
 
 PPC_FUNC_IMPL(__imp__sub_822D5D48);
+// A cinematic shot's lighting handler: logs its arguments in range.
 PPC_FUNC(sub_822D5D48)
 {
     if (LogRange().enabled)
@@ -196,12 +205,15 @@ PPC_FUNC(sub_822D5D48)
 // host's on every call; logs each new worst error.
 namespace h3::hooks
 {
+    // H3_CHECK_TRIG=1 (see above).
     bool CheckTrigEnabled()
     {
         static const bool check = h3::EnvFlag("H3_CHECK_TRIG");
         return check;
     }
 
+    // Compares the game's sin/cos result with the host's and logs each new
+    // worst error above 1e-5.
     void CheckTrig(bool cosine, double x, double got)
     {
         static double worst[2] = {};
@@ -216,6 +228,7 @@ namespace h3::hooks
 }
 
 PPC_FUNC_IMPL(__imp__sub_82081358);
+// The game's sin: runs it, then compares with the host's.
 PPC_FUNC(sub_82081358)
 {
     double x = ctx.f1.f64;
@@ -231,6 +244,7 @@ PPC_FUNC(sub_82081358)
 // (r6 = position, r7 = forward, r8 = up). Both logged with H3_LOG_OBJLIGHT.
 namespace
 {
+    // Appends " label f0 f1 ..." to the current log line.
     void LogFloats(const char* label, uint32_t address, uint32_t count)
     {
         fprintf(stderr, " %s", label);
@@ -240,6 +254,7 @@ namespace
 }
 
 PPC_FUNC_IMPL(__imp__sub_82300E60);
+// Places a cinematic light on an object (see above): logs the entry.
 PPC_FUNC(sub_82300E60)
 {
     if (LogRange().enabled)
@@ -257,6 +272,7 @@ PPC_FUNC(sub_82300E60)
 }
 
 PPC_FUNC_IMPL(__imp__sub_823336A0);
+// Creates a light (see above): logs its position and orientation.
 PPC_FUNC(sub_823336A0)
 {
     if (LogRange().enabled)
@@ -278,6 +294,7 @@ PPC_FUNC(sub_823336A0)
 // geometry with opaque blending.
 namespace
 {
+    // H3_LOG_ATOC=<lines>: how many lines to log (0: off).
     uint32_t AtocLogLimit()
     {
         static const uint32_t limit = [] {
@@ -287,6 +304,9 @@ namespace
         return limit;
     }
 
+    // One log line: the call's arguments and return address, then the
+    // return addresses of the next stack frames (back chain at r1, saved LR
+    // at frame + -8), to see who called.
     void LogCallChain(const char* label, const PPCContext& ctx)
     {
         static uint32_t lines = 0;
@@ -308,6 +328,7 @@ namespace
 }
 
 PPC_FUNC_IMPL(__imp__sub_8216FD28);
+// Alpha-to-coverage setup: logs the calls that turn blending off.
 PPC_FUNC(sub_8216FD28)
 {
     // Only the calls that turn blending off: enable, "keep blending" flag
@@ -319,6 +340,8 @@ PPC_FUNC(sub_8216FD28)
 }
 
 PPC_FUNC_IMPL(__imp__sub_82168258);
+// set_alpha_blend_mode: hooked so a log line can be added while
+// researching; passes straight through.
 PPC_FUNC(sub_82168258)
 {
     __imp__sub_82168258(ctx, base);

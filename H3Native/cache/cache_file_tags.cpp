@@ -136,9 +136,12 @@ namespace h3::native::cache
         constexpr uint32_t kInteropDefinitions = 0x82746030;
         constexpr uint32_t kInteropUnregister = 44;
 
+        // Guest memory word access (big-endian, through GuestRef).
         uint32_t Load32(uint32_t address) { return GuestRef<uint32_t>(address); }
         void Store32(uint32_t address, uint32_t value) { GuestRef<uint32_t>(address) = value; }
+        // A field of the loaded map's header (copied into the cache file globals).
         uint32_t Header(uint32_t field) { return Load32(kGlobals + kHeader + field); }
+        // A TLS slot of the calling thread (r13 points at its TLS block).
         uint32_t Tls(PPCContext& ctx, uint32_t slot) { return Load32(Load32(ctx.r13.u32) + slot); }
 
         // A global tag's datum by group, or NONE (the last match wins, as in
@@ -225,6 +228,13 @@ namespace h3::native::cache
             }
         }
 
+        // cache_file_tags_load: reads and verifies the map's header (its build
+        // must be one this executable accepts), allocates the tag section and
+        // reads it, checks the tag index and write-protects the partitions,
+        // finds the scenario and copies the globals tag's fields. On failure it
+        // reports the error as the original does (unless quiet), forgets the
+        // tag section (unfreed, as in the original), closes a pending read
+        // and returns false.
         bool LoadTags(PPCContext& ctx, uint8_t* base, uint32_t path)
         {
             bool headerRead = false, ok = false;
@@ -324,6 +334,10 @@ namespace h3::native::cache
             return true;
         }
 
+        // cache_file_tags_unload: finishes any pending read, clears the
+        // signature check's buffer, the loaded flag and the tag table,
+        // unregisters the map's D3D resources (the index's interop entries),
+        // then forgets the tag section and clears the header and index.
         void UnloadTags(PPCContext& ctx, uint8_t* base)
         {
             ClosePending(ctx, base);

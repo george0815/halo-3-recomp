@@ -39,6 +39,9 @@ namespace h3::debug
     {
         constexpr uint32_t kMaxSamples = 1u << 19;
         constexpr uint32_t kMaxFrames = 16;
+        // One sample: the thread, how many return addresses were captured, and
+        // the instruction pointer (then the return addresses, in the frames that
+        // follow it in the buffer).
         struct Sample
         {
             uint32_t thread;
@@ -183,6 +186,7 @@ namespace h3::debug
 #else
 namespace h3::debug
 {
+    // Platforms without the profiler (it needs POSIX signals): no-ops.
     void SetWallProfileThread() {}
     void UpdateProfiler(uint32_t) {}
 }

@@ -12,6 +12,7 @@
 
 namespace h3setup
 {
+    // One file or folder on the disc.
     struct IsoEntry
     {
         std::string path;  // "/maps/mainmenu.map" ('/' separated, from the root)
@@ -20,6 +21,7 @@ namespace h3setup
         bool directory = false;
     };
 
+    // An Xbox 360 disc image (XDVDFS): opens it, lists and reads its files.
     class Iso
     {
     public:
@@ -27,8 +29,10 @@ namespace h3setup
         // set) if it isn't a readable XDVDFS image.
         bool Open(const std::filesystem::path& path);
 
+        // Every file and folder, in directory order.
         const std::vector<IsoEntry>& Entries() const { return m_entries; }
         const IsoEntry* Find(const std::string& path) const;  // case-insensitive
+        // Why the last operation failed.
         const std::string& Error() const { return m_error; }
 
         // Copies a file out of the image. progress(bytes) is called as data

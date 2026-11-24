@@ -31,6 +31,7 @@ namespace h3::native::objects
     constexpr uint32_t kUnitWeapons = 608;
     constexpr uint32_t kUnitWeaponSlots = 4;
 
+    // A guest word (big-endian, swapped by GuestRef).
     inline uint32_t Load32(uint32_t address) { return GuestRef<uint32_t>(address); }
 
     // Guest address of element index of the data array in TLS slot.
@@ -45,8 +46,11 @@ namespace h3::native::objects
     {
         return Load32(DataArrayElement(ctx, kTlsObjects, object, kObjectHeaderBytes) + kObjectHeaderData);
     }
+    // An object's definition tag datum (the first word of its data).
     inline uint32_t ObjectDefinition(const PPCContext& ctx, uint32_t object) { return Load32(ObjectData(ctx, object)); }
 
+    // The guest address of a player's element (its datum index: player) in
+    // the players data array (TLS slot kTlsPlayers).
     inline uint32_t PlayerAddress(const PPCContext& ctx, uint32_t player)
     {
         return DataArrayElement(ctx, kTlsPlayers, player, kPlayerBytes);

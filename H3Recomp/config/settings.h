@@ -103,6 +103,7 @@ namespace h3::config
         Fxaa,
     };
 
+    // [video]: the window, rendering and display options.
     struct VideoSettings
     {
         int width = 1280;   // window size in windowed mode (the game renders 1280x720)
@@ -140,6 +141,8 @@ namespace h3::config
         float fov = 70.0f;
     };
 
+    // [profile]: gamertags, the gamer picture and the options Halo 3 copies
+    // into a new profile.
     struct ProfileSettings
     {
         std::string gamertag = "Player";
@@ -160,6 +163,7 @@ namespace h3::config
         bool unlockAllArmor = false;
     };
 
+    // [controls]: key bindings (one list per Action) and the mouse options.
     struct ControlSettings
     {
         std::array<std::vector<std::string>, kActionCount> bindings;
@@ -182,6 +186,7 @@ namespace h3::config
         bool menuCursor = true;
     };
 
+    // [debug]: the log file, mission unlocks and H3_* switches.
     struct DebugSettings
     {
         // H3_* environment switches (README, "Debugging") the game sets for
@@ -207,6 +212,7 @@ namespace h3::config
         std::vector<std::string> peers;
     };
 
+    // Everything in settings.ini, one struct per section.
     struct Settings
     {
         VideoSettings video;

@@ -15,6 +15,8 @@ namespace h3::kernel
 {
     namespace
     {
+        // A guest device (\Device\Cdrom0, \Device\Harddisk0\...) backed by a
+        // host folder.
         struct Mount
         {
             std::string device;  // e.g. "\Device\Cdrom0"
@@ -70,6 +72,7 @@ namespace h3::kernel
         }
     }
 
+    // The 360's file names ignore case; the host's (Linux) may not.
     bool EqualsIgnoreCase(std::string_view a, std::string_view b)
     {
         return std::ranges::equal(a, b, [](char x, char y)
@@ -78,6 +81,7 @@ namespace h3::kernel
         });
     }
 
+    // The disc: \Device\Cdrom0, read-only, also reachable as game: and d:.
     void SetContentRoot(std::filesystem::path root)
     {
         SetMount("\\Device\\Cdrom0", std::move(root), false);
@@ -85,6 +89,8 @@ namespace h3::kernel
         AddSymbolicLink("d:", "\\Device\\Cdrom0");
     }
 
+    // The hard drive: \Device\Harddisk0 (its partitions, the cache
+    // partitions included, are folders under root), writable.
     void SetUserDataRoot(std::filesystem::path root)
     {
         {
@@ -94,24 +100,30 @@ namespace h3::kernel
         SetMount("\\Device\\Harddisk0", std::move(root), true);
     }
 
+    // Where the hard drive folder is.
     std::filesystem::path UserDataRoot()
     {
         std::lock_guard lock(g_mutex);
         return g_userDataRoot;
     }
 
+    // A drive letter style name ("cache0:") for a device path (lower case).
     void AddSymbolicLink(std::string_view link, std::string_view target)
     {
         std::lock_guard lock(g_mutex);
         g_links[Lower(link)] = std::string(target);
     }
 
+    // Drops a link; false if there was none.
     bool RemoveSymbolicLink(std::string_view link)
     {
         std::lock_guard lock(g_mutex);
         return g_links.erase(Lower(link)) != 0;
     }
 
+    // A guest path ("game:\maps\mainmenu.map", "\Device\Cdrom0\...") on the
+    // host: links resolved, the mount found, then each component matched
+    // case-insensitively against what's on disk.
     std::optional<HostPath> MapGuestPath(std::string_view guestPath)
     {
         std::string devicePath;
@@ -181,6 +193,7 @@ namespace h3::kernel
         return result;
     }
 
+    // The host file for a guest path that must exist (opening for reading).
     std::optional<std::filesystem::path> ResolveGuestPath(std::string_view guestPath)
     {
         auto mapped = MapGuestPath(guestPath);

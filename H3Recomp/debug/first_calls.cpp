@@ -53,6 +53,8 @@ namespace h3::debug
     }
 }
 
+// Called by every recompiled function's prologue (H3_TRACE_FIRST_CALLS
+// builds): records a function's first call with the current frame.
 extern "C" void h3FirstCall(const char* name)
 {
     static std::mutex mutex;
@@ -65,6 +67,7 @@ extern "C" void h3FirstCall(const char* name)
     }
 }
 
+// The same, counting every call inside H3_TRACE_WINDOW.
 extern "C" void h3WindowCall(const char* name)
 {
     using namespace h3::debug;

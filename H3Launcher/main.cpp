@@ -16,6 +16,8 @@
 #include <QKeySequence>
 #include <QTimer>
 
+// Starts Qt and shows the launcher window (an optional argument: the
+// default.xex to use).
 int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);

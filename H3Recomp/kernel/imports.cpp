@@ -17,6 +17,9 @@
 
 namespace h3::kernel
 {
+    // What every kernel import without an implementation does (the weak stubs
+    // call it): logs it once and returns a failure status (Nt*/Io*) or 0.
+    // H3_STRICT_IMPORTS=1 aborts instead, to find which one matters.
     void UnimplementedImport(const char* name, PPCContext& ctx)
     {
         static std::mutex mutex;
@@ -50,11 +53,14 @@ namespace h3::kernel
     constexpr uint32_t kRegisterArguments = 8;
     constexpr uint32_t kArgumentSlotSize = 8;
 
+    // Argument index (counting from 0; 8 and up) of a call with more than
+    // eight: read from the caller's stack.
     uint32_t StackArgument(const PPCContext& ctx, uint32_t index)
     {
         return GuestRef<uint32_t>(ctx.r1.u32 + kParameterSaveArea + 4 + (index - kRegisterArguments) * kArgumentSlotSize);
     }
 
+    // The game hit something it can't recover from: log and exit.
     void GuestFatal(const char* what, PPCContext& ctx)
     {
         fprintf(stderr, "[kernel] %s (r3=0x%08X r4=0x%08X lr=0x%08llX), exiting\n", what,

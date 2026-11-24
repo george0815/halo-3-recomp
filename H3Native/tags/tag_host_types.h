@@ -31,9 +31,11 @@ namespace h3::native::tags::host
         int32_t storedCount = 0;   // the cache file's count (count is 0 when the
                                    // elements aren't readable: filled in at runtime)
 
+        // Range-for support: `for (auto& element : block)`.
         T* begin() const { return elements; }
         T* end() const { return elements + count; }
         T& operator[](int32_t i) const { return elements[i]; }
+        // No elements (or none readable: see storedCount).
         bool empty() const { return count == 0; }
     };
 
@@ -65,6 +67,8 @@ namespace h3::native::tags::host
     class Arena
     {
     public:
+        // bytes of memory at the given alignment: from the current chunk, or a
+        // new chunk (4 MB, or bigger for a bigger request) when it's full.
         void* Allocate(size_t bytes, size_t alignment)
         {
             m_used = (m_used + alignment - 1) & ~(alignment - 1);
@@ -79,6 +83,7 @@ namespace h3::native::tags::host
             m_total += bytes;
             return p;
         }
+        // count value-initialized Ts in the arena (freed with it, never one by one).
         template <typename T>
         T* New(size_t count = 1)
         {
@@ -87,6 +92,7 @@ namespace h3::native::tags::host
                 new (p + i) T();
             return p;
         }
+        // Bytes handed out so far (for the tag cache's size report).
         size_t TotalBytes() const { return m_total; }
 
     private:
@@ -105,14 +111,22 @@ namespace h3::native::tags::host
     public:
         using Reader = const uint8_t* (*)(void* context, uint32_t address, uint32_t bytes);
 
+        // arena: where converted blocks and data go; read(context, address,
+        // bytes): where the cache layout's bytes come from.
         Converter(Arena& arena, Reader read, void* context) : m_arena(arena), m_read(read), m_context(context) {}
 
+        // bytes at a guest address through the reader, or null if unreadable.
         const uint8_t* Read(uint32_t address, uint32_t bytes) const { return m_read(m_context, address, bytes); }
+        // The arena (generated converters allocate element arrays in it).
         Arena& GetArena() { return m_arena; }
+        // How many blocks or data fields couldn't be converted.
         uint32_t Errors() const { return m_errors; }
 
         template <typename Host, typename Layout>
         void ConvertBlock(const layout::tag_block<Layout>& in, Block<Host>& out);
+        // A data field: size, flags and guest address copied, and its bytes
+        // copied into the arena (an unreadable range counts as an error and
+        // leaves the field empty).
         void ConvertData(const layout::tag_data& in, TagData& out)
         {
             out.size = in.size.get();
@@ -152,13 +166,18 @@ namespace h3::native::tags::host
     public:
         using Writer = uint8_t* (*)(void* context, uint32_t address, uint32_t bytes);
 
+        // write(context, address, bytes): where the cache layout's bytes go.
         Unconverter(Writer write, void* context) : m_write(write), m_context(context) {}
 
+        // Writable bytes at a guest address through the writer, or null.
         uint8_t* Write(uint32_t address, uint32_t bytes) const { return m_write(m_context, address, bytes); }
+        // How many blocks or data fields couldn't be written back.
         uint32_t Errors() const { return m_errors; }
 
         template <typename Host, typename Layout>
         void UnconvertBlock(const Block<Host>& in, layout::tag_block<Layout>& out);
+        // The reverse: the field written back in cache layout, its bytes copied
+        // to the guest address it came from.
         void UnconvertData(const TagData& in, layout::tag_data& out)
         {
             out.size = in.size;
@@ -171,6 +190,7 @@ namespace h3::native::tags::host
             else
                 m_errors++;
         }
+        // For generated code that finds a problem of its own.
         void NoteError() { m_errors++; }
 
     private:
@@ -203,6 +223,9 @@ namespace h3::native::tags::host
             Convert(elements[i], out.elements[i], *this);
     }
 
+    // A block written back: its count and address, then each element in
+    // cache layout at the guest address it came from (an unwritable range
+    // counts as an error).
     template <typename Host, typename Layout>
     void Unconverter::UnconvertBlock(const Block<Host>& in, layout::tag_block<Layout>& out)
     {
@@ -221,6 +244,8 @@ namespace h3::native::tags::host
             Unconvert(in.elements[i], elements[i], *this);
     }
 
+    // The leaf field types: references and resource handles are copied as
+    // they are, data fields through the converter (above).
     inline void Convert(const layout::tag_reference& in, TagReference& out, Converter&)
     {
         out.group = in.group.get();
@@ -232,6 +257,7 @@ namespace h3::native::tags::host
     }
     inline void Convert(const layout::tag_data& in, TagData& out, Converter& c) { c.ConvertData(in, out); }
 
+    // Their reverses.
     inline void Unconvert(const TagReference& in, layout::tag_reference& out, Unconverter&)
     {
         out.group = in.group;

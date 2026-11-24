@@ -34,6 +34,7 @@ using namespace h3::kernel;
 
 namespace
 {
+    // H3_LOG_NET=1: log socket calls and traffic.
     bool LogNet()
     {
         static const bool log = EnvFlag("H3_LOG_NET");
@@ -92,6 +93,8 @@ namespace
     uint32_t g_nextSocket = 0x100;
     uint16_t g_nextEphemeral = 49152;
 
+    // The virtual socket behind a guest SOCKET handle; null for a closed or
+    // unknown one (the caller fails with WSAENOTSOCK).
     std::shared_ptr<VirtualSocket> Find(uint32_t handle)
     {
         std::lock_guard lock(g_socketsMutex);
@@ -99,6 +102,8 @@ namespace
         return it == g_sockets.end() ? nullptr : it->second;
     }
 
+    // Whether another virtual socket is bound to this port. Called with
+    // g_socketsMutex held.
     bool PortTaken(uint16_t port)
     {
         for (const auto& [handle, s] : g_sockets)
@@ -132,6 +137,8 @@ namespace
         ip = GuestRef<uint32_t>(address + 4);
     }
 
+    // Fills a guest SOCKADDR_IN (recvfrom's from, getsockname) and, when
+    // the game passed one, its length.
     void WriteAddress(uint32_t address, uint32_t sizePointer, uint32_t ip, uint16_t port)
     {
         if (address == 0)
@@ -161,6 +168,7 @@ namespace
     // host address), so XnAddrIp finds it in whichever part there is.
     constexpr uint32_t kOnlineMark = 0x4833534C;  // "H3SL"
 
+    // A game's XNADDR for a virtual IP, as described above.
     void WriteXnAddr(uint32_t address, uint32_t ip)
     {
         uint8_t* out = GuestPtr<uint8_t>(address);
@@ -206,6 +214,10 @@ namespace
         return size;
     }
 
+    // sendto for a virtual socket: binds it first if the game hasn't (as
+    // Winsock does), maps broadcast and secure addresses to the tunnel's,
+    // and hands the datagram to the link. Returns the bytes sent or
+    // SOCKET_ERROR with the WSA error set.
     uint32_t SendDatagram(VirtualSocket& s, uint32_t buffer, uint32_t length, uint32_t ip, uint16_t port)
     {
         if (!net::Enabled())
@@ -257,6 +269,7 @@ PPC_FUNC(__imp__NetDll_XNetStartup)
     ctx.r3.u64 = 0;
 }
 
+// Shutting XNet down: nothing to release (the link stays up for the run).
 PPC_FUNC(__imp__NetDll_XNetCleanup)
 {
     ctx.r3.u64 = 0;
@@ -318,6 +331,7 @@ PPC_FUNC(__imp__NetDll_XNetRegisterKey)
     ctx.r3.u64 = 0;
 }
 
+// A session key is no longer used: nothing to undo here.
 PPC_FUNC(__imp__NetDll_XNetUnregisterKey)
 {
     if (ctx.r4.u32 != 0)
@@ -398,6 +412,8 @@ PPC_FUNC(__imp__NetDll_XNetConnect)
     ctx.r3.u64 = 0;
 }
 
+// Secure connections to other games always count as established: the
+// tunnel needs no handshake of its own.
 PPC_FUNC(__imp__NetDll_XNetGetConnectStatus)
 {
     LogCall("XNetGetConnectStatus", ctx);
@@ -412,6 +428,7 @@ PPC_FUNC(__imp__NetDll_XNetQosListen)
     ctx.r3.u64 = 0;
 }
 
+// QoS probes aren't implemented (the game works without their results).
 PPC_FUNC(__imp__NetDll_XNetQosRelease)
 {
     LogCall("XNetQosRelease", ctx);
@@ -434,6 +451,7 @@ PPC_FUNC(__imp__NetDll_WSAStartup)
     ctx.r3.u64 = 0;
 }
 
+// Winsock shutdown: nothing to do.
 PPC_FUNC(__imp__NetDll_WSACleanup)
 {
     ctx.r3.u64 = 0;
@@ -565,6 +583,8 @@ PPC_FUNC(__imp__NetDll_listen)
     ctx.r3.u64 = Fail(kWsaEopnotsupp);
 }
 
+// Stream (TCP) sockets aren't supported: the game's system link uses
+// datagrams only.
 PPC_FUNC(__imp__NetDll_accept)
 {
     LogCall("accept", ctx);

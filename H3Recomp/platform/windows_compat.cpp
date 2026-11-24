@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 
+// Round to nearest, ties to even (1.5 -> 2, 2.5 -> 2).
 extern "C" float roundevenf(float value)
 {
     float rounded = std::round(value);  // half away from zero
@@ -18,6 +19,7 @@ extern "C" float roundevenf(float value)
     return rounded;
 }
 
+// The same for double.
 extern "C" double roundeven(double value)
 {
     double rounded = std::round(value);

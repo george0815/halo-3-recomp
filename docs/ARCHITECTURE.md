@@ -37,9 +37,9 @@ recompilation*) and supplies everything around it on the PC:
                                    └────────────────────────────────────────────────┘
 ```
 
-Nothing from the retail game is in the repository: you supply `private/`
-(see `docs/DUMPING.md`), and everything derived from it (the recompiled C++,
-shader caches) stays local.
+None of the game's code or data is in the repository: you supply it in
+`private/` (see [Dumping](DUMPING.html)), and everything derived from it
+(the recompiled C++, shader caches) stays on your machine.
 
 ## Directory layout
 
@@ -53,15 +53,16 @@ shader caches) stays local.
 | `H3Recomp/apu/` | Audio: the XAudio render driver (output) and the XMA hardware decoder |
 | `H3Recomp/input/` | XInput emulation from keyboard, mouse and gamepads |
 | `H3Recomp/video/` | The SDL window, presentation, event loop |
-| `H3Recomp/hooks/` | Host replacements for specific game functions (fibers, XMA registers) |
+| `H3Recomp/hooks/` | Hooks on specific game functions: what can't run as recompiled (fibers, XMA registers), the 60 Hz fixes, mouse look, the menu cursor, PC text, FOV and the other PC options |
+| `H3Recomp/net/` | System link: the games' datagrams tunnelled through one UDP port (`link.cpp`), under the kernel's virtual sockets (`kernel/xnet.cpp`) |
 | `H3Recomp/debug/` | Optional debugging tools (profiler, write watch, tracing) |
 | `H3Recomp/config/` | Runtime settings: `settings.h` (the launcher's `settings.ini`, shared with the launcher as the `H3Config` library) and `env.h` (the `H3_*` environment switches) |
-| `H3Launcher/` | The Qt launcher: edits `settings.ini`, starts the game; draws its menus with the game's own font (`halo_font.h` decodes `font_package.bin`) |
+| `H3Launcher/` | The Qt launcher: installs the game (runs `h3setup`), edits `settings.ini`, starts the game; draws its menus with the game's own font (`halo_font.h` decodes `font_package.bin`) |
 | `H3Native/` | Native game code replacing the recompiled code (docs/ROADMAP.md phase 6): `cache/` reads cache files in host layout, `tags/` has decompiled tag functions, the host tag cache and the tag layout types (`generated/`, from `tools/tagdefs`, stays local), `ai/` the first decompiled readers of host tags; `native.h` has the switches every replacement honors (`H3_ORIGINAL`, `H3_CHECK_NATIVE`) |
 | `H3RecompLib/` | Build glue for the recompiled code: recompiler configs, generated sources (ignored) |
-| `tools/` | Pipeline scripts (recompile, FFmpeg build), XEX inspector, shader test tool, `h3tags` (cache file lister), `films/` (film replay tests), `tagdefs/` (tag layouts from H3EK) |
-| `thirdparty/XenonRecomp/` | The recompiler (submodule, with local patches; see `private/`) |
-| `docs/` | This file, the roadmap, the dumping guide |
+| `tools/` | `h3setup` (the ISO tool, [ISO_TOOL](ISO_TOOL.html)), pipeline scripts (recompile, FFmpeg build), XEX inspector, shader test tool, `h3tags` (cache file lister), `shaders/` (the shipped shader manifest), `films/` (film replay tests), `tagdefs/` (tag layouts from H3EK), release packaging |
+| `thirdparty/XenonRecomp/` | The recompiler (submodule, with local patches) |
+| `docs/` | This site: guides, this file, the roadmap, the dumping guide |
 
 ## How a frame of the game runs
 
@@ -142,6 +143,14 @@ shader caches) stays local.
 - **Tessellation**: Halo's water is drawn as tessellated triangle patches;
   with no tessellator in SDL_GPU each patch becomes a uniform grid in the
   vertex shader (`kVertexMain` in `gpu/shader/translator.cpp`).
+- **Shader cache**: each translated shader is compiled to SPIR-V once and
+  kept in `shadercache/` (named by a hash of its GLSL), with
+  `pipelines.txt`, the shaders and pipeline states this PC has used, which
+  a background warm-up rebuilds at start (`gpu/renderer/pipelines.cpp`).
+  The installer fills it ahead of the first start: every shader in the
+  player's maps, plus the variants the game makes when it binds a shader,
+  rebuilt from a shipped manifest of the changed bits
+  (`gpu/renderer/precompile.cpp`, `assets/shaders/`).
 - **Render scale**: render targets and resolved textures are
   `g_renderScale` times the guest's size (`gpu/renderer/internal.h`);
   everything that addresses them in guest pixels multiplies by it, shaders
@@ -150,13 +159,13 @@ shader caches) stays local.
 
 ## Debugging
 
-Most tools are switched on with environment variables; the README lists
-them all (`H3_GPU_CAPTURE`, `H3_DUMP_FRAME`, `H3_LOG_FPS`, `H3_PROFILE`,
-`H3_WATCH_WRITES`, `H3_AUDIO_DUMP`, ...). `private/SESSION_NOTES.md` records
-how past bugs were found, which is a good guide to the techniques.
+Most tools are switched on with environment variables; the
+[Debugging](debugging.html) page lists them all (`H3_GPU_CAPTURE`,
+`H3_DUMP_FRAME`, `H3_LOG_FPS`, `H3_PROFILE`, `H3_WATCH_WRITES`,
+`H3_AUDIO_DUMP`, ...), along with the switches that turn each fix off.
 
 Performance ideas that haven't been tried yet are marked `// PERF:` in the
-source and listed in `private/TODO.md`.
+source.
 
 ## Where to start reading
 
@@ -167,3 +176,5 @@ source and listed in `private/TODO.md`.
 4. `H3Recomp/gpu/command_processor.h` then `gpu/renderer.h`: the graphics
    pipeline.
 5. `docs/ROADMAP.md`: what's done and what's next.
+6. [Contributing](contributing.html): the conventions, and recipes for the
+   common changes (a setting, a hook, a kernel call).

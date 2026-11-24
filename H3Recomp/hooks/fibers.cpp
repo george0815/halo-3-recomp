@@ -51,6 +51,8 @@ namespace
     // guest's, so this is generous; untouched pages cost nothing.
     constexpr size_t kHostStackSize = 8 * 1024 * 1024;
 
+    // A guest fiber's host side: its own host stack and context, and the
+    // guest fiber object it belongs to.
     struct HostFiber
     {
         uint32_t guestFiber = 0;
@@ -98,6 +100,7 @@ namespace
 #else
     thread_local HostFiber* t_startingFiber = nullptr;
 
+    // (The POSIX version reads the fiber from a thread-local.)
     void FiberEntry()
     {
         RunFiber(*t_startingFiber);

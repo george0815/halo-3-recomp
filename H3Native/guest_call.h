@@ -28,12 +28,14 @@ namespace h3::native
 
     namespace detail
     {
+        // The PowerPC ABI's integer argument registers, r3-r10.
         inline PPCRegister& ArgumentRegister(PPCContext& ctx, int index)
         {
             PPCRegister* registers[] = { &ctx.r3, &ctx.r4, &ctx.r5, &ctx.r6, &ctx.r7, &ctx.r8, &ctx.r9, &ctx.r10 };
             return *registers[index];
         }
 
+        // Puts integer arguments in r3, r4, ... in order (as the ABI passes them).
         template <typename... Args>
         void SetArguments(PPCContext& ctx, Args... args)
         {
@@ -76,6 +78,7 @@ namespace h3::native
             PPC_STORE_U32(m_ctx.r1.u32, m_saved);  // back chain
             m_buffers = m_ctx.r1.u32 + kLinkArea;
         }
+        // Gives the stack space back.
         ~GuestFrame() { m_ctx.r1.u64 = m_saved; }
         GuestFrame(const GuestFrame&) = delete;
         GuestFrame& operator=(const GuestFrame&) = delete;

@@ -65,6 +65,7 @@ MENU_FRAME=1300
 LOBBY_FRAME=1650
 STEP=60
 
+# Prints the comment block at the top of this file (its manual) and exits.
 usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 [[ $# -ge 1 ]] || usage
 OUT="$1"; shift
@@ -88,6 +89,7 @@ done
 # select it (back in the lobby, on FILM:), down to START FILM, start.
 frame=$LOBBY_FRAME
 script="f$MENU_FRAME-$((MENU_FRAME + 5)):a"
+# Adds one button press (held 5 frames) at the next step of the script.
 press() { script+=",f$frame-$((frame + 5)):$1"; frame=$((frame + STEP)); }
 press up
 press a

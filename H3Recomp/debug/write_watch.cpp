@@ -48,6 +48,8 @@ namespace h3::debug
         std::atomic<bool> g_armed{ false };
         bool g_done = false;                       // reported; never re-arm
         std::atomic<uint32_t> g_provided{ 0 };     // physical address from ProvideWatchAddress
+        // One instruction that wrote (or read) the watched range: its host
+        // address and how often, and the offsets it touched.
         struct Site
         {
             uint64_t rip;
@@ -179,6 +181,8 @@ namespace h3::debug
         }
     }
 
+    // A watch with address 0 waits for code to hand it one (see the top of
+    // the file); taken only before the watch arms.
     void ProvideWatchAddress(uint32_t address)
     {
         if (!g_armed.load())
@@ -238,6 +242,7 @@ namespace h3::debug
 #else
 namespace h3::debug
 {
+    // Platforms without the watch (it needs POSIX signals): no-ops.
     void UpdateWriteWatch(uint32_t) {}
     void ProvideWatchAddress(uint32_t) {}
 }

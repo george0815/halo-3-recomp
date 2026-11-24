@@ -75,6 +75,8 @@ namespace h3::gpu::renderer::internal
 
         std::unordered_map<uint64_t, std::unique_ptr<HostShader>> g_hostShaders;  // SPIR-V cache id -> shader
 
+        // A pipeline in the cache: the SDL object once made, and whether making
+        // it has finished (a worker may still be on it).
         struct PipelineEntry
         {
             SDL_GPUGraphicsPipeline* pipeline = nullptr;
@@ -130,6 +132,7 @@ namespace h3::gpu::renderer::internal
         std::mutex g_manifestMutex;
         std::unordered_set<uint64_t> g_recorded;  // shader ids and pipeline hashes already in the manifest
 
+        // pipelines.txt in the shader cache.
         std::filesystem::path ManifestPath() { return g_shaderCacheDirectory / kManifestFile; }
 
         // Makes sure the manifest is of this version (kManifestVersion):
@@ -170,6 +173,7 @@ namespace h3::gpu::renderer::internal
             std::ofstream(ManifestPath(), std::ios::app) << line << '\n';
         }
 
+        // A shader id as the manifest writes it (16 hex digits).
         std::string Hex(uint64_t value)
         {
             char text[17];
@@ -177,6 +181,9 @@ namespace h3::gpu::renderer::internal
             return text;
         }
 
+        // A pipeline's "P" line in pipelines.txt: its two shader ids and every
+        // render state field of the description, in the order ParsePipeline
+        // reads them back.
         std::string PipelineRecord(const PipelineDesc& desc)
         {
             std::ostringstream line;
@@ -334,6 +341,8 @@ namespace h3::gpu::renderer::internal
             return host.shader.load();
         }
 
+        // The host shader with this cache id, made or being made; null if
+        // nothing has asked for it yet.
         HostShader* FindHostShader(uint64_t id)
         {
             std::lock_guard lock(g_mutex);
@@ -441,11 +450,15 @@ namespace h3::gpu::renderer::internal
         }
     }
 
+    // A shader's id: the 16 hex digits of its cache file name.
     uint64_t ShaderCacheId(const std::string& cacheName)
     {
         return std::stoull(cacheName.substr(0, 16), nullptr, 16);
     }
 
+    // The host shader for some GLSL, shared by id: if nothing has asked for
+    // it yet, it's made (now, or on a worker thread when shaders compile in
+    // the background) and recorded in the manifest for next time's warm-up.
     HostShader* RequestHostShader(bool vertex, const std::string& glsl, uint32_t samplers, const std::string& cacheName)
     {
         uint64_t id = ShaderCacheId(cacheName);
@@ -471,6 +484,8 @@ namespace h3::gpu::renderer::internal
         return host;
     }
 
+    // Whether a guest shader's host shader exists; with wait, blocks until
+    // it does (or failed).
     bool ShaderReady(const Shader& shader, bool wait)
     {
         if (!shader.ok || !shader.host)
@@ -480,6 +495,9 @@ namespace h3::gpu::renderer::internal
         return wait && WaitForShader(*shader.host) != nullptr;
     }
 
+    // The pipeline for a draw's state (shaders, formats, blending, depth...),
+    // from the cache or made now (or on a worker, returning null until it's
+    // done, when shaders compile in the background).
     SDL_GPUGraphicsPipeline* GetPipeline(const PipelineDesc& desc)
     {
         uint64_t key = Hash(&desc, sizeof(desc));
@@ -509,6 +527,8 @@ namespace h3::gpu::renderer::internal
         return g_pipelines[key].pipeline;
     }
 
+    // At start: queues every shader and pipeline in pipelines.txt for the
+    // worker threads, so places played before don't stutter.
     void StartShaderWarmup()
     {
         if (g_shaderCacheDirectory.empty())
@@ -584,6 +604,7 @@ namespace h3::gpu::renderer::internal
         fprintf(stderr, "[render] warming up %zu shaders and %zu pipelines in the background\n", shaders, queued);
     }
 
+    // Pipelines made so far (logs).
     size_t PipelineCount()
     {
         std::lock_guard lock(g_mutex);

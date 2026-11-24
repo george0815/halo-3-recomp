@@ -135,6 +135,7 @@ PPC_FUNC(__imp__ObReferenceObject)
 {
 }
 
+// (Same as ObReferenceObject: nothing to count.)
 PPC_FUNC(__imp__ObDereferenceObject)
 {
 }
@@ -537,17 +538,24 @@ PPC_FUNC(__imp__NtYieldExecution)
 
 namespace
 {
+    // KTIMER / NtCreateTimer: signaled when its due time passes. A
+    // notification timer stays signaled; a synchronization timer releases
+    // one waiter and resets, like the two kinds of event.
     struct Timer : KernelObject
     {
+        // synchronization picks the kind (above).
         explicit Timer(bool synchronization)
             : KernelObject(synchronization ? ObjectType::SynchronizationTimer : ObjectType::NotificationTimer) {}
 
+        // A wait succeeds once the timer has fired (and, for the auto-reset
+        // kind, until a waiter takes it).
         bool IsSignaled(uint32_t) const override { return signaled; }
         void Satisfy(uint32_t) override
         {
             if (type == ObjectType::SynchronizationTimer)
                 signaled = false;
         }
+        // 1 once fired, 0 before.
         int32_t SignalState() const override { return signaled; }
 
         bool signaled = false;

@@ -25,6 +25,7 @@ namespace
 }
 
 PPC_FUNC_IMPL(__imp__sub_820E7A38);
+// The ground push fix described above, around the original.
 PPC_FUNC(sub_820E7A38)
 {
     static bool scaled = false;

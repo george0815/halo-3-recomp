@@ -62,6 +62,9 @@ namespace h3::native::tags
     // that is (or descends from) group, else 0.
     uint32_t CheckedGroup(uint32_t datum, uint32_t group);
 
+    // TagBySlotOf and TagGet (declared above): the slot's tag as a T when its
+    // group is T's own; TagGet also checks the datum's salt and group the way
+    // tag_get does.
     template <typename T>
     const T* TagBySlotOf(uint32_t slot)
     {

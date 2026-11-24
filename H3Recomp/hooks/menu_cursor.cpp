@@ -92,6 +92,8 @@ namespace
     std::unordered_map<uint32_t, Drawn> g_drawn;  // text widget -> offset
     constexpr int64_t kDrawnFreshNs = 250'000'000;
 
+    // A text widget's last drawn offset, when it was drawn within
+    // kDrawnFreshNs (an older one belongs to a screen that's gone or moved).
     bool DrawnOffset(uint32_t widget, int64_t now, float& dx, float& dy)
     {
         std::lock_guard<std::mutex> lock(g_drawnLock);
@@ -103,6 +105,7 @@ namespace
         return true;
     }
 
+    // Monotonic time for the freshness checks.
     int64_t NowNs()
     {
         return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -129,6 +132,8 @@ namespace
         return call.r3.u32;
     }
 
+    // Calls a widget's virtual function (vtable at +0, the function at
+    // offset) with the widget as its only argument; returns r3.
     uint32_t Virtual(PPCContext& ctx, uint8_t* base, uint32_t object, uint32_t offset)
     {
         uint32_t vtable = h3::GuestRef<uint32_t>(object);
@@ -136,25 +141,32 @@ namespace
         return Call(ctx, base, PPC_LOOKUP_FUNC(base, function), object);
     }
 
+    // A widget's address from one of its handle fields (handle = the
+    // field's address: +28 first child, +40 next sibling), through the
+    // game's own resolver; 0 for none.
     uint32_t Resolve(PPCContext& ctx, uint8_t* base, uint32_t handle)
     {
         return Call(ctx, base, sub_82482A48, handle);
     }
 
+    // Inside the guest's allocated heap ranges, so safe to read: guards the
+    // tree walks against a stale or corrupt handle.
     bool Plausible(uint32_t address)
     {
         return address >= 0x40000000 && address < 0xC0000000;
     }
 
+    // A rectangle in the game's screen coordinates; starts "inside out" so
+    // the first union sets it.
     struct Rect
     {
         float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
+        // No area (nothing was added to it).
         bool Empty() const { return x0 >= x1 || y0 >= y1; }
+        // Whether a point is inside (left/top edges in, right/bottom out).
         bool Contains(float x, float y) const { return x >= x0 && x < x1 && y >= y0 && y < y1; }
     };
 
-    // The union of the bounds of the text under a widget (depth-limited);
-    // slider: one of the widgets under it is a slider.
     // The offset most of a screen's text is drawn at (see Drawn).
     struct Reference
     {
@@ -162,6 +174,10 @@ namespace
         float dx = 0, dy = 0;
     };
 
+    // The union of the bounds of the text under a widget (depth-limited);
+    // slider: set when one of the widgets under it is a slider. With a
+    // reference, each text's bounds move by how far it was drawn from
+    // where the rest of its screen's text was (Drawn, Reference).
     void TextBounds(PPCContext& ctx, uint8_t* base, uint32_t widget, Rect& rect, int depth, bool* slider = nullptr,
         const Reference* reference = nullptr, int64_t now = 0)
     {
@@ -444,6 +460,9 @@ namespace
 
 namespace h3::hooks
 {
+    // Packs the position into one atomic word (bit 63: inside; 16 bits each
+    // for x and y) so the game thread always reads a consistent pair; counts
+    // real moves.
     void SetMenuCursor(bool inside, float x, float y, bool moved)
     {
         uint64_t packed = (inside ? 1ull << 63 : 0) | uint64_t(uint32_t(std::clamp(y, 0.0f, 1.0f) * 65535.0f)) << 16 |
@@ -452,27 +471,33 @@ namespace h3::hooks
             g_cursorMoves.fetch_add(1);
     }
 
+    // A list updated within 150 ms: some menu is open.
     bool MenuOpen()
     {
         return NowNs() - g_lastListNs.load() < 150'000'000;
     }
 
+    // The cursor's item was a slider within the last 150 ms.
     bool MenuCursorOverSlider()
     {
         return NowNs() - g_overSliderNs.load() < 150'000'000;
     }
 
+    // Asks the game thread to focus the item under the cursor (UpdateList
+    // answers it).
     void RequestMenuClick()
     {
         g_clickReady.store(false);
         g_clickRequested.store(true);
     }
 
+    // True once (per request) when the item is focused: press A now.
     bool TakeMenuClick()
     {
         return g_clickReady.exchange(false);
     }
 
+    // Drops an unanswered click (the menu closed, or the click missed).
     void CancelMenuClick()
     {
         g_clickRequested.store(false);
@@ -481,6 +506,8 @@ namespace h3::hooks
 }
 
 PPC_FUNC_IMPL(__imp__sub_824E1B00);
+// Every menu list's per-frame update: runs the game's, then hit-tests the
+// cursor against the list's items (UpdateList).
 PPC_FUNC(sub_824E1B00)
 {
     uint32_t list = ctx.r3.u32;

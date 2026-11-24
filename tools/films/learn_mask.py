@@ -154,6 +154,9 @@ class Layout:
       - before every array: the global word itself
     """
 
+    # Indexes the layout for rule(): the non-object arrays, the live objects
+    # by start offset, where free object memory ends, and the gap (memory
+    # between arrays) each array end opens.
     def __init__(self, arrays, objects, size):
         self.objects = objects
         self.others = [a for a in arrays if a[2] != 'object']  # first match wins
@@ -174,6 +177,9 @@ class Layout:
             following = min([a[0] for a in arrays if a[0] >= end] + [size])
             self.gaps.append((first_by_end[end][2], end, following))
 
+    # The mask rule that would cover one differing state offset: inside an
+    # array, a field of a live object, free object memory, a gap after an
+    # array (or one 64-byte block of a large gap), or else the single word.
     def rule(self, offset):
         for start, end, name in self.others:
             if start <= offset < end:
@@ -201,12 +207,15 @@ def covered(rule, mask):
     return rule in mask or (rule[0] == 'after' and len(rule) == 3 and ('after', rule[1]) in mask)
 
 
+# A rule as it's written in a mask file (state_hash.cpp's format).
 def format_rule(rule):
     if rule[0] == 'after' and len(rule) == 3:
         return f'after {rule[1]} @ {rule[2]}'
     return ' '.join(rule)
 
 
+# A mask file's rules as tuples ('array', name), ('object', tag, offset)...
+# the reverse of format_rule.
 def read_mask(path):
     rules = set()
     for line in open(path):
@@ -359,6 +368,8 @@ def print_new(new):
         print(f'  {tick:6d}  {format_rule(rule)}')
 
 
+# The subcommands (top of the file): learn a mask from records, from raw
+# state dumps, or check one; --known <mask> starts from an existing mask.
 def main():
     args = sys.argv[1:]
     known = set()

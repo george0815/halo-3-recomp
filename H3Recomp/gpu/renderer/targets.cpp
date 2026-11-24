@@ -131,6 +131,8 @@ namespace h3::gpu::renderer::internal
         }
     }
 
+    // The host texture standing in for EDRAM at a base in a format: one per
+    // (base, format, color/depth), made on first use at the render scale.
     RenderTarget* GetRenderTarget(uint32_t base, uint32_t xenosFormat, bool depth)
     {
         uint64_t key = (uint64_t(base) << 8) | (uint64_t(xenosFormat) << 1) | (depth ? 1 : 0);
@@ -164,6 +166,8 @@ namespace h3::gpu::renderer::internal
         return &g_renderTargets.emplace(key, target).first->second;
     }
 
+    // A color target that also carries over what another format last drew
+    // at the same base (EDRAM aliasing: see the top of the file).
     RenderTarget* GetColorTarget(uint32_t base, uint32_t xenosFormat)
     {
         RenderTarget* target = GetRenderTarget(base, xenosFormat, false);
@@ -196,6 +200,8 @@ namespace h3::gpu::renderer::internal
         return target;
     }
 
+    // Remembers which rectangles a base's current target drew, so a format
+    // switch there copies only those.
     void RecordColorWrite(uint32_t base, const SDL_Rect& rect)
     {
         if (rect.w <= 0 || rect.h <= 0)
@@ -216,6 +222,7 @@ namespace h3::gpu::renderer::internal
         }
     }
 
+    // The color target last used at a base, or null.
     RenderTarget* ColorTargetAt(uint32_t base)
     {
         auto it = g_colorAtBase.find(base);
@@ -263,6 +270,7 @@ namespace h3::gpu::renderer::internal
         }
     }
 
+    // Render targets and their video memory (logs).
     VideoMemoryUse RenderTargetMemory()
     {
         VideoMemoryUse use;
@@ -274,6 +282,7 @@ namespace h3::gpu::renderer::internal
         return use;
     }
 
+    // Host formats that store floats (values aren't clamped to 0..1).
     bool IsFloatHostFormat(SDL_GPUTextureFormat format)
     {
         return format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT || format == SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT ||
@@ -281,6 +290,9 @@ namespace h3::gpu::renderer::internal
             format == SDL_GPU_TEXTUREFORMAT_R11G11B10_UFLOAT;
     }
 
+    // The host targets a draw renders into, from the EDRAM registers: the
+    // color targets the pixel shader writes and the mask allows, and the
+    // depth target if depth or stencil is used.
     TargetSet CurrentTargets(const Shader& ps, uint32_t colorMask, uint32_t depthControl, uint32_t edramMode)
     {
         TargetSet targets;

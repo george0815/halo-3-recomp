@@ -22,6 +22,9 @@ namespace
 }
 
 PPC_FUNC_IMPL(__imp__sub_82205690);
+// Centered crosshair: sets the crosshair (and aim) height in the observer
+// result to 0, the middle of the screen, before the original runs with it
+// (H3_CROSSHAIR_Y: another height, for testing).
 PPC_FUNC(sub_82205690)
 {
     // H3_CROSSHAIR_Y=<-1..1> (testing) overrides the height.

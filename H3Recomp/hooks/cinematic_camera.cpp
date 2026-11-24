@@ -90,6 +90,7 @@ namespace
     float g_fovFrame = 0.0f;
     float g_fovBlend = 0.0f;
 
+    // Guest float access.
     float LoadFloat(uint32_t address) { return h3::GuestRef<float>(address); }
     void StoreFloat(uint32_t address, float value) { h3::GuestRef<float>(address) = value; }
 

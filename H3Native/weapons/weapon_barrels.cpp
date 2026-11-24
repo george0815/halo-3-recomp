@@ -134,6 +134,8 @@ namespace
         return h3::native::tags::TagDataBySlot(datum & 0xFFFF);
     }
 
+    // The game's tick rate (game time globals: 30, or 60 with the 60 Hz
+    // mode), as the original reads it.
     uint32_t TicksPerSecond(const PPCContext& ctx)
     {
         uint32_t gameTime = objects::Load32(objects::Load32(ctx.r13.u32) + kTlsGameTime);
@@ -148,6 +150,8 @@ namespace
         uint32_t tag;         // weapon tag data
         uint32_t definition;  // barrel definition
 
+        // Finds barrel index of a weapon object: its state in the object and its
+        // definition in the weapon tag.
         Barrel(const PPCContext& ctx, uint32_t weaponIndex, int32_t index)
         {
             weapon = objects::ObjectData(ctx, weaponIndex);

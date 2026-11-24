@@ -4,6 +4,8 @@ import os, struct, sys
 SECTOR = 2048
 PARTITIONS = (0xFD90000, 0x18300000, 0x2080000, 0)  # XGD2, XGD1, XGD3, plain xiso
 
+# The XDVDFS volume's offset in the image (the disc layouts put it at
+# different places): the one with the magic at sector 32.
 def find_partition(f):
     for off in PARTITIONS:
         f.seek(off + 32 * SECTOR)
@@ -11,6 +13,8 @@ def find_partition(f):
             return off
     sys.exit("no XDVDFS volume found")
 
+# Collects a directory's files (and its subdirectories', recursively):
+# each entry is a node of a binary tree, as in h3setup's iso.cpp.
 def walk(f, base, sector, size, path, out):
     f.seek(base + sector * SECTOR)
     data = f.read(size)
@@ -30,6 +34,8 @@ def walk(f, base, sector, size, path, out):
         if attr & 0x10 and length:
             walk(f, base, start, length, path + "/" + name, out)
 
+# xdvdfs_extract.py <iso> <out dir> [--list]: extracts (or lists) the
+# disc's files.
 def main():
     iso, outdir = sys.argv[1], sys.argv[2]
     listonly = "--list" in sys.argv

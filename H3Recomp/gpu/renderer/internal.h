@@ -78,6 +78,7 @@ namespace h3::gpu::renderer::internal
 
     // RB_COLOR_INFO / RB_DEPTH_INFO fields.
     constexpr uint32_t kEdramBaseMask = 0xFFF;  // EDRAM base, in 80x16-sample tiles
+    // Where a render target starts in EDRAM (in tiles).
     inline uint32_t EdramBase(uint32_t info) { return info & kEdramBaseMask; }
     inline uint32_t ColorFormat(uint32_t info) { return (info >> 16) & 0xF; }      // ColorRenderTargetFormat
     inline bool DepthIsFloat(uint32_t info) { return (info >> 16) & 1; }           // D24FS8 rather than D24S8
@@ -241,7 +242,6 @@ namespace h3::gpu::renderer::internal
     // Shaders (shaders.cpp)
     // ------------------------------------------------------------------
 
-    // A translated guest shader.
     // A host shader: one SPIR-V program, shared by every guest shader that
     // translates to the same GLSL. Made on the GPU thread or a worker
     // (pipelines.cpp); shader is set once it exists.
@@ -251,6 +251,8 @@ namespace h3::gpu::renderer::internal
         std::atomic<bool> failed{ false };
     };
 
+    // A guest shader as the renderer keeps it (one per distinct microcode,
+    // LoadShader): its translation, its host shader and what it reads.
     struct Shader
     {
         bool ok = false;               // translated
@@ -476,11 +478,13 @@ namespace h3::gpu::renderer::internal
         Blit,           // format carry-overs, resolves, resolved views
         Count,
     };
+    // Counts for one PassKind (CountPass).
     struct PassCounter
     {
         uint64_t passes = 0, pixels = 0;
     };
     inline PassCounter g_passCounters[size_t(PassKind::Count)];
+    // Counts one GPU pass of a kind and the pixels it covers (H3_LOG_FPS).
     inline void CountPass(PassKind kind, uint64_t pixels)
     {
         g_passCounters[size_t(kind)].passes++;

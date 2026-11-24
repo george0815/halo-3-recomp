@@ -69,6 +69,7 @@ MENU_SECONDS=90
 TICKS_PER_SECOND=30
 PARALLEL_TICKS_PER_SECOND=20
 
+# Prints the comment block at the top of this file (its manual) and exits.
 usage() { sed -n '2,55p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 [[ $# -ge 3 ]] || usage
 NAME="$1" INDEX="$2" FILM_SECONDS="$3"; shift 3
@@ -95,6 +96,7 @@ WORK="$ROOT/private/films_work/$NAME"
 MASK="$ROOT/private/films/$NAME.mask"
 RULES="$ROOT/private/films/$NAME.rules.log"
 mkdir -p "$WORK"
+# A timestamped progress line, also kept in the work folder's learn.log.
 [[ -f "$MASK" ]] || cp "$START" "$MASK"
 log() { echo "[$(date +%H:%M:%S)] $NAME: $*" | tee -a "$WORK/learn.log"; }
 (( JOBS > ${#SLOTS[@]} )) && JOBS=${#SLOTS[@]}
@@ -164,6 +166,7 @@ full_run() {
 # (FULL_SECONDS run alone, PARALLEL_FULL_SECONDS sharing the machine).
 FULL_SECONDS=$(( MENU_SECONDS + FILM_SECONDS * 60 / TICKS_PER_SECOND ))
 PARALLEL_FULL_SECONDS=$(( MENU_SECONDS + FILM_SECONDS * 60 / RUN_TICKS_PER_SECOND ))
+# One of the two full replays run side by side (--jobs 2).
 full_pair_run() { full_run "$WORK/full_$1" "$PARALLEL_FULL_SECONDS"; }
 
 # record_run <n>: replay n of a round, recording $spans into rec<n>.

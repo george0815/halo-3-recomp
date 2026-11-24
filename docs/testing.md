@@ -34,11 +34,11 @@ replay.
 ## Finding where it diverged
 
 - `H3_STATE_DUMP=<tick>` saves the raw state at a tick; comparing two dumps
-  shows the fields.
+  shows which fields differ.
 - `H3_STATE_RECORD` records every tick compactly, for the stretch around a
   difference.
-- The film's level time (`H3_SNAPSHOT_LEVEL`) gives screenshots of the same
-  moment in two builds.
+- `H3_SNAPSHOT_LEVEL` saves screenshots at chosen moments of the film, so
+  two builds can be compared at exactly the same moment.
 
 ## Pictures
 
@@ -46,4 +46,4 @@ Rendering isn't in the game state, so it's checked by eye: screenshots at
 the same film moment (`H3_SNAPSHOT_LEVEL`), GPU captures (F9/F10, per draw)
 and comparisons with the same frame in [Xenia](https://github.com/xenia-project/xenia).
 
-Details: `tools/films/README.md` in the repository.
+The details are in `tools/films/README.md` in the repository.

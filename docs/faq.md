@@ -15,8 +15,8 @@ nav_order: 2
 
 Your own Halo 3 disc dumped to a disc image (.iso; see [Dumping your
 disc](DUMPING.html)), a 64-bit PC with a Vulkan graphics card, and about
-8 GB of disk space. Windows 10 (version 1903 or later) or 11; on Linux,
-clang 18 or newer (the installer compiles the game with it). Only the
+8 GB of disk space. On Windows, Windows 10 (version 1903 or later) or 11;
+on Linux, clang 18 or newer (the installer compiles the game with it). Only the
 original disc release is supported for now (no title updates).
 
 ### Why do I need my own disc? Can't you ship the game?
@@ -53,15 +53,16 @@ Xbox 360 underneath. That's where the project is heading
 
 It does break: the 360 version ties many things to its 30 ticks per second
 (fire rates, physics, camera shake, animations, AI timing). The project
-runs the game at 60 ticks and fixes those, porting the fix sites MCC uses
-where they exist, and checks the result against the original with recorded
-films ([testing](testing.html)).
+runs the game at 60 ticks and fixes those, porting MCC's own fixes where it
+has them, and checks the result against the original with recorded films
+([testing](testing.html)).
 
 ### Can I play with friends?
 
-Split screen with up to four players on one PC, and system link over a LAN
-or the internet (one UDP port; the host forwards it). Everyone needs the
-same release and the same game version. See the [player guide](guide.html).
+Yes: split screen with up to four players on one PC, and system link over a
+LAN or the internet (one UDP port, which the host forwards). Everyone needs
+the same release, the same game version and the same frame rate setting.
+See the [player guide](guide.html).
 
 ### Will my MCC or 360 saves work?
 
@@ -74,8 +75,8 @@ No; the game keeps its own saves (an emulated 360 hard drive in `game/hdd/`).
 A tool ([XenonRecomp](https://github.com/hedge-dev/XenonRecomp)) reads the
 game executable (`default.xex`), finds every function, and writes each one
 as C++ that does exactly what the PowerPC instructions did, on a model of
-the CPU's registers and the console's memory. About 22,400 functions for
-Halo 3, plus the four audio DLLs it loads. The C++ is compiled normally.
+the CPU's registers and the console's memory. Halo 3 has about 22,400
+functions, plus the four audio DLLs it loads. The C++ is compiled normally.
 The game then runs at native speed, but it still expects an Xbox 360
 around it, which the runtime provides.
 
@@ -83,7 +84,8 @@ around it, which the runtime provides.
 
 Everything the 360 did: memory laid out like the console's, the kernel and
 XAM system calls (threads, files, users, networking), the Xenos GPU (its
-command stream and shaders, translated to Vulkan), XMA audio decoding, input.
+command stream and shaders, translated to Vulkan), XMA audio decoding and
+input.
 On top of that, *hooks* replace or adjust individual game functions: the
 60 Hz fixes, mouse look, the menu cursor, PC text, system link. See the
 [architecture](ARCHITECTURE.html).
@@ -105,7 +107,7 @@ simulation shows up as the first differing tick. See [testing](testing.html).
 ### Why compile on the player's machine instead of shipping binaries?
 
 A compiled game executable would contain Halo 3's code, translated. Building
-it locally from your own disc keeps everything distributed free of
+it locally from your own disc means nothing the project distributes contains
 Microsoft's code.
 
 ## Building and contributing
@@ -118,14 +120,16 @@ shaderc, a Vulkan driver, Qt 6 for the launcher, your `default.xex`, then
 
 ### Something looks wrong. How do I report it?
 
-Open an issue with what you saw (a screenshot), where (mission, spot), and
-your system. Many fixes have a switch to turn them off ([Debugging](debugging.html),
-"Turning a fix off"); saying whether one changes the problem helps a lot.
-Saved Theater films that show a problem are the best bug reports there are.
+Open an issue with what you saw (a screenshot helps), where it happened
+(mission and spot) and your system. Many fixes have a switch to turn them off
+([Debugging](debugging.html), "Turning a fix off"); saying whether one of
+them changes the problem helps a lot. A saved Theater film that shows the
+problem is the best bug report there is.
 
 ### The install failed. What now?
 
-The launcher shows the reason. Logs are in `build/` (`build.log`,
-`compile_*.log`, `recompile.log`) and `toolchain/xwin.log`. Common causes:
-not enough disk space, clang missing (Linux), the disc image not being the
-supported version. Running INSTALL again continues where it stopped.
+The launcher shows the reason. The logs are in `build/` (`build.log`,
+`compile_*.log`, `recompile.log`, `shaders.log`) and `toolchain/xwin.log`.
+Common causes: not enough disk space, clang missing (Linux), or a disc image
+that isn't the supported version. Running INSTALL again continues where it
+stopped.

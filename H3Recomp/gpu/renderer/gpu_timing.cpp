@@ -22,6 +22,8 @@ namespace h3::gpu::renderer::internal
     namespace
     {
         constexpr uint32_t kGpuTimingSwaps = 60;
+        // GPU time of one flush position in the frame (the n-th flush), summed
+        // over the measuring window.
         struct FlushTiming
         {
             double seconds = 0;
@@ -65,6 +67,11 @@ namespace h3::gpu::renderer::internal
             return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         }
 
+        // H3_GPU_TIMING: prints the measuring window's GPU time per frame:
+        // draw flushes and other work (with and without the cost of an empty
+        // submit and wait), MSAA flushes, each labelled scope, the 12
+        // slowest flushes (by their position in the frame) and the longest
+        // waits before a flush, then starts a new window.
         void ReportFlushTimings()
         {
             uint32_t frames = g_swaps - g_flushTimingStart;
@@ -117,6 +124,7 @@ namespace h3::gpu::renderer::internal
         }
     }
 
+    // H3_GPU_TIMING=<first frame>: on from that frame.
     bool GpuTimingActive()
     {
         static const char* setting = EnvString("H3_GPU_TIMING");
@@ -124,6 +132,8 @@ namespace h3::gpu::renderer::internal
         return setting && g_swaps >= first;
     }
 
+    // Before a flush: submits and times the work recorded since the last
+    // one ("other work").
     void BeginTimedFlush()
     {
         if (g_flushTimingFrame != g_swaps)
@@ -137,6 +147,7 @@ namespace h3::gpu::renderer::internal
         AttributeWait(g_gapSeconds);
     }
 
+    // After a flush: submits it, waits, and books its time.
     void EndTimedFlush(uint32_t draws, uint32_t msaaDraws)
     {
         double seconds = SubmitAndWait();
@@ -154,6 +165,8 @@ namespace h3::gpu::renderer::internal
         entry.gapSeconds += g_gapSeconds;
     }
 
+    // Times a labelled piece of GPU work (resolves, copies, exports):
+    // submits what came before so it isn't counted.
     GpuTimedScope::GpuTimedScope(const char* label)
     {
         // H3_GPU_TIMING_COARSE=1: no waits around labelled work (waiting
@@ -171,6 +184,7 @@ namespace h3::gpu::renderer::internal
         g_timedLabels.push_back(label);
     }
 
+    // Submits and waits for the labelled work, and books its time.
     GpuTimedScope::~GpuTimedScope()
     {
         if (!active)

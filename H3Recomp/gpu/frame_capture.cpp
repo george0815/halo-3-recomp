@@ -87,6 +87,8 @@ namespace h3::gpu::capture
         }
     }
 
+    // A shader was loaded (type 0 vertex, 1 pixel): remembered for the next
+    // draw's line, and its microcode saved once per capture.
     void OnShaderLoad(uint32_t type, uint32_t guestAddress, uint32_t dwords)
     {
         (type == 0 ? g_vertexShader : g_pixelShader) = guestAddress;
@@ -115,6 +117,9 @@ namespace h3::gpu::capture
             }
     }
 
+    // A draw: one block in gpu_capture.txt with everything that decides how
+    // it renders (targets, scissor, shaders, constants, textures, blend,
+    // depth state, vertex and index data).
     void OnDraw(uint32_t initiator, uint32_t indexBase, uint32_t indexWords)
     {
         FILE* out = Out();
@@ -236,18 +241,23 @@ namespace h3::gpu::capture
         fprintf(out, "\n");
     }
 
+    // Predicated tiling's bin mask/select (which tile the next draws are for).
     void OnBinState(uint64_t mask, uint64_t select)
     {
         if (FILE* out = Out())
             fprintf(out, "  bin mask %016llX select %016llX\n", (unsigned long long)mask, (unsigned long long)select);
     }
 
+    // A packet the predication skipped (drawn for another tile).
     void OnPredicatedSkip(uint32_t opcode)
     {
         if (FILE* out = Out())
             fprintf(out, "  skipped predicated opcode %02X\n", opcode);
     }
 
+    // Logs the render state register writes worth seeing in a capture
+    // (depth, blend, alpha test) and, with H3_CAPTURE_PS_CONST, one pixel
+    // shader constant's writes.
     void OnRegisterWrite(uint32_t index, uint32_t value)
     {
         // RB_DEPTHCONTROL..RB_BLENDCONTROL3, RB_ALPHA_REF.
@@ -266,12 +276,15 @@ namespace h3::gpu::capture
             }
     }
 
+    // An occlusion query result write (how many samples passed).
     void OnZpd(uint32_t initiator, uint32_t address)
     {
         if (FILE* out = Out())
             fprintf(out, "  zpd (occlusion query report) initiator %08X -> %08X, after %u draws\n", initiator, address, g_draws);
     }
 
+    // The frame ended: closes the capture file once the target frame is done,
+    // and starts a requested capture at the next frame.
     void OnSwap(uint32_t frame)
     {
         g_frame = frame;
@@ -326,11 +339,14 @@ namespace h3::gpu::capture
         }
     }
 
+    // True from F9/F10 until the capture's frame is written.
     bool Busy()
     {
         return g_busy;
     }
 
+    // F9 (deep = F10): asks for a capture of the next frame; the command
+    // processor picks the request up at the next swap.
     void RequestCapture(bool deep)
     {
         g_busy = true;
@@ -339,11 +355,14 @@ namespace h3::gpu::capture
         g_requested = true;
     }
 
+    // Asks for a screenshot of the next presented frame (stored as tag + 1 so
+    // 0 can mean "none").
     void RequestSnapshot(uint32_t tag)
     {
         g_snapshotRequest = uint64_t(tag) + 1;
     }
 
+    // The presenting code: takes a pending screenshot request, if any.
     bool TakeSnapshotRequest(uint32_t& tag)
     {
         uint64_t request = g_snapshotRequest.exchange(0);
@@ -351,21 +370,25 @@ namespace h3::gpu::capture
         return request != 0;
     }
 
+    // Whether the capture in progress is a deep one (F10).
     bool HotkeyDeep()
     {
         return g_deep;
     }
 
+    // The frame the hotkey capture is for (0: none).
     uint32_t HotkeyFrame()
     {
         return g_hotkeyFrame;
     }
 
+    // The capture's folder (captures/capture_<n>), or "" outside a capture.
     const std::string& HotkeyDirectory()
     {
         return g_hotkeyDirectory;
     }
 
+    // name inside the capture's folder (or as is outside a capture).
     std::string CapturePath(const std::string& name)
     {
         return g_hotkeyDirectory.empty() ? name : g_hotkeyDirectory + "/" + name;

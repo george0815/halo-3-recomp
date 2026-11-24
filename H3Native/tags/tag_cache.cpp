@@ -121,6 +121,7 @@ namespace h3::native::tags
         }
     }
 
+    // The public form of SlotGroup (no parent/grandparent).
     uint32_t SlotGroupTag(uint32_t slot) { return SlotGroup(slot); }
 
     namespace
@@ -130,24 +131,28 @@ namespace h3::native::tags
         constexpr uint32_t kGlobalsDatum = 0x8274B798;
     }
 
+    // The scenario the game loaded (its datum is kept at kScenarioDatum).
     const host::scenario_tag* GlobalScenario()
     {
         uint32_t datum = GuestRef<uint32_t>(kScenarioDatum);
         return datum == host::kNone ? nullptr : TagBySlotOf<host::scenario_tag>(datum & 0xFFFF);
     }
 
+    // The game globals ('matg') the game loaded.
     const host::globals_tag* GlobalGameGlobals()
     {
         uint32_t datum = GuestRef<uint32_t>(kGlobalsDatum);
         return datum == host::kNone ? nullptr : TagBySlotOf<host::globals_tag>(datum & 0xFFFF);
     }
 
+    // How many slots the loaded tag index has (0 with none loaded).
     uint32_t TagSlotCount()
     {
         uint32_t header = LoadedIndexHeader();
         return header ? uint32_t(GuestRef<uint32_t>(header + kHeaderTagCount)) : 0;
     }
 
+    // A slot's tag data in guest memory (0 for an empty slot).
     uint32_t TagSlotAddress(uint32_t slot)
     {
         uint32_t table = GuestRef<uint32_t>(kTagInstances);
@@ -156,12 +161,15 @@ namespace h3::native::tags
         return GuestRef<uint32_t>(table + slot * kInstanceBytes + kInstanceAddress);
     }
 
+    // Changes with every map load: the index header's address mixed with its
+    // checksum (0 with none loaded).
     uint32_t LoadedTagsIdentity()
     {
         uint32_t header = LoadedIndexHeader();
         return header ? header ^ LoadedIndexChecksum() : 0;
     }
 
+    // The game globals' guest address, from the tag table.
     uint32_t GlobalGameGlobalsAddress()
     {
         uint32_t datum = GuestRef<uint32_t>(kGlobalsDatum);
@@ -212,6 +220,8 @@ namespace h3::native::tags
         RetireLoaded();
     }
 
+    // tag_get's checks without the conversion: the slot exists, its salt
+    // matches, and its group is or derives from group.
     uint32_t CheckedGroup(uint32_t datum, uint32_t group)
     {
         uint32_t slot = datum & 0xFFFF;
@@ -226,6 +236,9 @@ namespace h3::native::tags
         return own && (own == group || parent == group || grandparent == group) ? own : 0;
     }
 
+    // Lock-free when the published snapshot is the map that's loaded (the
+    // usual case); otherwise takes the lock without waiting and returns null
+    // if a conversion is in progress (the caller runs the original).
     const void* TagBySlot(uint32_t slot)
     {
         // The published map, if it's the one loaded: no lock.
@@ -346,6 +359,8 @@ namespace h3::native::tags
 
 namespace h3::native::tags
 {
+    // Builds without the generated tag layouts: no tag cache, so nothing to
+    // do (TagBySlot and friends then always say "not available").
     void RuntimeChangeReport() {}
     void OnTagsLoaded() {}
     void OnTagsUnloaded() {}

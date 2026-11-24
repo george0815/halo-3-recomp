@@ -27,6 +27,9 @@ namespace h3::gpu::texture
             Ctx1,         // two RG8 endpoints + 2-bit indices -> 4x4 RG8
         };
 
+        // How a guest texture format is stored on the host: guest block size,
+        // the host format, and the conversion between them (Copy when the host
+        // format matches the guest's bytes after the endian swap).
         struct Format
         {
             uint32_t blockBytes = 0;  // guest bytes per block (or texel)
@@ -144,6 +147,7 @@ namespace h3::gpu::texture
             }
         }
 
+        // Widens an n-bit channel to 8 or 16 bits (max stays max: 31 -> 255).
         uint8_t Expand(uint32_t value, uint32_t bits) { return uint8_t(value * 255 / ((1u << bits) - 1)); }
         uint16_t Expand16(uint32_t value, uint32_t bits) { return uint16_t(value * 65535ull / ((1u << bits) - 1)); }
 
@@ -223,6 +227,8 @@ namespace h3::gpu::texture
             }
         }
 
+        // Conversions that decode whole 4x4 blocks (the host has no such format)
+        // rather than texel by texel.
         bool IsBlockConversion(Convert convert) { return convert == Convert::Dxt3a || convert == Convert::Ctx1; }
 
         // Base level placement: blocks per row in memory, and where the level
@@ -346,6 +352,8 @@ namespace h3::gpu::texture
         return fetch;
     }
 
+    // How many guest bytes the base level occupies (tiled and padded as the
+    // console lays it out): what to hash to see if the texture changed.
     uint32_t GuestSize(const FetchConstant& fetch)
     {
         Format f = FormatFor(fetch.format);
@@ -373,6 +381,9 @@ namespace h3::gpu::texture
         return rows * rowBytes;
     }
 
+    // Untiles one level (or one 3D slice) into linear host order, swapping
+    // bytes per the fetch constant's endian mode and converting formats the
+    // host can't sample directly.
     bool Decode(const FetchConstant& fetch, const uint8_t* guest, Decoded& out, uint32_t slice)
     {
         Format f = FormatFor(fetch.format);
@@ -434,6 +445,9 @@ namespace h3::gpu::texture
         return true;
     }
 
+    // Builds a fetch constant per mip level from the mip chain's address
+    // (small levels are packed together into one tile: Xenia's packed mip
+    // layout, handled where levels are located above).
     std::vector<FetchConstant> MipLevels(const FetchConstant& fetch)
     {
         std::vector<FetchConstant> levels;
@@ -519,6 +533,8 @@ namespace h3::gpu::texture
         return levels;
     }
 
+    // When the sampler's mipMin excludes the base level (still streaming),
+    // the largest level it can use, made into a base level of its own.
     FetchConstant LargestUsableLevel(const FetchConstant& fetch)
     {
         constexpr uint32_t kDimension2D = 1, kDimensionCube = 3;
@@ -591,6 +607,8 @@ namespace h3::gpu::texture
         return result;
     }
 
+    // The swizzle the shader applies after sampling (one- and two-component
+    // formats replicate their channels as the console does).
     uint32_t HostSwizzle(const FetchConstant& fetch)
     {
         uint32_t last;  // the host texture's last component
@@ -621,6 +639,7 @@ namespace h3::gpu::texture
         return swizzle;
     }
 
+    // Which sign handling the shader needs for this format.
     uint32_t SignPrecision(const FetchConstant& fetch)
     {
         switch (fetch.format)

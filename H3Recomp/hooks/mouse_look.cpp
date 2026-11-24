@@ -52,14 +52,13 @@ namespace
     constexpr float kDefaultYawRate = 2.0943951f;    // 120 degrees a second
     constexpr float kDefaultPitchRate = 1.0471976f;  // 60
 
-    // Whether a player sits in a vehicle or turret, as the look function
-    // itself tells (it reads the seat's turn rates then): the player's
-    // unit (player control record: r13's game-state globals +120, 236 bytes
-    // a player, +16; the unit at +0) has a parent object (+16) and a seat
-    // (+582, halfword) in the object table (globals +168: data at +68,
-    // 16-byte entries, the object at +12).
+    // Player 1's camera state (globals +268) and its field of view (see
+    // the top of the file).
     constexpr uint32_t kGlobalsCamera = 268, kCameraFov = 0x78;
 
+    // Player 1's current field of view in radians (zoom included), or 0
+    // when the camera state isn't there yet (menus, loading) or the value
+    // isn't a plausible angle.
     float Player1Fov(const PPCContext& ctx)
     {
         uint32_t table = h3::GuestRef<uint32_t>(ctx.r13.u32);
@@ -70,6 +69,12 @@ namespace
         return fov > 0.001f && fov < 3.0f ? fov : 0;
     }
 
+    // Whether a player sits in a vehicle or turret, as the look function
+    // itself tells (it reads the seat's turn rates then): the player's
+    // unit (player control record: r13's game-state globals +120, 236 bytes
+    // a player, +16; the unit at +0) has a parent object (+16) and a seat
+    // (+582, halfword) in the object table (globals +168: data at +68,
+    // 16-byte entries, the object at +12).
     bool Seated(const PPCContext& ctx, uint32_t user)
     {
         using h3::GuestRef;
@@ -165,6 +170,10 @@ namespace
     // either. Cleared for player 1 while they play on the mouse.
     constexpr uint32_t kControlAutoLevel = 108, kControlAutoLevelTime = 112;
 
+    // Clears player 1's auto-level flag and timer when they're looking with
+    // the native mouse (keyboard and mouse used last). Called before the
+    // look function and after the control update, so neither sees a level
+    // request built up while the mouse aimed.
     void SuppressAutoLevel(PPCContext& ctx)
     {
         if (!h3::input::NativeMouseLook() || !h3::input::KeyboardLastUsed())
@@ -184,12 +193,15 @@ namespace
 
     constexpr uint32_t kSpan = 0x400;  // bytes snapshot behind each pointer
 
+    // H3_LOG_LOOK: words behind a pointer at one call, to diff with the next.
     struct Snapshot
     {
         uint32_t address = 0;
         std::vector<uint32_t> words;
     };
 
+    // H3_LOG_LOOK: kSpan bytes behind one of the look function's pointer
+    // arguments (all zeros for an address that can't be one).
     Snapshot Take(uint32_t address)
     {
         Snapshot s{ address, std::vector<uint32_t>(kSpan / 4) };
@@ -200,17 +212,23 @@ namespace
     }
 }
 
+// Read by input (zoom-aware mouse speed, hold to zoom).
 bool h3::hooks::Player1Zoomed()
 {
     return g_player1Zoomed.load();
 }
 
+// Hold to zoom: the key was let go.
 void h3::hooks::RequestPlayer1Unzoom()
 {
     g_unzoomRequested.store(true);
 }
 
 PPC_FUNC_IMPL(__imp__sub_82211EA8);
+// The look function (see the top of the file): runs the original, then
+// adds the mouse's movement for player 1 with native mouse look, scaled
+// for zoom and vehicles; also handles unzoom requests and the research
+// logging.
 PPC_FUNC(sub_82211EA8)
 {
     static const char* list = h3::EnvString("H3_LOG_LOOK");

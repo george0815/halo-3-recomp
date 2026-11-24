@@ -61,6 +61,7 @@ namespace h3::launcher
         int ascent = 0;
         int descent = 0;
 
+        // Line height in pixels.
         int Height() const { return ascent + descent; }
         const Glyph* Find(char32_t character) const;
         // Pen adjustment between two characters (negative pulls together).

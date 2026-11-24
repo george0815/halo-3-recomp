@@ -36,6 +36,7 @@ namespace h3::launcher
     // One row of a menu page.
     struct MenuItem
     {
+        // What a row does when chosen, and how it's drawn.
         enum class Kind
         {
             Action,   // Enter runs activate (open a page, launch, ...)
@@ -58,6 +59,8 @@ namespace h3::launcher
         size_t action = 0;  // Binding: index into the settings' bindings
     };
 
+    // The launcher: a full-window Halo 3-style menu (pages of MenuItems)
+    // drawn with QPainter, driven by keyboard, mouse or gamepad.
     class LauncherWindow : public QWidget
     {
     public:
@@ -81,6 +84,7 @@ namespace h3::launcher
             Small,  // conduit-16: values, descriptions, hints
             Icon,   // conduit-16 at every size: the only font with the button icons
         };
+        // Where DrawText puts text relative to x.
         enum class Align
         {
             Left,

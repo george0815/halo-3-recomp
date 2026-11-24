@@ -71,12 +71,15 @@ namespace
         return kMaxUsers;
     }
 
+    // XUserGetSigninState values.
     enum : uint32_t
     {
         kSigninStateNotSignedIn = 0,
         kSigninStateSignedInLocally = 1,
     };
 
+    // Whether this user index's player is signed in (XUSER_INDEX_ANY means
+    // player 1; a connected controller signs its player in).
     bool IsSignedIn(uint32_t userIndex)
     {
         uint32_t user = UserOf(userIndex);
@@ -161,6 +164,8 @@ namespace
     constexpr const char* kStoreFile = "profile_settings.bin";
 
     std::mutex g_storeMutex;
+    // One user's saved profile settings (XUserWriteProfileSettings), loaded
+    // from its file on first use.
     struct Store
     {
         std::map<uint32_t, StoredSetting> settings;  // by setting id
@@ -168,6 +173,8 @@ namespace
     };
     std::array<Store, kMaxUsers> g_stores;  // per user
 
+    // Where a user's profile settings are saved: player 1 keeps the original
+    // file name, players 2-4 get profile_settings_<n>.bin.
     std::filesystem::path StorePath(uint32_t user)
     {
         if (user == 0)
@@ -252,6 +259,9 @@ uint32_t h3::kernel::CompleteOverlapped(uint32_t overlapped, uint32_t result, ui
     return CompleteOverlappedEx(overlapped, result, result, length);
 }
 
+// Finishes an asynchronous XAM call at once: fills the XOVERLAPPED's
+// result fields and signals its event (or returns result when the caller
+// passed none). See imports.h.
 uint32_t h3::kernel::CompleteOverlappedEx(uint32_t overlapped, uint32_t result, uint32_t extendedError, uint32_t length)
 {
     if (overlapped == 0)
@@ -515,11 +525,14 @@ PPC_FUNC(__imp__XamShowSigninUI)
     ctx.r3.u64 = kErrorSuccess;
 }
 
+// Bit n: user n is signed in.
 uint32_t h3::kernel::SignedInUsers()
 {
     return g_signedIn.load();
 }
 
+// Signs users in or out to match the joined players (user 0 always) and,
+// when that changed, tells the game.
 void h3::kernel::UpdateSignins(uint32_t joinedMask)
 {
     uint32_t signedIn = (joinedMask | 1u) & ((1u << kMaxUsers) - 1);

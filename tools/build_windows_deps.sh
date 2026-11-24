@@ -54,6 +54,8 @@ build_sdl3() {
 }
 
 SHADERC_TAG=v2026.4
+# shaderc (GLSL -> SPIR-V, with glslang and SPIRV-Tools) for Windows, from
+# its git tag.
 build_shaderc() {
     echo "== shaderc $SHADERC_TAG"
     local src="$WORK/shaderc"
@@ -70,6 +72,7 @@ build_shaderc() {
 # FFmpeg: the version, checksum and patch tools/build_ffmpeg.sh uses.
 FFMPEG_VERSION=7.1
 FFMPEG_SHA256=40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6
+# FFmpeg (static, with the XMA frame decoder patch) for Windows.
 build_ffmpeg() {
     echo "== FFmpeg $FFMPEG_VERSION (xmaframes)"
     local tarball="$WORK/ffmpeg-$FFMPEG_VERSION.tar.xz" src="$WORK/ffmpeg-$FFMPEG_VERSION"
@@ -99,6 +102,7 @@ build_ffmpeg() {
 # Linux Qt of the same version instead (QT_HOST_PATH, the preset).
 QT_VERSION=6.12.0
 QT_RELEASE=6.12.0-0-202609280346
+# Qt for the launcher: the official Windows binaries through aqtinstall.
 build_qt() {
     echo "== Qt $QT_VERSION (qtbase, MSVC 2022)"
     local v=${QT_VERSION//./}
@@ -118,6 +122,8 @@ build_qt() {
 VCREDIST_VERSION=14.44.35211
 VCREDIST_SHA256=cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b
 VCREDIST_DLLS=(msvcp140 msvcp140_1 msvcp140_2 msvcp140_atomic_wait vcruntime140 vcruntime140_1)
+# Microsoft's C++ runtime DLLs, taken out of the official vc_redist
+# installer (checked by its SHA-256), to ship next to the executables.
 build_vcredist() {
     echo "== Visual C++ runtime $VCREDIST_VERSION"
     local file="$WORK/vc_redist-$VCREDIST_VERSION.x64.exe" cabs="$WORK/vcredist-cabs" cab="" c dll

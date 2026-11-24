@@ -84,6 +84,8 @@ def spans(runs, budget):
     return ','.join(f'{a}-{b}' for a, b in out)
 
 
+# The command line described at the top: compare two logs, or --length /
+# --spans.
 def main():
     if len(sys.argv) == 5 and sys.argv[1] == '--spans':
         a, b = level(sys.argv[3]), level(sys.argv[4])

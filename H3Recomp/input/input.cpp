@@ -34,6 +34,7 @@ namespace h3::input
         // the mouse wheel.
         struct Binding
         {
+            // Which of the three it is; key or mouseMask says which one.
             enum class Kind : uint8_t { Key, MouseButton, Wheel } kind;
             SDL_Scancode key = SDL_SCANCODE_UNKNOWN;
             SDL_MouseButtonFlags mouseMask = 0;
@@ -125,6 +126,9 @@ namespace h3::input
             MouseUp, MouseDown, MouseLeft, MouseRight,  // native mouse look: kScriptedMouseCounts a frame
         };
         constexpr float kScriptedMouseCounts = 10;
+        // One entry of an input script (H3_INPUT_SCRIPT): a button or analog
+        // control held from start to end (seconds, or presented frames when
+        // frames is set), for which player.
         struct ScriptedPress
         {
             double start, end;
@@ -374,6 +378,8 @@ namespace h3::input
         }
     }
 
+    // Reads the bindings and mouse options from settings.ini, the H3_* input
+    // switches, and parses any input script.
     void Initialize()
     {
         g_log = EnvFlag("H3_LOG_INPUT");
@@ -397,6 +403,9 @@ namespace h3::input
         AssignGamepads();
     }
 
+    // Each SDL event from the window: notes whether the keyboard/mouse or a
+    // gamepad was used last, collects mouse movement and wheel steps, captures
+    // or releases the mouse, and tracks gamepads connecting and disconnecting.
     void HandleEvent(const SDL_Event& event)
     {
         // Which device player 1 used last (gamepads on other controllers
@@ -601,6 +610,10 @@ namespace h3::input
         }
     }
 
+    // Builds each controller's XINPUT state for this frame: player 1 is the
+    // keyboard and mouse merged with the first gamepad (plus scripted input),
+    // players 2-4 their own gamepads. Also handles joining (START) and
+    // signing out (BACK + START held).
     void Update(uint32_t frame)
     {
         std::array<GamepadState, kMaxPlayers> states;
@@ -843,6 +856,7 @@ namespace h3::input
         }
     }
 
+    // The game's XInputGetState reads this.
     GamepadState GetState(uint32_t player)
     {
         if (player >= kMaxPlayers)
@@ -851,21 +865,26 @@ namespace h3::input
         return g_states[player];
     }
 
+    // Controllers the game sees as connected.
     uint32_t ConnectedMask()
     {
         return g_connected.load();
     }
 
+    // Players who have joined (signed in).
     uint32_t JoinedMask()
     {
         return g_signedIn.load();
     }
 
+    // Keyboard/mouse (true) or gamepad (false), for the PC prompts.
     bool KeyboardLastUsed()
     {
         return g_keyboardLast.load();
     }
 
+    // The key shown in a prompt for a controller button: the action the
+    // button does by default, then the first key bound to that action.
     std::string KeyNameFor(uint16_t button)
     {
         Action action;
@@ -887,11 +906,13 @@ namespace h3::input
         return names.empty() ? std::string() : names.front();
     }
 
+    // Whether the mouse turns the view directly (see input.h).
     bool NativeMouseLook()
     {
         return g_nativeMouse;
     }
 
+    // The mouse movement since the last tick, in radians, and resets it.
     void TakeMouseLook(float& yaw, float& pitch)
     {
         std::lock_guard lock(g_lookMutex);

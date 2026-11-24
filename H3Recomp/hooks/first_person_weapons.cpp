@@ -109,6 +109,9 @@ PPC_FUNC(sub_82474C60)
 // first-person update and every first-person animation start.
 namespace
 {
+    // Whether the current level time is inside H3_LOG_FP_WEAPONS's range
+    // ("<first>-<last>", or one time); frame gets the level time when the
+    // variable is set.
     bool LogFrame(uint32_t& frame)
     {
         static const char* range = h3::EnvString("H3_LOG_FP_WEAPONS");
@@ -121,6 +124,8 @@ namespace
 }
 
 PPC_FUNC_IMPL(__imp__sub_82474FF0);
+// The per-tick first-person update: logs it (H3_LOG_FP_WEAPONS) and
+// clears the "ready started" bits after it.
 PPC_FUNC(sub_82474FF0)
 {
     uint32_t frame;
@@ -131,6 +136,8 @@ PPC_FUNC(sub_82474FF0)
 }
 
 PPC_FUNC_IMPL(__imp__sub_82474178);
+// A first-person animation starts: notes ready (raise) animations by slot
+// for the movement blend fix, and logs it.
 PPC_FUNC(sub_82474178)
 {
     uint32_t frame;

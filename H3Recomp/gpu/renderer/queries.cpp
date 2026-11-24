@@ -110,6 +110,8 @@ void main()
 
         constexpr uint32_t kCountBytes = (kMaxQueries + 1) * 4;
 
+        // H3_FAKE_ZPD=1: every occlusion query reports visible (the old fake
+        // count) instead of counting samples.
         bool Disabled()
         {
             static const bool fake = EnvFlag("H3_FAKE_ZPD");
@@ -185,6 +187,8 @@ void main()
         }
     }
 
+    // EVENT_WRITE_ZPD: closes the current query interval (its sample count
+    // goes to address once counted) and opens the next.
     void OnOcclusionReport(uint32_t address)
     {
         if (Disabled())
@@ -218,6 +222,8 @@ void main()
             g_open = false;
     }
 
+    // A draw inside a query: the id to write into the id texture (0 for a
+    // normal draw).
     uint32_t OcclusionQueryDraw(uint32_t mode)
     {
         if (!g_open || Disabled())
@@ -243,11 +249,13 @@ void main()
         return uint32_t(g_intervals.size());
     }
 
+    // The texture query draws write their ids into.
     SDL_GPUTexture* OcclusionQueryTexture()
     {
         return g_ids;
     }
 
+    // The pixel shader that writes a draw's query id.
     SDL_GPUShader* OcclusionQueryFragmentShader()
     {
         static SDL_GPUShader* shader = [] {
@@ -258,6 +266,8 @@ void main()
         return shader;
     }
 
+    // Counts each query's pixels in the id texture with a compute pass and
+    // reads the counts back (before the frame's submit).
     void EndFrameQueries()
     {
         bool any = false;
@@ -305,6 +315,7 @@ void main()
         g_idsCleared = false;
     }
 
+    // Writes the counts that came back into the guest's reports.
     void PollOcclusionQueries()
     {
         size_t done = 0;

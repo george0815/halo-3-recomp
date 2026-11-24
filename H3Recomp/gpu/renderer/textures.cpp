@@ -780,6 +780,10 @@ namespace h3::gpu::renderer::internal
             return bits;
         }
 
+        // The four per-texture constants the translated shader reads for a
+        // texture decoded from memory: the host swizzle, the per-channel sign
+        // bits (when the fetch uses signed formats), the exponent adjustment,
+        // and the sign precision mode with the border bits.
         void SetMemoryTextureConstants(uint32_t* constants, const texture::FetchConstant& fetch)
         {
             uint32_t signPrecision = texture::SignPrecision(fetch);
@@ -805,6 +809,9 @@ namespace h3::gpu::renderer::internal
         }
     }
 
+    // For each texture a shader fetches: the host texture (a resolved render
+    // target, else one decoded from guest memory, else a placeholder) and its
+    // sampler, and the per-texture constants the shader needs.
     std::vector<SDL_GPUTextureSamplerBinding> BindTextures(const Shader& shader, SystemConstants& system)
     {
         // Resolved render targets first (their host textures hold what the
@@ -943,16 +950,20 @@ namespace h3::gpu::renderer::internal
         return bindings;
     }
 
+    // Cached memory textures, and the video memory they hold (logs).
     size_t TextureCount()
     {
         return g_textures.size();
     }
 
+    // (Their video memory.)
     uint64_t TextureBytes()
     {
         return g_textureBytes;
     }
 
+    // Once per frame: frees textures unused for long, then the least
+    // recently used while over the budget.
     void TrimTextureCache()
     {
         // Free what's been idle too long, and find the rest's ages.

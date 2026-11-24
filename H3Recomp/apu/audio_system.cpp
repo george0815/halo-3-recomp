@@ -30,6 +30,8 @@ namespace h3::apu
         constexpr uint32_t kQueuedFrames = 8;
         constexpr uint32_t kFrameBytes = kFrameSamples * kFrameChannels * sizeof(float);
 
+        // A registered audio client: the game's audio thread registers one with
+        // a callback the driver calls to ask for the next frame.
         struct Client
         {
             bool active = false;
@@ -119,6 +121,8 @@ namespace h3::apu
         }
     }
 
+    // XAudioRegisterRenderDriverClient: takes a free client slot and starts
+    // asking it for frames.
     int RegisterClient(uint32_t callback, uint32_t callbackArg)
     {
         int index = -1;
@@ -136,6 +140,7 @@ namespace h3::apu
         return index;
     }
 
+    // The client stops being called.
     void UnregisterClient(uint32_t index)
     {
         std::lock_guard lock(g_mutex);
@@ -143,6 +148,9 @@ namespace h3::apu
             g_clients[index].active = false;
     }
 
+    // XAudioSubmitRenderDriverFrame: one frame of 5.1 audio (256 big-endian
+    // floats per channel, channel after channel), interleaved for SDL and
+    // queued to the audio device.
     void SubmitFrame(uint32_t index, uint32_t guestAddress)
     {
         (void)index;

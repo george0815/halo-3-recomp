@@ -110,6 +110,8 @@ namespace h3::hooks
 }
 
 PPC_FUNC_IMPL(__imp__sub_82081428);
+// The game's cos, hooked for its call right after the impulse stores
+// (see above), and for H3_CHECK_TRIG.
 PPC_FUNC(sub_82081428)
 {
     double trigInput = ctx.f1.f64;

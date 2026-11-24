@@ -135,6 +135,7 @@ int main(int argc, char* argv[])
     // reads its registers.
     if (!h3::video::CreateMainWindow())
         return 1;
+    h3::video::SetWindowIcon();
 
     h3::gpu::Initialize();
     h3::apu::InitXma();
