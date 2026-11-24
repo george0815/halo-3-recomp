@@ -57,7 +57,11 @@ namespace h3::gpu::renderer::internal
         // 8: explicit-LOD texture fetches (translator.cpp, xe_lod).
         // 9: vertex snapping to guest pixel centres at a render scale
         //    (translator.cpp, kSystemFlagSnapCenters).
-        constexpr uint32_t kManifestVersion = 9;
+        // 10: pixel positions on host texel centers and guest-texel bilinear
+        //    for downsized resolves (translator.cpp, xe_pixel_position,
+        //    xe_guest_bilinear). The shipped manifest was remapped from 9:
+        //    each shader's old and new cache name from the same microcode.
+        constexpr uint32_t kManifestVersion = 10;
         // Worker threads for shader and pipeline creation. The game itself
         // keeps about six host threads busy; drivers compile pipelines
         // single-threaded, so a few workers go a long way.

@@ -613,6 +613,11 @@ namespace h3::gpu::renderer::internal
     constexpr uint32_t kSystemFlagClipPlaneShift = 16;   // 6 bits: user clip plane i enabled
     constexpr uint32_t kSystemFlagNoPixelKill = 1u << 22;  // depth-only EDRAM mode: pixel shader kills ignored
     constexpr uint32_t kSystemFlagSnapCenters = 1u << 23;  // snap vertices exactly on guest pixel centers
+    constexpr uint32_t kSystemFlagDownsized = 1u << 24;    // draws into a downsized target: guest-texel bilinear (translator.cpp)
+    // Guest width (scissor) up to which a draw counts as downsized, and the
+    // resolved texture width up to which every linear fetch filters in guest
+    // texels (bloom and blur targets: a quarter of the screen and less).
+    constexpr uint32_t kGuestBilinearMaxWidth = 288;
 
     // Texture/sampler bindings for a shader's textures, filling the texture
     // part of the system constants.

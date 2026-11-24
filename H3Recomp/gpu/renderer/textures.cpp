@@ -59,6 +59,11 @@ namespace h3::gpu::renderer::internal
         // whether to filter between layers, in the same word.
         constexpr uint32_t kStackedLayersShift = 16, kMaxStackedLayers = 0x7FF;
         constexpr uint32_t kStackedLinearBit = 1u << 27;
+        // Resolved textures (no layers): the fetch filters linearly (the
+        // fetch constant's mag filter, or forced by the instruction), for
+        // guest-texel bilinear at a render scale (translator.cpp,
+        // xe_guest_bilinear).
+        constexpr uint32_t kResolvedLinearBit = 1u << 16;
         // Clamp-to-border, emulated in the shader for H3_BORDER_CLAMP=1
         // (translator.cpp, kBorderGlsl): which axes clamp to the border, a
         // white border, and a fetch constant that point filters.
@@ -936,7 +941,7 @@ namespace h3::gpu::renderer::internal
                     // size; the shader divides texture sizes by this.
                     constants[3] |= g_renderScale << kTextureScaleShift;
                     if (fetch.valid)
-                        constants[3] |= BorderBits(fetch);
+                        constants[3] |= BorderBits(fetch) | (fetch.magFilter == 1 ? kResolvedLinearBit : 0);
                 }
                 else if (usable && fetch.dimension <= kDimension2D)
                 {

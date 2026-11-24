@@ -1790,6 +1790,15 @@ namespace h3::gpu::renderer::internal
         else if (static const bool noSnapCenters = EnvFlag("H3_NO_SNAP_CENTERS"); g_renderScale > 1 && !noSnapCenters)
             system.flags |= kSystemFlagSnapCenters;
 
+        // Draws into a downsized target (bloom and blur passes, a quarter of
+        // the screen and less) filter resolved textures in guest texels at a
+        // render scale: their kernels tap at guest texel offsets, and on the
+        // larger host texture those taps skipped most of each block (a grid
+        // of dots in the blurred image, xe_guest_bilinear).
+        if (g_renderScale > 1 && draw->scissor.w > 0 &&
+            uint32_t(float(draw->scissor.w) / system.pixelScale[0]) <= kGuestBilinearMaxWidth)
+            system.flags |= kSystemFlagDownsized;
+
         if (primitive == kPrimTrianglePatch)
         {
             if ((ReadRegister(kRegVgtOutputPathCntl) & 3) != kOutputPathTessellation)

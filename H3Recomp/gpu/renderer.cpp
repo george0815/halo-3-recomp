@@ -154,6 +154,8 @@ namespace h3::gpu::renderer
         shader::g_borderClamp = EnvFlag("H3_BORDER_CLAMP");
         shader::g_weightsOffset = !EnvFlag("H3_NO_WEIGHTS_OFFSET");
         shader::g_snapWeightedTaps = !EnvFlag("H3_NO_SNAP_WEIGHTED_TAPS");
+        shader::g_guestBilinear = !EnvFlag("H3_NO_GUEST_BILINEAR");
+        shader::g_centeredPositions = !EnvFlag("H3_NO_CENTERED_POSITIONS");
         shader::g_structuredControlFlow = !EnvFlag("H3_NO_STRUCTURED_SHADERS");
         shader::g_registerLod = !EnvFlag("H3_NO_REGISTER_LOD");
         CreatePlaceholders(device);

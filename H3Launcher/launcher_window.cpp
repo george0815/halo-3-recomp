@@ -263,7 +263,9 @@ namespace h3::launcher
     // profile's gamer picture. An empty path leaves a hint in the status line.
     void LauncherWindow::SetXexPath(const QString& path)
     {
-        xexPath_ = path;
+        // Kept absolute: Launch() starts the game from another folder, and a
+        // remembered relative path would only work from today's directory.
+        xexPath_ = path.isEmpty() ? path : QFileInfo(path).absoluteFilePath();
         status_.clear();
         statusIsProgress_ = false;
         if (xexPath_.isEmpty())

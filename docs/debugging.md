@@ -190,6 +190,8 @@ switch for the area it's in and report whether it changes.
 | `H3_SYNC_WRITEBACK=1` | Asynchronous resolve write-back (waits instead) |
 | `H3_SPIN_WAITS=1` | Sleeping in long GPU waits (always spins) |
 | `H3_NO_SNAP_CENTERS=1` | Snapping vertices that sit on guest pixel centres at a render scale (the hard line in Sierra 117's far water at 2x) |
+| `H3_NO_CENTERED_POSITIONS=1` | Pixel positions on host texel centres for MSAA surfaces at a render scale (thin lines across the menu at 2x, where the menu's tiles meet) |
+| `H3_NO_GUEST_BILINEAR=1` | Bloom and blur passes filtering in guest texels at a render scale (grid-like bloom on bright lights and the menu's frosted glass at 2x) |
 | `H3_NO_MENU_CURSOR=1` | The mouse pointer in menus (as "Mouse in menus" off) |
 | `H3_FP_READY_BLEND=1` | The weapon raise pop fix (keeps the movement blend in the tick a raise starts) |
 

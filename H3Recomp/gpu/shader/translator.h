@@ -55,6 +55,7 @@ namespace h3::gpu::shader
     //                            memory; 2: signed components are 16-bit),
     //                            w bits 8-15 = host texels per guest texel
     //                            (0 = 1; resolves at a render scale),
+    //                            w bit 16 (resolves) = filtered linearly,
     //                            w bits 28-31 = clamp-to-border flags
     //                            (g_borderClamp, kBorderGlsl)
     //   vec4  color_exp_bias;    pixel shaders: color output i *= [i]
@@ -163,6 +164,12 @@ namespace h3::gpu::shader
     // Hand-filtered taps (getWeights) snapped to guest texels on scaled
     // resolves; false with H3_NO_SNAP_WEIGHTED_TAPS=1 (to compare).
     extern bool g_snapWeightedTaps;
+    // Linear fetches from downsized resolves (bloom, blurs) filtered in guest
+    // texels at a render scale; false with H3_NO_GUEST_BILINEAR=1 (to compare).
+    extern bool g_guestBilinear;
+    // Pixel positions (vPos) at a render scale on host texel centers; false
+    // with H3_NO_CENTERED_POSITIONS=1: plain 1/scale steps (to compare).
+    extern bool g_centeredPositions;
     // Control flow as structured GLSL where the shader allows it (see
     // StructuredRegion in translator.cpp); false with
     // H3_NO_STRUCTURED_SHADERS=1: always the state machine (to compare).

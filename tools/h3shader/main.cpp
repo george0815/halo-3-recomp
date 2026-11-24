@@ -42,6 +42,8 @@ int main(int argc, char** argv)
     // H3_NO_STRUCTURED_SHADERS=1: the control flow state machine (as in the game).
     h3::gpu::shader::g_structuredControlFlow = getenv("H3_NO_STRUCTURED_SHADERS") == nullptr;
     h3::gpu::shader::g_registerLod = getenv("H3_NO_REGISTER_LOD") == nullptr;
+    h3::gpu::shader::g_guestBilinear = getenv("H3_NO_GUEST_BILINEAR") == nullptr;
+    h3::gpu::shader::g_centeredPositions = getenv("H3_NO_CENTERED_POSITIONS") == nullptr;
     std::filesystem::path outDir = argv[first];
     std::filesystem::create_directories(outDir);
 

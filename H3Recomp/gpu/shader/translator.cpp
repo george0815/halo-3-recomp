@@ -26,6 +26,8 @@ namespace h3::gpu::shader
     bool g_borderClamp = false;
     bool g_weightsOffset = true;
     bool g_snapWeightedTaps = true;
+    bool g_guestBilinear = true;
+    bool g_centeredPositions = true;
     bool g_structuredControlFlow = true;
     bool g_registerLod = true;
 
@@ -38,6 +40,11 @@ namespace h3::gpu::shader
         // Interpolator location of the pixel shader's constant base (after
         // the 16 guest interpolators, xe_out / xe_in).
         constexpr uint32_t kConstantBaseLocation = 16;
+        // Resolved textures up to this guest width filter linear fetches in
+        // guest texels at a render scale (xe_guest_bilinear): Halo's bloom
+        // and blur targets (288x160 and smaller, a quarter of the screen
+        // and less); the half-size and full-size ones keep host detail.
+        constexpr float kGuestBilinearMaxWidth = 288.0f;
 
         const char kSwizzleChars[] = "xyzw";
 
@@ -121,6 +128,48 @@ uint xe_swap(uint value, uint mode)
     if (mode == 3u)  // 16-in-32
         return (value << 16) | (value >> 16);
     return value;
+}
+)";
+
+        // The pixel position at a render scale (g_centeredPositions): steps
+        // of 1/scale; on MSAA surfaces offset so position + 0.5 lands on host
+        // texel centers, clamped to the whole pixel's start.
+        const char* kPixelPositionGlsl = R"(
+vec4 xe_pixel_position(vec2 fragCoord, vec2 pixelScale, float scale, bool front)
+{
+    vec2 position = floor(fragCoord * scale / pixelScale) / scale;
+    // MSAA surfaces only (more host texels per guest pixel than the render
+    // scale): 1x draws keep the plain steps (centering them there left a
+    // speckled outline along silhouettes against the sky).
+    if (pixelScale.y > scale)
+    {
+        vec2 pixel = floor(position);
+        position = pixel + max(position - pixel + 0.5 / scale - 0.5, 0.0);
+    }
+    return vec4(position, front ? 0.0 : -0.0, 0.0);
+}
+)";
+
+        // Guest-texel bilinear (g_guestBilinear), only in the shaders that
+        // use it, so every other shader's GLSL (and cache name) stays as is.
+        const char* kGuestBilinearGlsl = R"(
+// Bilinear filtering in guest texels of a resolved texture at a render
+// scale: the four guest texels around the coordinate, each read at its
+// center (at scale 2 the host bilinear there averages the guest texel's
+// 2x2 host block), blended by the guest weights. Blur kernels tap between
+// guest texels to blend two at once (Halo's bloom: offsets -4.1, -2.3,
+// -0.5, 1.3, 3.1); at scale 2 those taps land on single host texels, and
+// a small highlight blurred into a grid of separate dots.
+vec4 xe_guest_bilinear(sampler2D s, vec2 coords, float scale)
+{
+    vec2 guestSize = vec2(textureSize(s, 0)) / scale;
+    vec2 p = coords * guestSize - 0.5;
+    vec2 i = floor(p), f = p - i;
+    vec4 a = textureLod(s, (i + vec2(0.5, 0.5)) / guestSize, 0.0);
+    vec4 b = textureLod(s, (i + vec2(1.5, 0.5)) / guestSize, 0.0);
+    vec4 c = textureLod(s, (i + vec2(0.5, 1.5)) / guestSize, 0.0);
+    vec4 d = textureLod(s, (i + vec2(1.5, 1.5)) / guestSize, 0.0);
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 )";
 
@@ -600,6 +649,7 @@ void main()
             bool m_vertex;
             std::vector<std::pair<int, std::string>> m_debug;  // H3_DEBUG_PS: (case, expression) per variant
             bool m_compute;  // the memexport compute variant of a vertex shader
+            bool m_usesGuestBilinear = false;  // emits xe_guest_bilinear (kGuestBilinearGlsl)
             bool m_structured = false;  // the body is structured GLSL, not the state machine (EmitBody)
             // With structured control flow and no relative register access,
             // the registers become separate variables r<n> instead of the
@@ -1908,6 +1958,30 @@ void main()
                         return;
                     }
                     std::string raw = sampleOf(sampler, buildCoords(sampler));
+                    // A linear fetch (by the instruction or, at run time,
+                    // the fetch constant) from a resolved texture at a render scale filters in guest
+                    // texels (xe_guest_bilinear) when the texture is
+                    // downsized (bloom and blur chains: a quarter of the
+                    // screen and less) or the draw renders into a downsized
+                    // target (flags bit 24: the downsample from the full
+                    // image). Full-size lookups elsewhere keep host detail. The plain sample is taken
+                    // first, outside the branch, for its derivatives.
+                    if (g_guestBilinear && f.TextureDim() == TextureDimension::D2 &&
+                        (f.TextureMagFilter() == kTextureFilterLinear || f.TextureMagFilter() == kTextureFilterUseFetchConstant) &&
+                        !m_weightedFetchConstants.count(f.TextureConstIndex()))
+                    {
+                        uint32_t fc = f.TextureConstIndex();
+                        m_usesGuestBilinear = true;
+                        Line(Format("vec4 plain = %s;", raw.c_str()));
+                        Line(Format("float tex_scale = xe_texture_scale(%uu);", fc));
+                        // tfetch.w bit 16: a resolved texture the fetch
+                        // filters linearly (renderer/textures.cpp).
+                        Line(Format("if (tex_scale > 1.0 && (xe_sys.tfetch[%uu].w & 0x10000u) != 0u &&", fc));
+                        Line(Format("    ((xe_sys.flags & 0x1000000u) != 0u || float(textureSize(%s, 0).x) <= %.1f * tex_scale))",
+                            sampler.c_str(), kGuestBilinearMaxWidth));
+                        Line(Format("    plain = xe_guest_bilinear(%s, %s, tex_scale);", sampler.c_str(), buildCoords(sampler).c_str()));
+                        raw = "plain";
+                    }
                     if (g_borderClamp && f.TextureDim() != TextureDimension::Cube)
                     {
                         // Clamp-to-border (g_borderClamp): fade the edge-
@@ -2079,6 +2153,10 @@ void main()
                 out += kPwlGammaGlsl;
                 if (g_borderClamp)
                     out += kBorderGlsl;
+                if (m_usesGuestBilinear)
+                    out += kGuestBilinearGlsl;
+                if (!m_vertex && !m_compute && g_centeredPositions)
+                    out += kPixelPositionGlsl;
                 if (m_compute)
                     out += kMemExportFunctions;
 
@@ -2270,7 +2348,19 @@ vec3 xe_cube_direction(vec3 stf)
                     // The pixel position: samples of one guest pixel share
                     // it, but at a render scale above 1 it keeps steps of
                     // 1/scale so screen-space lookups stay sharp.
-                    const char* position = "vec4(floor(gl_FragCoord.xy * xe_sys.render_scale / vec2(xe_sys.pixel_scale_x, xe_sys.pixel_scale_y)) / xe_sys.render_scale, gl_FrontFacing ? 0.0 : -0.0, 0.0)";
+                    // g_centeredPositions, on MSAA surfaces: each step sits
+                    // where a lookup at position + 0.5 (D3D's pixel center)
+                    // hits the center of its own host texel, never below the
+                    // whole pixel (so floor() still gives the pixel). Plain steps of 1/2 put
+                    // the second one at x.5: its lookups landed on the edge
+                    // between this guest texel and the next and blended both
+                    // half and half. At the bottom of a predicated tile the
+                    // next row isn't drawn yet: the menu's 4x lighting pass
+                    // darkened the last row of every tile (lines across the
+                    // menu at 2x).
+                    const char* position = g_centeredPositions
+                        ? "xe_pixel_position(gl_FragCoord.xy, vec2(xe_sys.pixel_scale_x, xe_sys.pixel_scale_y), xe_sys.render_scale, gl_FrontFacing)"
+                        : "vec4(floor(gl_FragCoord.xy * xe_sys.render_scale / vec2(xe_sys.pixel_scale_x, xe_sys.pixel_scale_y)) / xe_sys.render_scale, gl_FrontFacing ? 0.0 : -0.0, 0.0)";
                     if (scalarRegisters)
                     {
                         // Only registers the shader reads can matter.
