@@ -484,4 +484,43 @@ H3_REPLACE_INT(820F9390, sound_get_gain, {
     return result;
 })
 
+PPC_EXTERN_FUNC(sub_82290230);  // scenario_single_bsp_value_positive (native, scenario_queries.cpp)
+
+// structure_cluster_pair_audibility(r3 BSP runtime data, r4 cluster, r5
+// cluster) -> real: 0 for the same cluster, or unless
+// scenario_single_bsp_value_positive; else the byte for the pair in a
+// triangular table (data +716 -> +52; row length data +180 cluster count):
+// 0 gives 0, 255 gives 256, else min + (byte - 1) / 253 * (max - min)
+// (reals at +4 / +8 of the +716 struct). Constants: lis -32254 + 9500 =
+// 0x8202251C (0), lis -32253 + 12976 = 0x820332B0 (256), lis -32256 +
+// 8400 = 0x820020D0 (1/253) (name unconfirmed).
+H3_REPLACE_FLOAT(82127B38, structure_cluster_pair_audibility, {
+    namespace objects = h3::native::objects;
+    constexpr uint32_t kRealZero = 0x8202251C;
+    constexpr uint32_t kRealFull = 0x820332B0;
+    constexpr uint32_t kRealStep = 0x820020D0;
+    uint32_t data = ctx.r3.u32;
+    int32_t a = int32_t(ctx.r4.u32);
+    int32_t b = int32_t(ctx.r5.u32);
+    float zero = objects::LoadFloat(kRealZero);
+    if (a == b)
+        return zero;
+    if ((h3::native::Call(ctx, base, sub_82290230, data) & 0xFF) == 0)
+        return zero;
+    uint32_t table = objects::Load32(data + 716);
+    uint32_t low = uint32_t(a > b ? b : a);
+    uint32_t high = uint32_t(a > b ? a : b);
+    int32_t triangle = int32_t((low + 1) * low) / 2;  // srawi + addze: rounds toward 0
+    uint32_t offset = (objects::Load32(data + 180) - 1) * low - uint32_t(triangle) + objects::Load32(table + 52) + high;
+    uint32_t value = objects::Load8(offset - 1);
+    if (value == 0)
+        return zero;
+    if (value == 255)
+        return objects::LoadFloat(kRealFull);
+    float minimum = objects::LoadFloat(table + 4);
+    float range = float(double(objects::LoadFloat(table + 8)) - double(minimum));
+    float step = float(double(float(double(int64_t(value - 1)))) * double(objects::LoadFloat(kRealStep)));
+    return float(double(step) * double(range) + double(minimum));
+})
+
 #endif

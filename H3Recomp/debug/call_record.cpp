@@ -331,6 +331,7 @@ namespace h3::debug
             uint64_t recorded = 0;  // calls replayed
             uint64_t calls = 0, differed = 0;  // of them, answered natively (not nullopt) and compared
             bool hung = false, crashed = false;
+            uint32_t originalHung = 0;  // snapshots where the original alone hangs too
         };
 
         // A pipe message from a child: calls checked and differences.
@@ -392,15 +393,20 @@ namespace h3::debug
                 PPCFunc* function = HostFunction(r.address);
                 if (!function)
                     continue;
+                // Runs every recorded call in a child (stores and hangs stay
+                // contained); originalOnly runs the originals alone.
+                struct Outcome { bool ok; ChildResult result; bool hung; };
+                auto runChild = [&](bool originalOnly) -> Outcome {
                 int fds[2];
                 if (pipe(fds) != 0)
-                    return 1;
+                    return { false, { 0, 0 }, false };
                 fflush(stdout);
                 fflush(stderr);
                 pid_t child = fork();
                 if (child == 0)
                 {
                     close(fds[0]);
+                    native::ForceOriginal() = originalOnly;
                     alarm(30);
                     for (const CallRecord* call : found->second)
                     {
@@ -426,15 +432,31 @@ namespace h3::debug
                 close(fds[0]);
                 int status = 0;
                 waitpid(child, &status, 0);
+                bool hung = WIFSIGNALED(status) && WTERMSIG(status) == SIGALRM;
+                return { got == ssize_t(sizeof(result)), result, hung };
+                };
+                Outcome outcome = runChild(false);
                 Totals& t = totals[r.address];
                 t.recorded += found->second.size();
-                if (got == ssize_t(sizeof(result)))
+                if (outcome.ok)
                 {
-                    t.calls += result.calls;
-                    t.differed += result.differed;
+                    t.calls += outcome.result.calls;
+                    t.differed += outcome.result.differed;
                 }
-                else if (WIFSIGNALED(status) && WTERMSIG(status) == SIGALRM)
-                    t.hung = true;
+                else if (outcome.hung)
+                {
+                    // A hang the original has too comes from the snapshot,
+                    // not the replacement: a wide window (H3_RECORD_WINDOW)
+                    // replays later ticks' calls on its first tick's memory,
+                    // which can be inconsistent for them (a stale actor's
+                    // character loop never ending). Not a failure; this
+                    // snapshot's calls just aren't compared.
+                    Outcome original = runChild(true);
+                    if (!original.ok && original.hung)
+                        t.originalHung++;
+                    else
+                        t.hung = true;
+                }
                 else
                     t.crashed = true;
             }
@@ -463,8 +485,10 @@ namespace h3::debug
                                               : "ok";
             printf("  %-48s %6llu calls, %llu differed  %s", r.name, (unsigned long long)t.calls,
                 (unsigned long long)t.differed, verdict);
-            if (t.recorded > t.calls)
+            if (t.recorded > t.calls && !t.originalHung)
                 printf(" (%llu fell back)", (unsigned long long)(t.recorded - t.calls));
+            if (t.originalHung)
+                printf(" (original hangs on %u snapshot(s): stale state, not compared)", t.originalHung);
             printf("\n");
             failed += t.hung || t.crashed || t.differed;
         }

@@ -13,6 +13,7 @@
 
 #ifdef H3_HAVE_TAG_LAYOUTS
 
+#include "guest_call.h"
 #include "memory.h"
 #include "replace.h"
 #include "structures/structure_bsps.h"
@@ -150,6 +151,35 @@ H3_REPLACE_INT(8222D498, collision_result_surface_is_plain, {
     if (uint8_t(GuestRef<uint8_t>(entry + 10)) & kExcludedFlags)
         return 0u;
     return uint16_t(GuestRef<uint16_t>(entry + 4)) != 0xFFFF ? 1u : 0u;
+})
+
+// breakable_surface_set_get(r3 bsp index, r4 instance or NONE) -> guest
+// address of the breakable surface set's 56-byte state in the breakable
+// surface globals (TLS 172), or 0 when the BSP's bit isn't set in their
+// +8 mask, it has no breakable surface sets
+// (structure_bsp_get_breakable_surface_set_count <= 0) or its s16 index
+// is NONE. The index table: u16 at globals + 2 * (bsp + 59132) for the
+// BSP, at globals + 2 * ((bsp << 12) + instance + 59148) for an instance
+// (addis 1, addi -6404 / -6388) (name unconfirmed).
+H3_REPLACE_INT(8209E468, breakable_surface_set_get, {
+    constexpr uint32_t kTlsBreakableSurfaceGlobals = 172;
+    constexpr uint32_t kBspMask = 8;
+    constexpr uint32_t kSetStates = 3576;
+    constexpr uint32_t kSetStateBytes = 56;
+    uint32_t bsp = ctx.r3.u32;
+    uint32_t instance = ctx.r4.u32;
+    uint32_t globals = Load32(Load32(ctx.r13.u32) + kTlsBreakableSurfaceGlobals);
+    uint32_t shift = bsp & 63;  // slw
+    uint32_t bit = shift < 32 ? 1u << shift : 0u;
+    if ((Load32(globals + kBspMask) & bit) == 0)
+        return 0u;
+    if (int32_t(h3::native::Call(ctx, base, sub_8209E520, bsp, instance)) <= 0)
+        return 0u;
+    uint32_t slot = instance == 0xFFFFFFFFu ? bsp + 0x10000 - 6404 : (bsp << 12) + instance + 0x10000 - 6388;
+    int32_t index = int16_t(uint16_t(GuestRef<uint16_t>(globals + (slot << 1))));
+    if (index == -1)
+        return 0u;
+    return globals + uint32_t(index) * kSetStateBytes + kSetStates;
 })
 
 #endif

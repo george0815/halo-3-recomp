@@ -3,12 +3,21 @@ title: Native port
 nav_order: 9
 ---
 
-# Native port: where things stand (2026-10-15, film library updated 2026-11-24)
+# Native port: where things stand (2026-11-26)
 
 Working notes on the decompilation and native port ([roadmap](ROADMAP.html)
 phase 6): read this first, then the roadmap. The files under `private/`
 mentioned here are local data (game files, films, generated layouts) that
 aren't in the repository.
+
+## Progress
+
+As of 2026-11-26: **228 of the game's 22,400 functions rewritten** (1.02%),
+**186 of them verified** by replaying recorded calls through both versions
+(the rest have no recorded calls yet). Charts, history and the numbers per
+subsystem: [Port progress](progress.html). Regenerate the data with
+`python3 -I tools/re/progress.py --json docs/_data/progress.json --verified
+<replay_calls.sh outputs>`.
 
 ## Next steps
 
@@ -26,8 +35,8 @@ aren't in the repository.
    [tools/films/README.md](https://github.com/george0815/halo-3-recomp/blob/main/tools/films/README.md)).
    The full film library with `--native` is the final check once a
    subsystem is done, and before merging into main.
-3. **Tag readers (6.3).** 171 of ~1,590 ported (`H3_REPLACE` readers plus
-   the decompiled tag system); 132 checked by call replay (10 films +
+3. **Tag readers (6.3).** 224 of ~1,590 ported (`H3_REPLACE` readers plus
+   the decompiled tag system); 186 checked by call replay (10 films +
    2 wide-window recordings), 0 differed. Continue with the leaf,
    result-only ones: `tools/re/tag_readers.py <defs> --list
    --leaf-pure`, most-called first. Workflow below.
@@ -47,8 +56,8 @@ aren't in the repository.
 | Decompiled tag system | `H3Native/tags/tags.cpp` (`tag_get` 82087AF0), `H3Native/cache/cache_file_tags.cpp` (load 821A11D0 / unload 821A17E8) | `H3_ORIGINAL=tag_get`, `=cache_file_tags` |
 | Calling recompiled code | `H3Native/guest_call.h` | `Call`, `CallIndirect`, `GuestFrame` |
 | Replacements | `H3Native/replace.h`, `H3Native/native.h` | `H3_REPLACE_INT/FLOAT(address, name, { body })`: body returns optional (nullopt = run the original) |
-| Readers | `H3Native/{ai,cinematics,effects,game,interface,items,objects,render,scenario,sound,structures,units,vehicles,weapons}/` (`objects/object_access.h`, `objects/object_reads.h`: shared guest reads) | 171 functions |
-| RE tools | `tools/re/tag_readers.py` (annotates a function's tag reads), `tools/re/layout_query.py` (which groups have a field at an offset); names in `private/re/curated.csv` | |
+| Readers | `H3Native/{ai,cinematics,effects,game,interface,items,objects,render,scenario,sound,structures,units,vehicles,weapons}/` (`objects/object_access.h`, `objects/object_reads.h`: shared guest reads) | 224 functions |
+| RE tools | `tools/re/tag_readers.py` (annotates a function's tag reads), `tools/re/layout_query.py` (which groups have a field at an offset); `tools/re/progress.py` (progress per subsystem, the [progress page](progress.html)'s data) | |
 
 All of `H3Native/*.cpp` is globbed into the game (H3Recomp/CMakeLists.txt),
 except `cache/cache_file.cpp` (H3NativeCache library) and
@@ -69,7 +78,10 @@ except `cache/cache_file.cpp` (H3NativeCache library) and
    plain integer before `&`/`|` (XenonUtils `be<T>` operators used to store
    their result; they're deleted now, so it no longer compiles).
 4. Build, then `tools/films/replay_calls.sh private/calls <name>`: every
-   recorded call checked, 0 differed. "no recorded calls" means no
+   recorded call checked, 0 differed. "original hangs on N snapshot(s)"
+   isn't a failure: a wide recording window replays later ticks' calls on
+   its first tick's memory, and the original itself can loop on that stale
+   state (call_record.cpp reruns a hung replacement with only originals). "no recorded calls" means no
    recorded film reaches it: record one that does (or check it with
    `tools/films/check_native.sh` on a film that calls it).
 

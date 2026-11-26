@@ -459,4 +459,27 @@ H3_REPLACE_INT(820A1AD0, object_is_upended, {
     return objects::LoadFloat(frame.Address(8)) < limit ? 1u : 0u;
 })
 
+// user_interface_navigation_delay_elapsed(r4 u8 skip, r5 u16 elapsed ms)
+// -> bool: false with no shared globals ('wigl'); true when skip is 1 or
+// the elapsed time reaches the shared globals' Navigation Tab Delay ms
+// (name unconfirmed).
+H3_REPLACE_INT(820894E8, user_interface_navigation_delay_elapsed, {
+    bool none, unknown;
+    const host::user_interface_globals_definition_tag* tag = InterfaceGlobals(none, unknown);
+    if (none)
+        return 0u;
+    if (!tag)
+        return std::nullopt;
+    uint32_t datum = tag->user_interface_globals_definition.shared_globals.datum;
+    if (ReferencedTag(datum) == 0)
+        return 0u;
+    const auto* shared = h3::native::tags::TagBySlotOf<host::user_interface_shared_globals_definition_tag>(datum & 0xFFFF);
+    if (!shared)
+        return std::nullopt;
+    if ((ctx.r4.u32 & 0xFF) == 1)
+        return 1u;
+    int32_t elapsed = int32_t(ctx.r5.u32 & 0xFFFF);
+    return elapsed >= shared->user_interface_shared_globals_definition.navigation_tab_delay_ms ? 1u : 0u;
+})
+
 #endif

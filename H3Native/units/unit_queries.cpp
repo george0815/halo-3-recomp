@@ -272,4 +272,17 @@ H3_REPLACE_INT(8234BB00, unit_get_controlling_unit, {
     return controller != kNone ? controller : parent;
 })
 
+// giant_is_buckling(r3 giant object) -> bool: the animation id at
+// object data + 144 + (s16 at +336) is the giant's buckle animation
+// (giant_get_buckle_animation), else the giant's +13756 bit 0 (name
+// unconfirmed).
+H3_REPLACE_INT(8235FB98, giant_is_buckling, {
+    uint32_t object = ctx.r3.u32;
+    uint32_t data = objects::ObjectData(ctx, object);
+    uint32_t flag = objects::Load32(data + 13756) & 1;
+    uint32_t buckle = h3::native::Call(ctx, base, sub_82360C08, object);
+    uint32_t current = objects::Load32(data + uint32_t(int32_t(objects::LoadS16(data + 336))) + 144);
+    return current == buckle ? 1u : flag;
+})
+
 #endif

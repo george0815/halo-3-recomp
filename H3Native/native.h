@@ -19,14 +19,40 @@
 
 namespace h3::native
 {
-    // Whether H3_ORIGINAL names this replacement.
+    // Replacements that also carry a game fix, kept native under
+    // H3_ORIGINAL=* (naming one explicitly still runs its original).
+    // weapon_barrel_can_fire holds the 60 Hz fire-rate fix
+    // (weapons/weapon_barrels.cpp): with the fixes off it computes exactly
+    // what the original does, with them on the original would desync films
+    // recorded with the fixes (oddball_lr broke at level tick 4101 in every
+    // call recording run).
+    inline bool KeptNativeUnderAll(const std::string& name)
+    {
+        return name == "weapon_barrel_can_fire";
+    }
+
+    // Set by call replay (H3Recomp/debug/call_record.cpp) in a child that
+    // reruns a hung replacement's calls with only the originals: every
+    // replacement then runs its original.
+    inline bool& ForceOriginal()
+    {
+        static bool force = false;
+        return force;
+    }
+
+    // Whether H3_ORIGINAL names this replacement (* for all of them, except
+    // KeptNativeUnderAll).
     inline bool UseOriginal(const char* name)
     {
+        if (ForceOriginal())
+            return true;
         static const std::string list = [] {
             const char* value = EnvString("H3_ORIGINAL");
             return value ? "," + std::string(value) + "," : std::string();
         }();
-        return list == ",*," || list.find("," + std::string(name) + ",") != std::string::npos;
+        if (list == ",*,")
+            return !KeptNativeUnderAll(name);
+        return list.find("," + std::string(name) + ",") != std::string::npos;
     }
 
     // H3_CHECK_NATIVE=1: run each native replacement and the original side

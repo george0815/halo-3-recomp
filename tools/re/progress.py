@@ -4,14 +4,25 @@ game's functions, and how many bytes of its code, have a decompiled
 replacement, overall and per subsystem.
 
 Usage: python3 -I tools/re/progress.py [--markdown] [--list]
-                                       [--subsystems <README.md>]
+                                       [--subsystems <map.md>]
+                                       [--json <file> [--verified <replay output>...]
+                                        [--date YYYY-MM-DD] [--native-dir <dir>]]
 
   --markdown     a Markdown table (for the README) instead of plain text
   --list         also list every replaced function
   --subsystems   a file with the subsystem map: Markdown table rows
                  "| 0x<start>-0x<end> | <name> | ..." (default
-                 private/re/README.md when it exists; without one, only
-                 the totals are printed)
+                 tools/re/subsystems.md)
+  --json         write the progress page's data (docs/_data/progress.json):
+                 totals and subsystems, plus a history with one entry per
+                 date (an existing file's history is kept; the same date is
+                 replaced)
+  --verified     tools/films/replay_calls.sh outputs: a replacement counts
+                 as verified when some output compared at least one of its
+                 calls and none reported it DIFFERS, HUNG or CRASHED
+  --date         the history entry's date (default today)
+  --native-dir   count the replacements in this copy of H3Native (an older
+                 commit's, to fill in history) instead of the working tree's
 
 Sources, all in the repository:
   - functions: H3RecompLib/ppc/ppc_func_mapping.cpp (the recompiler's
@@ -26,6 +37,8 @@ Sources, all in the repository:
 """
 
 import argparse
+import datetime
+import json
 import re
 import sys
 from pathlib import Path
@@ -56,9 +69,9 @@ def functions():
     return {s: e - s for s, e in zip(starts, ends)}
 
 
-def replacements():
+def replacements(native=NATIVE):
     found = {}
-    for path in sorted(NATIVE.rglob("*.cpp")):
+    for path in sorted(native.rglob("*.cpp")):
         if "generated" in path.parts:
             continue
         text = path.read_text(errors="replace")
@@ -86,6 +99,21 @@ def subsystem_of(address, rows):
     return "other"
 
 
+REPLAY_ROW = re.compile(r"^\s+([A-Za-z_]\w*)\s+(\d+) calls, (\d+) differed\s+(.*)$", re.M)
+
+
+def verified_names(paths):
+    """Names compared on at least one call, never failing."""
+    compared, failed = set(), set()
+    for path in paths:
+        for name, calls, differed, verdict in REPLAY_ROW.findall(Path(path).read_text(errors="replace")):
+            if int(differed) or any(word in verdict for word in ("DIFFERS", "HUNG", "CRASHED")):
+                failed.add(name)
+            elif int(calls):
+                compared.add(name)
+    return compared - failed
+
+
 def percent(part, whole):
     return f"{100.0 * part / whole:.2f}%" if whole else "-"
 
@@ -95,29 +123,45 @@ def main():
     parser.add_argument("--markdown", action="store_true")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--subsystems", type=Path)
+    parser.add_argument("--json", type=Path)
+    parser.add_argument("--verified", type=Path, nargs="+", default=[])
+    parser.add_argument("--date", default=datetime.date.today().isoformat())
+    parser.add_argument("--native-dir", type=Path)
     args = parser.parse_args()
 
     sizes = functions()
     code_end = max(sizes) + sizes[max(sizes)]
-    replaced = replacements()
+    native = args.native_dir.resolve() if args.native_dir else NATIVE
+    replaced = replacements(native)
     unknown = sorted(a for a in replaced if a not in sizes)
     for address in unknown:
         name, path = replaced.pop(address)
-        print(f"warning: {name} ({address:08X}, {path.relative_to(ROOT)}) is not a function start", file=sys.stderr)
+        print(f"warning: {name} ({address:08X}, {path.relative_to(native.parent)}) is not a function start", file=sys.stderr)
 
-    map_path = args.subsystems or ROOT / "private" / "re" / "README.md"
+    map_path = args.subsystems or ROOT / "tools" / "re" / "subsystems.md"
     rows = subsystems(map_path, code_end) if map_path.exists() else []
 
+    names = verified_names(args.verified)
+    verified = {a for a, (name, _) in replaced.items() if name in names}
+
     groups = {}
+    verified_groups = {}
     if rows:
         for address, size in sizes.items():
-            group = groups.setdefault(subsystem_of(address, rows), [0, 0, 0, 0])
+            name = subsystem_of(address, rows)
+            group = groups.setdefault(name, [0, 0, 0, 0])
             group[0] += 1
             group[1] += size
             if address in replaced:
                 group[2] += 1
                 group[3] += size
+            if address in verified:
+                verified_groups[name] = verified_groups.get(name, 0) + 1
     total = [len(sizes), sum(sizes.values()), len(replaced), sum(sizes[a] for a in replaced)]
+
+    if args.json:
+        write_json(args, groups, verified_groups, total, len(verified))
+        return
 
     header = ["Subsystem", "Functions", "Replaced", "%", "Code bytes", "Replaced bytes", "%"]
     table = []
@@ -146,6 +190,36 @@ def main():
             name, path = replaced[address]
             where = subsystem_of(address, rows) if rows else ""
             print(f"{address:08X}  {sizes[address]:6,}  {name:48} {path.relative_to(ROOT)}  {where}".rstrip())
+
+
+def write_json(args, groups, verified_groups, total, verified_total):
+    """The progress page's data; history entries keep their own numbers.
+    verified is null where it wasn't measured (no --verified)."""
+    measured = bool(args.verified)
+    old = json.loads(args.json.read_text()) if args.json.exists() else {}
+    history = [h for h in old.get("history", []) if h["date"] != args.date]
+    history.append({
+        "date": args.date,
+        "replaced": total[2],
+        "verified": verified_total if measured else None,
+        "subsystems": {name: g[2] for name, g in groups.items()},
+    })
+    history.sort(key=lambda h: h["date"])
+    latest = max(h["date"] for h in history)
+    data = old if args.date != latest else {
+        "updated": args.date,
+        "total": {"functions": total[0], "bytes": total[1], "replaced": total[2],
+                  "replaced_bytes": total[3], "verified": verified_total if measured else None},
+        "subsystems": [
+            {"name": name, "functions": g[0], "bytes": g[1], "replaced": g[2], "replaced_bytes": g[3],
+             "verified": verified_groups.get(name, 0) if measured else None}
+            for name, g in sorted(groups.items(), key=lambda item: (-item[1][2], -item[1][0], item[0]))
+        ],
+    }
+    data["history"] = history
+    args.json.parent.mkdir(parents=True, exist_ok=True)
+    args.json.write_text(json.dumps(data, indent=1) + "\n")
+    print(f"wrote {args.json}: {total[2]} replaced, {verified_total if measured else '-'} verified ({args.date})")
 
 
 if __name__ == "__main__":

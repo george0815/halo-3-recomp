@@ -483,101 +483,238 @@ H3_REPLACE_FLOAT(825015F0, actor_get_jump_down_speed, {
     return float(std::sqrt(double(value)));
 })
 
-PPC_EXTERN_FUNC(sub_820AE5E0);  // actor_find_?(r3 actor, r4 s16 value) -> s16 slot or NONE; reads only
-PPC_EXTERN_FUNC(sub_820EBA28);  // object_get_? (r3 object) -> f1 real in [0, 1]; reads only
+PPC_EXTERN_FUNC(sub_820C0430);  // character_get_weapon_properties (native)
 
-// object_get_scariness(r3 object) -> real: 0 for NONE, a flagged object
-// (+276 bit 2) or one that isn't a biped, vehicle or giant; else the
-// actor's character scariness (General Properties +20) or, without an
-// actor, the AI Globals' player scariness (+376, for a player object:
-// +380 not NONE), plus the parent vehicle seat's (+676 block of 228-byte
-// entries, +60) and both weapons' (+900 of their definitions) scariness
-// and, from the AI Globals, the berserking (+380, actor +834) and actor
-// state 18 (+384) bonuses and, when the player's +640 object is past the
-// definition's thresholds (+428, +448, +536), +388 (name unconfirmed;
-// object definitions are read from guest memory).
-H3_REPLACE_FLOAT(820AE250, object_get_scariness, {
-    constexpr uint32_t kRealOne = 0x820221FC;   // lis -32254, +8700
-    constexpr uint32_t kRealZero2 = 0x8202251C; // +8700 +800
-    uint32_t objectIndex = ctx.r3.u32;
-    auto sum = [](double a, double b) { return double(float(a + b)); };
-    double zero = objects::LoadFloat(kRealZero2);
-    double scariness = zero;
-    if (objectIndex == kNone)
-        return float(scariness);
-    std::optional<uint32_t> aiAddress = AiGlobalsAddress();
-    if (!aiAddress)
-        return std::nullopt;
-    uint32_t ai = *aiAddress;
-    uint32_t object = objects::ObjectData(ctx, objectIndex);
-    if ((objects::Load32(object + 276) >> 2) & 1)
-        return float(zero);
-    if ((objects::ShiftBit(uint32_t(int32_t(objects::LoadS8(object + 154)))) & 4099) == 0)
-        return float(zero);
-    uint32_t actorIndex = objects::Load32(object + 364);
-    uint32_t actor = 0;
-    if (actorIndex != kNone)
-        actor = objects::DataArrayElement(ctx, tls::kActors, actorIndex, kActorBytes);
-    uint32_t weapon;
-    if (actor != 0)
+// actor_get_current_weapon_properties(r3 actor) -> guest address of the
+// character's weapon properties for the actor's weapon's definition
+// (character_get_weapon_properties), or 0 with no weapon (name
+// unconfirmed).
+H3_REPLACE_INT(820AFB40, actor_get_current_weapon_properties, {
+    uint32_t actorIndex = ctx.r3.u32;
+    uint32_t weapon = h3::native::Call(ctx, base, sub_820AE510, actorIndex);
+    if (weapon == kNone)
+        return 0u;
+    uint32_t actor = objects::DataArrayElement(ctx, tls::kActors, actorIndex, kActorBytes);
+    uint32_t definition = objects::ObjectDefinition(ctx, weapon);
+    return h3::native::Call(ctx, base, sub_820C0430, objects::Load32(actor + kActorCharacter), definition);
+})
+
+PPC_EXTERN_FUNC(sub_820B6668);  // actor_get_vehicle_properties (native)
+
+// actor_get_destination_radius(r3 actor) -> real: the actor's own radius
+// (+1760) when it isn't 0, else the AI Destination Radius of the
+// character's vehicle properties for the vehicle it's in (+904 object,
+// else its unit when the byte at +825 is set) or, without one, the
+// Movement Properties' Destination Radius; one of those that isn't above
+// 0 gives 0.5 (vehicle at +904) or 0.3. The radius found is at least 0.2
+// (name unconfirmed).
+H3_REPLACE_FLOAT(820B7EB8, actor_get_destination_radius, {
+    constexpr uint32_t kRealPoint3 = 0x82022518;   // lis -32254 (0x82020000) + 9496
+    constexpr uint32_t kRealHalf = 0x82022DC0;     // kRealPoint3 + 2216
+    constexpr uint32_t kRealPoint2 = 0x8203385C;   // lis -32253 (0x82030000) + 14428
+    constexpr uint32_t kActorRadius = 1760;        // real
+    constexpr uint32_t kActorVehicle = 904;        // object datum
+    constexpr uint32_t kActorUseUnitVehicle = 825; // u8
+    constexpr uint32_t kVehicleDestinationRadius = 40;   // character vehicle properties: AI Destination Radius
+    constexpr uint32_t kMovementDestinationRadius = 8;   // movement properties: Destination Radius
+    uint32_t actorIndex = ctx.r3.u32;
+    uint32_t actor = objects::DataArrayElement(ctx, tls::kActors, actorIndex, kActorBytes);
+    float radius = objects::LoadFloat(actor + kActorRadius);
+    float zero = objects::LoadFloat(kRealZero);
+    auto atLeast = [&](float value) -> float {
+        float minimum = objects::LoadFloat(kRealPoint2);
+        return (value < minimum || value == minimum) ? minimum : value;  // ble: NaN keeps value
+    };
+    if (radius != zero)  // bne (NaN too)
+        return atLeast(radius);
+    uint32_t vehicle = objects::Load32(actor + kActorVehicle);
+    if (vehicle != kNone)
     {
-        uint32_t properties = h3::native::Call(ctx, base, sub_820ADCF0, objects::Load32(actor + kActorCharacter));
-        if (properties == 0)
-            return std::nullopt;  // the original reads through null
-        scariness = objects::LoadFloat(properties + kGeneralPropertiesScariness);
-        weapon = h3::native::Call(ctx, base, sub_820AE510, actorIndex);
+        uint32_t properties = h3::native::Call(ctx, base, sub_820B6668, actorIndex, objects::ObjectDefinition(ctx, vehicle));
+        float value = properties ? objects::LoadFloat(properties + kVehicleDestinationRadius) : radius;
+        return value > zero ? atLeast(value) : objects::LoadFloat(kRealHalf);
     }
-    else
+    if (objects::Load8(actor + kActorUseUnitVehicle) != 0)
     {
-        int32_t slot = objects::LoadS8(object + 602);
-        weapon = slot == -1 ? kNone : objects::Load32(object + uint32_t(slot + 152) * 4);
-        if (objects::Load32(object + 380) != kNone && ai != 0)
-            scariness = objects::LoadFloat(ai + 376);
-    }
-    int32_t slot2 = objects::LoadS8(object + 603);
-    uint32_t weapon2 = slot2 == -1 ? kNone : objects::Load32(object + uint32_t(slot2 + 152) * 4);
-    uint32_t parent = objects::Load32(object + 16);
-    if (parent != kNone)
-    {
-        uint32_t vehicle = objects::ObjectData(ctx, parent);
-        int32_t seat = objects::LoadS16(object + 582);
-        if (objects::Load8(vehicle + 154) == 1 && seat != -1)
+        uint32_t unit = objects::Load32(actor + kActorUnit);
+        uint32_t properties = h3::native::Call(ctx, base, sub_820B6668, actorIndex, objects::ObjectDefinition(ctx, unit));
+        if (properties)
         {
-            uint32_t definition = objects::RawTagAddress(objects::Load32(vehicle));
-            uint32_t entry = objects::Load32(definition + 676) + uint32_t(seat) * 228;
-            scariness = sum(objects::LoadFloat(entry + 60), scariness);
+            float value = objects::LoadFloat(properties + kVehicleDestinationRadius);
+            return value > zero ? atLeast(value) : objects::LoadFloat(kRealPoint3);
         }
     }
-    if (weapon != kNone)
-        scariness = sum(objects::LoadFloat(objects::RawTagAddress(objects::ObjectDefinition(ctx, weapon)) + 900), scariness);
-    if (weapon2 != kNone)
-        scariness = sum(objects::LoadFloat(objects::RawTagAddress(objects::ObjectDefinition(ctx, weapon2)) + 900), scariness);
-    if (actor != 0)
+    uint32_t movement = h3::native::Call(ctx, base, sub_820AE150, objects::Load32(actor + kActorCharacter));
+    float value = movement ? objects::LoadFloat(movement + kMovementDestinationRadius) : radius;
+    return value > zero ? atLeast(value) : objects::LoadFloat(kRealPoint3);
+})
+
+PPC_EXTERN_FUNC(sub_82518ED8);  // character_get_morph_properties (native)
+
+// character_get_morph_form(r3 character) -> which of its own Morph
+// Properties' ranged (0), tank (1) or stealth (2) character references
+// names the character itself, or NONE (also without morph properties)
+// (name unconfirmed).
+H3_REPLACE_INT(8250B5C8, character_get_morph_form, {
+    uint32_t character = ctx.r3.u32;
+    uint32_t morph = h3::native::Call(ctx, base, sub_82518ED8, character);
+    if (morph == 0)
+        return kNone;
+    for (uint32_t form = 0; form < 3; form++)
+        if (objects::Load32(morph + form * 16 + 12) == character)  // tag reference datum
+            return form;
+    return kNone;
+})
+
+PPC_EXTERN_FUNC(sub_820CB800);  // squad_get_task_state_word (native, scenario_queries.cpp)
+PPC_EXTERN_FUNC(sub_820CB8A8);  // actor_get_general_properties_word_6 (recompiled: its original hangs on a wide recording)
+
+// actor_get_squad_leader_relation(r3 actor) -> 0 without a squad or a
+// task leader (squad_get_task_state_word NONE), 3 if the actor is that
+// actor, 2 if both have the same General Properties word 6
+// (actor_get_general_properties_word_6, compared as s16), else 1 (name
+// unconfirmed).
+H3_REPLACE_INT(820CB738, actor_get_squad_leader_relation, {
+    uint32_t actorIndex = ctx.r3.u32;
+    uint32_t actor = objects::DataArrayElement(ctx, tls::kActors, actorIndex, kActorBytes);
+    uint32_t squad = objects::Load32(actor + kActorSquad);
+    if (squad == kNone)
+        return 0u;
+    uint32_t leader = h3::native::Call(ctx, base, sub_820CB800, uint32_t(int32_t(int16_t(uint16_t(squad)))));
+    if (leader == kNone)
+        return 0u;
+    if (actorIndex == leader)
+        return 3u;
+    int16_t theirs = int16_t(uint16_t(h3::native::Call(ctx, base, sub_820CB8A8, leader)));
+    int16_t ours = int16_t(uint16_t(h3::native::Call(ctx, base, sub_820CB8A8, actorIndex)));
+    return theirs == ours ? 2u : 1u;
+})
+
+// actor_get_squad_role_value(r3 actor) -> 4 when
+// actor_get_squad_leader_relation is 2 or more (as an unsigned s16), else
+// 7 if the actor's byte +1445 is set or its character's Movement
+// Properties have flag bit 12, else 5 (name unconfirmed).
+H3_REPLACE_INT(820CB690, actor_get_squad_role_value, {
+    uint32_t actorIndex = ctx.r3.u32;
+    uint32_t actor = objects::DataArrayElement(ctx, tls::kActors, actorIndex, kActorBytes);
+    uint32_t relation = uint32_t(int32_t(int16_t(uint16_t(h3::native::Call(ctx, base, sub_820CB738, actorIndex)))));
+    if (relation >= 2)
+        return 4u;
+    if (objects::Load8(actor + 1445) != 0)
+        return 7u;
+    uint32_t movement = h3::native::Call(ctx, base, sub_820AE150, objects::Load32(actor + kActorCharacter));
+    if (movement != 0 && (objects::Load32(movement) & 0x1000) != 0)
+        return 7u;
+    return 5u;
+})
+
+namespace
+{
+    // Actor types (s16 at +4) 20-22 (slw mask 0x00700000): the morphing
+    // ones (flood).
+    bool ActorCanMorph(uint32_t actor)
     {
-        if (ai == 0)
-            return float(scariness);
-        if (objects::Load8(actor + 834) != 0)
-            scariness = sum(objects::LoadFloat(ai + 380), scariness);
-        if (int16_t(uint16_t(h3::native::Call(ctx, base, sub_820AE5E0, actorIndex, 18u))) != -1)
-            scariness = sum(objects::LoadFloat(ai + 384), scariness);
+        return (objects::ShiftBit(uint32_t(int32_t(objects::LoadS16(actor + 4)))) & 0x00700000) != 0;
     }
-    if (ai == 0 || objects::Load32(object + 380) == kNone)
-        return float(scariness);
-    uint32_t target = objects::Load32(object + 640);
-    if (target == kNone)
-        return float(scariness);
-    h3::native::Call(ctx, base, sub_820EBA28, target);
-    double value = ctx.f1.f64;
-    uint32_t definition = objects::RawTagAddress(objects::ObjectDefinition(ctx, target));
-    if (value <= zero)
-        return float(scariness);
-    double scaled = double(float(double(objects::LoadFloat(kRealOne)) - value));
-    scaled = double(float(scaled * double(objects::LoadFloat(definition + 428))));
-    if (scaled <= double(objects::LoadFloat(definition + 448)))
-        return float(scariness);
-    if (objects::Load32(definition + 536) == 0)
-        return float(scariness);
-    return float(sum(objects::LoadFloat(ai + 388), scariness));
+}
+
+// actor_get_morph_form(r3 actor) -> character_get_morph_form of the
+// actor's character for actor types 20-22, else NONE (name unconfirmed).
+H3_REPLACE_INT(820C8898, actor_get_morph_form, {
+    uint32_t actor = objects::DataArrayElement(ctx, tls::kActors, ctx.r3.u32, kActorBytes);
+    if (!ActorCanMorph(actor))
+        return kNone;
+    return h3::native::Call(ctx, base, sub_8250B5C8, objects::Load32(actor + kActorCharacter));
+})
+
+// actor_get_target_morph_form(r3 actor) -> for actor types 20-22: the s16
+// form at +1168 if it isn't NONE (NONE unless the byte at +1165 is set),
+// else the current form (actor_get_morph_form) if the byte at +1164 is
+// set, else NONE; NONE for other types (name unconfirmed).
+H3_REPLACE_INT(820CB910, actor_get_target_morph_form, {
+    uint32_t actorIndex = ctx.r3.u32;
+    uint32_t actor = objects::DataArrayElement(ctx, tls::kActors, actorIndex, kActorBytes);
+    if (!ActorCanMorph(actor))
+        return kNone;
+    int32_t form = objects::LoadS16(actor + 1168);
+    if (form != -1)
+        return objects::Load8(actor + 1165) != 0 ? uint32_t(form) : kNone;
+    if (objects::Load8(actor + 1164) == 0)
+        return kNone;
+    return h3::native::Call(ctx, base, sub_820C8898, actorIndex);
+})
+
+// actor_get_stealth_morph_state(r3 actor) -> -2 for a morphing actor
+// (types 20-22) whose character is its stealth form
+// (character_get_morph_form 2) and that has a target form (+1168 not
+// NONE), else NONE (name unconfirmed).
+H3_REPLACE_INT(82571C08, actor_get_stealth_morph_state, {
+    uint32_t actor = objects::DataArrayElement(ctx, tls::kActors, ctx.r3.u32, kActorBytes);
+    if (!ActorCanMorph(actor))
+        return kNone;
+    if (h3::native::Call(ctx, base, sub_8250B5C8, objects::Load32(actor + kActorCharacter)) != 2)
+        return kNone;
+    return objects::Load16(actor + 1168) == 0xFFFF ? kNone : 0xFFFFFFFEu;
+})
+
+// actor_swarm_threshold_reached(r3 actor) -> 3 when the actor has Swarm
+// Properties (actor_get_swarm_properties) and either the s16 at +28 of
+// its +24 entry in the TLS 292 data array (52 bytes) is above their
+// first s16, or the actor's +816 bit 20 is set; else 0 (name
+// unconfirmed).
+H3_REPLACE_INT(82570680, actor_swarm_threshold_reached, {
+    constexpr uint32_t kTlsSwarms = 292;
+    uint32_t actorIndex = ctx.r3.u32;
+    uint32_t swarm = h3::native::Call(ctx, base, sub_82518F20, actorIndex);
+    if (swarm == 0)
+        return 0u;
+    int32_t threshold = objects::LoadS16(swarm);
+    uint32_t actor = objects::DataArrayElement(ctx, tls::kActors, actorIndex, kActorBytes);
+    uint32_t entry = objects::DataArrayElement(ctx, kTlsSwarms, objects::Load32(actor + 24), 52);
+    if (objects::LoadS16(entry + 28) > threshold)
+        return 3u;
+    return ((objects::Load32(actor + 816) >> 20) & 1) ? 3u : 0u;
+})
+
+PPC_EXTERN_FUNC(sub_823463C0);  // biped_get_gravity_scale (native, unit_queries.cpp)
+
+// actor_get_gravity_scale(r3 actor) -> real: biped_get_gravity_scale of
+// the actor's unit when it's a biped (header byte 3 type 0), else 1
+// (lis -32254 + 8700 = 0x820221FC) (name unconfirmed).
+H3_REPLACE_FLOAT(825016D0, actor_get_gravity_scale, {
+    constexpr uint32_t kRealOne = 0x820221FC;
+    uint32_t actor = objects::DataArrayElement(ctx, tls::kActors, ctx.r3.u32, kActorBytes);
+    uint32_t unit = objects::Load32(actor + kActorUnit);
+    if (unit == kNone)
+        return objects::LoadFloat(kRealOne);
+    if ((objects::ShiftBit(objects::Load8(objects::ObjectHeader(ctx, unit) + 3)) & 1) == 0)
+        return objects::LoadFloat(kRealOne);
+    h3::native::Call(ctx, base, sub_823463C0, unit);
+    return float(ctx.f1.f64);
+})
+
+PPC_EXTERN_FUNC(sub_820E8BF0);  // object_animation_graph_has_mode (native, animation_graph_definitions.cpp)
+PPC_EXTERN_FUNC(sub_820B36B8);  // pathfinding_sector_reference_valid (native, structure_bsp_queries.cpp)
+
+// object_get_animation_mode_139_or_138(r3 object) -> 139 when the
+// object's animation graph has mode 139 (string id) and its real at +252
+// is above 0 (lis -32254 + 9500 = 0x8202251C), else 138 (name
+// unconfirmed).
+H3_REPLACE_INT(82356178, object_get_animation_mode_139_or_138, {
+    uint32_t object = ctx.r3.u32;
+    if ((h3::native::Call(ctx, base, sub_820E8BF0, object, 139u) & 0xFF) == 0)
+        return 138u;
+    return objects::LoadFloat(objects::ObjectData(ctx, object) + 252) > objects::LoadFloat(kRealZero) ? 139u : 138u;
+})
+
+// actor_get_sector_state(r3 actor) -> 3 when the actor's byte +1140 is set
+// and its pathfinding sector reference at +1120 is valid
+// (pathfinding_sector_reference_valid), else 0 (name unconfirmed).
+H3_REPLACE_INT(825740A8, actor_get_sector_state, {
+    uint32_t actor = objects::DataArrayElement(ctx, tls::kActors, ctx.r3.u32, kActorBytes);
+    if (objects::Load8(actor + 1140) == 0)
+        return 0u;
+    return (h3::native::Call(ctx, base, sub_820B36B8, actor + 1120) & 0xFF) != 0 ? 3u : 0u;
 })
 
 #endif

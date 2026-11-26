@@ -459,4 +459,38 @@ H3_REPLACE_INT(822FAE20, animation_channel_has_resource_data, {
     return any ? 1u : 0u;
 })
 
+PPC_EXTERN_FUNC(sub_822FAE20);  // animation_channel_has_resource_data (native, above)
+
+// animation_state_has_resource_data(r3 state: two channels, at +52 and +0)
+// -> animation_channel_has_resource_data of the first active one (active
+// byte, graph not NONE, animation index below 0x8000), else false (name
+// unconfirmed).
+H3_REPLACE_INT(8210A968, animation_state_has_resource_data, {
+    uint32_t state = ctx.r3.u32;
+    for (uint32_t channel : { state + 52, state })
+    {
+        if (objects::Load8(channel + kChannelActive) == 0 || objects::Load32(channel + kChannelGraph) == objects::kNone ||
+            objects::Load16(channel + kChannelAnimation) >= 0x8000)
+            continue;
+        return h3::native::Call(ctx, base, sub_822FAE20, channel);
+    }
+    return 0u;
+})
+
+// animation_channel_get_seconds_remaining(r3 channel) -> real: the frames
+// remaining (animation_channel_get_frames_remaining) divided by the
+// channel's rate (+20) times 30, or by 0.0001 when that isn't above it
+// (constants: lis -32254 = 0x82020000, + 18700 = 0x8202490C (0.0001), +
+// 26224 = 0x8202AF7C (30)) (name unconfirmed).
+H3_REPLACE_FLOAT(822FBB38, animation_channel_get_seconds_remaining, {
+    constexpr uint32_t kRealMinimumRate = 0x8202490C;
+    constexpr uint32_t kRealFramesPerSecond = 0x8202AF7C;
+    namespace objects = h3::native::objects;
+    float rate = float(double(objects::LoadFloat(ctx.r3.u32 + 20)) * double(objects::LoadFloat(kRealFramesPerSecond)));
+    h3::native::Call(ctx, base, sub_822FBA78, ctx.r3.u32);
+    double frames = ctx.f1.f64;
+    float minimum = objects::LoadFloat(kRealMinimumRate);
+    return float(frames / double(rate > minimum ? rate : minimum));
+})
+
 #endif

@@ -558,4 +558,215 @@ H3_REPLACE_INT(82290230, scenario_single_bsp_value_positive, {
     return int32_t(objects::Load32(value + 712)) > 0 ? 1u : 0u;
 })
 
+// ai_handle_get_actor(r3 AI handle: top 3 bits the kind) -> actor datum,
+// or NONE: for kind 3 (an actor) the actor if its datum (salt from the
+// actors data array) with the kind bits is the handle; for kind 4 (a
+// starting location: bits 16-28 squad, 8-15 fire team, 0-7 location) the
+// first of the squad's actors (squad +108, linked through actor +28) whose
+// +52 is the starting location's +4 word. NONE when AI is off (TLS 112
+// +1) or an index is out of range (name unconfirmed).
+H3_REPLACE_INT(820D4C50, ai_handle_get_actor, {
+    namespace tls = h3::native::game::tls;
+    constexpr uint32_t kActorBytes = 2700;
+    constexpr uint32_t kActorNext = 28;
+    constexpr uint32_t kActorStartingLocation = 52;
+    constexpr uint32_t kSquadStateBytes = 176;
+    constexpr uint32_t kSquadStateFirstActor = 108;
+    constexpr uint32_t kStartingLocationBytes = 136;
+    uint32_t handle = ctx.r3.u32;
+    if (objects::Load8(objects::TlsSlot(ctx, tls::kAiGlobals) + 1) == 0)
+        return objects::kNone;
+    uint32_t kind = handle >> 29;
+    if (kind == 3)
+    {
+        int32_t index = int16_t(uint16_t(handle));
+        if (index < 0)
+            return objects::kNone;
+        uint32_t actors = objects::TlsSlot(ctx, tls::kActors);
+        if (index >= int32_t(objects::Load32(actors + 56)))
+            return objects::kNone;
+        uint32_t salt = objects::Load16(objects::Load32(actors + 68) + objects::Load32(actors + 36) * uint32_t(index));
+        if (salt == 0)
+            return objects::kNone;
+        uint32_t datum = (salt << 16) | uint32_t(index);
+        return ((datum & 0x1FFFFFFF) | 0x60000000) == handle ? datum : objects::kNone;
+    }
+    if (kind != 4)
+        return objects::kNone;
+    int32_t squad = int32_t((handle >> 16) & 0x1FFF);
+    const host::scenario_tag* scenario = h3::native::tags::GlobalScenario();
+    if (!scenario)
+        return std::nullopt;
+    const auto& squads = scenario->scenario.squads;
+    if (squad >= squads.storedCount)
+        return objects::kNone;
+    if (squad >= squads.count)
+        return std::nullopt;
+    int32_t fireTeam = int32_t((handle >> 8) & 0xFF);
+    const auto& fireTeams = squads[squad].fire_teams;
+    if (fireTeam >= fireTeams.storedCount)
+        return objects::kNone;
+    if (fireTeam >= fireTeams.count)
+        return std::nullopt;
+    int32_t location = int32_t(handle & 0xFF);
+    const auto& locations = fireTeams[fireTeam].starting_locations;
+    if (location >= locations.storedCount)
+        return objects::kNone;
+    uint32_t wanted = objects::Load32(locations.address + uint32_t(location) * kStartingLocationBytes + 4);
+    uint32_t actor = objects::Load32(objects::DataArrayElement(ctx, tls::kSquads, uint32_t(squad), kSquadStateBytes) + kSquadStateFirstActor);
+    for (int i = 0; i < 65536 && actor != objects::kNone; i++)
+    {
+        uint32_t element = objects::DataArrayElement(ctx, tls::kActors, actor, kActorBytes);
+        if (objects::Load32(element + kActorStartingLocation) == wanted)
+            return actor;
+        actor = objects::Load32(element + kActorNext);
+    }
+    return actor == objects::kNone ? std::optional<uint32_t>(objects::kNone) : std::nullopt;
+})
+
+namespace
+{
+    // The shared body of actor_is_deaf / actor_is_blind: true when the
+    // actor's own test says so (+9 byte, active presumably, clear; or
+    // the given byte set; or, for blindness, the +768 u16 is 1), or its
+    // squad's (+48; runtime squad, 176 bytes) flags (+2) have squadBit,
+    // or the squad's objective task (its +96 / +98 reference, when valid)
+    // has taskBit in its flags.
+    std::optional<uint32_t> ActorSenseDisabled(PPCContext& ctx, uint8_t* base, uint32_t actorByte, bool checkMode,
+        uint32_t squadBit, uint32_t taskBit)
+    {
+        namespace tls = h3::native::game::tls;
+        constexpr uint32_t kActorBytes = 2700;
+        constexpr uint32_t kActorSquad = 48;
+        constexpr uint32_t kSquadStateBytes = 176;
+        uint32_t actor = objects::DataArrayElement(ctx, tls::kActors, ctx.r3.u32, kActorBytes);
+        if (objects::Load8(actor + actorByte) != 0 || objects::Load8(actor + 9) == 0)
+            return 1u;
+        if (checkMode && objects::Load16(actor + 768) == 1)
+            return 1u;
+        uint32_t squadIndex = objects::Load32(actor + kActorSquad);
+        if (squadIndex == objects::kNone)
+            return 0u;
+        uint32_t squad = objects::DataArrayElement(ctx, tls::kSquads, squadIndex, kSquadStateBytes);
+        if ((objects::Load16(squad + 2) >> squadBit) & 1)
+            return 1u;
+        const host::scenario_tag* scenario = h3::native::tags::GlobalScenario();
+        if (!scenario)
+            return std::nullopt;
+        if (h3::native::Call(ctx, base, sub_820B0178, squad) == 0)
+            return 0u;
+        const auto* tasks = ObjectiveTasks(scenario, objects::LoadS16(squad + 96));
+        int32_t task = objects::LoadS16(squad + 98);
+        if (!tasks || task < 0 || task >= tasks->count)
+            return std::nullopt;
+        return ((*tasks)[task].flags >> taskBit) & 1u;
+    }
+}
+
+// actor_is_deaf(r3 actor) -> bool: ActorSenseDisabled with the actor's
+// +824 byte, squad flag bit 1 and the task's Deaf flag (bit 7) (name
+// unconfirmed).
+H3_REPLACE_INT(820B16F8, actor_is_deaf, { return ActorSenseDisabled(ctx, base, 824, false, 1, 7); })
+
+// actor_is_blind(r3 actor) -> bool: ActorSenseDisabled with the actor's
+// +823 byte or +768 u16 equal to 1, squad flag bit 0 and the task's Blind
+// flag (bit 6) (name unconfirmed).
+H3_REPLACE_INT(820B00A8, actor_is_blind, { return ActorSenseDisabled(ctx, base, 823, true, 0, 6); })
+
+// squad_get_task_state_word(r3 squad) -> the u32 at +0 of the squad's
+// objective task's 56-byte runtime entry (TLS 732; the first per
+// objective at +2 of its 10-byte TLS 368 element), or NONE when the
+// squad's task reference isn't valid (objective_task_reference_valid)
+// (name unconfirmed).
+H3_REPLACE_INT(820CB800, squad_get_task_state_word, {
+    namespace tls = h3::native::game::tls;
+    constexpr uint32_t kSquadStateBytes = 176;
+    constexpr uint32_t kTlsObjectiveStates = 368;
+    constexpr uint32_t kTlsTaskStates = 732;
+    uint32_t squad = objects::DataArrayElement(ctx, tls::kSquads, ctx.r3.u32, kSquadStateBytes);
+    if (h3::native::Call(ctx, base, sub_820B0178, squad) == 0)
+        return objects::kNone;
+    uint32_t objective = objects::Load16(squad + 96);
+    uint32_t task = objects::Load16(squad + 98);
+    uint32_t objectiveStates = objects::Load32(objects::TlsSlot(ctx, kTlsObjectiveStates) + 68);
+    uint32_t first = objects::Load16(objectiveStates + objective * 10 + 2);
+    int32_t entry = int16_t(uint16_t(first + task));
+    return objects::Load32(objects::TlsSlot(ctx, kTlsTaskStates) + uint32_t(entry) * 56);
+})
+
+namespace
+{
+    // The 56-byte runtime entry (TLS 732) of the squad's objective task:
+    // its first per objective at +2 of the objective's 10-byte TLS 368
+    // element, plus the task (squad +96 objective, +98 task, u16; see
+    // squad_get_task_state_word). The caller checks the reference first.
+    uint32_t SquadTaskEntry(const PPCContext& ctx, uint32_t squad)
+    {
+        constexpr uint32_t kTlsObjectiveStates = 368;
+        constexpr uint32_t kTlsTaskStates = 732;
+        uint32_t objective = objects::Load16(squad + 96);
+        uint32_t task = objects::Load16(squad + 98);
+        uint32_t objectiveStates = objects::Load32(objects::TlsSlot(ctx, kTlsObjectiveStates) + 68);
+        uint32_t first = objects::Load16(objectiveStates + objective * 10 + 2);
+        int32_t entry = int16_t(uint16_t(first + task));
+        return objects::TlsSlot(ctx, kTlsTaskStates) + uint32_t(entry) * 56;
+    }
+}
+
+// actor_squad_task_recently_started(r3 actor, r4 flag) -> r4 unchanged
+// when its low byte is set, the actor has no squad, the squad's task
+// reference isn't valid (objective_task_reference_valid) or the task's
+// runtime entry (TLS 732, see squad_get_task_state_word) has no start
+// time (+24 NONE); else 1 if fewer than round(2 s) ticks passed since
+// that time (ticks per second * 2.0 + 0.5, truncated: constants at
+// lis -32254 = 0x82020000, + 11712 = 0x82022DC0 (0.5), + 5400 =
+// 0x820242D8 (2.0)), else r4 (name unconfirmed).
+H3_REPLACE_INT(820C4510, actor_squad_task_recently_started, {
+    namespace tls = h3::native::game::tls;
+    constexpr uint32_t kActorBytes = 2700;
+    constexpr uint32_t kActorSquad = 48;
+    constexpr uint32_t kSquadStateBytes = 176;
+    constexpr uint32_t kRealHalf = 0x82022DC0;
+    constexpr uint32_t kRealTwo = 0x820242D8;
+    uint32_t flag = ctx.r4.u32;
+    uint32_t actor = objects::DataArrayElement(ctx, tls::kActors, ctx.r3.u32, kActorBytes);
+    uint32_t squadIndex = objects::Load32(actor + kActorSquad);
+    if (squadIndex == objects::kNone || (flag & 0xFF) != 0)
+        return flag;
+    uint32_t squad = objects::DataArrayElement(ctx, tls::kSquads, squadIndex, kSquadStateBytes);
+    if ((h3::native::Call(ctx, base, sub_820B0178, squad) & 0xFF) == 0)
+        return flag;
+    int32_t started = int32_t(objects::Load32(SquadTaskEntry(ctx, squad) + 24));
+    if (started == -1)
+        return flag;
+    uint32_t gameTime = objects::TlsSlot(ctx, tls::kGameTimeGlobals);
+    int32_t elapsed = int32_t(objects::Load32(gameTime + h3::native::game::game_time::kElapsedTicks) - uint32_t(started));
+    float ticksPerSecond = float(double(int64_t(objects::LoadS16(gameTime + h3::native::game::game_time::kTicksPerSecond))));
+    float limit = float(double(ticksPerSecond) * double(objects::LoadFloat(kRealTwo)) + double(objects::LoadFloat(kRealHalf)));
+    return elapsed < objects::TruncateToInt32(double(limit)) ? 1u : flag;
+})
+
+// actor_squad_task_state_at_least_3(r3 actor) -> 3 when the actor's squad
+// task reference is valid (objective_task_reference_valid) and the s16 at
+// +48 of the task's runtime entry is 3 or more, else 0 (name unconfirmed).
+H3_REPLACE_INT(82532D40, actor_squad_task_state_at_least_3, {
+    namespace tls = h3::native::game::tls;
+    uint32_t actor = objects::DataArrayElement(ctx, tls::kActors, ctx.r3.u32, 2700);
+    uint32_t squadIndex = objects::Load32(actor + 48);
+    if (squadIndex == objects::kNone)
+        return 0u;
+    uint32_t squad = objects::DataArrayElement(ctx, tls::kSquads, squadIndex, 176);
+    if ((h3::native::Call(ctx, base, sub_820B0178, squad) & 0xFF) == 0)
+        return 0u;
+    return objects::LoadS16(SquadTaskEntry(ctx, squad) + 48) >= 3 ? 3u : 0u;
+})
+
+// actor_squad_task_state_value(r3 actor) -> -2 when
+// actor_squad_task_state_at_least_3 (with r4 = r5 = 0) is above 0 as an
+// s16, else NONE (name unconfirmed).
+H3_REPLACE_INT(82532E10, actor_squad_task_state_value, {
+    uint32_t value = h3::native::Call(ctx, base, sub_82532D40, ctx.r3.u32, 0u, 0u);
+    return int16_t(uint16_t(value)) > 0 ? 0xFFFFFFFEu : 0xFFFFFFFFu;
+})
+
 #endif

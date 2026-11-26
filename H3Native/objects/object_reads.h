@@ -52,4 +52,15 @@ namespace h3::native::objects
     {
         return DataArrayElement(ctx, kTlsObjects, object, kObjectHeaderBytes);
     }
+
+    // fctiwz as the recompiled code does it: truncation toward zero,
+    // INT_MAX above the range, INT_MIN below it and for NaN.
+    inline int32_t TruncateToInt32(double value)
+    {
+        if (value > 2147483647.0)
+            return 2147483647;
+        if (!(value >= -2147483648.0))
+            return int32_t(0x80000000u);
+        return int32_t(value);
+    }
 }
