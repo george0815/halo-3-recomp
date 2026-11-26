@@ -1,0 +1,348 @@
+{
+ "updated": "2026-11-26",
+ "total": {
+  "functions": 22400,
+  "bytes": 6942364,
+  "replaced": 193,
+  "replaced_bytes": 33556,
+  "verified": 132
+ },
+ "subsystems": [
+  {
+   "name": "other",
+   "functions": 5367,
+   "bytes": 1989368,
+   "replaced": 58,
+   "replaced_bytes": 10496,
+   "verified": 49
+  },
+  {
+   "name": "cinematics, objects, units, vehicles, devices, scenery, weapons",
+   "functions": 940,
+   "bytes": 416520,
+   "replaced": 27,
+   "replaced_bytes": 4892,
+   "verified": 21
+  },
+  {
+   "name": "HaloScript handlers (hs_*)",
+   "functions": 2229,
+   "bytes": 585600,
+   "replaced": 22,
+   "replaced_bytes": 3560,
+   "verified": 6
+  },
+  {
+   "name": "objects, units, players",
+   "functions": 598,
+   "bytes": 262136,
+   "replaced": 21,
+   "replaced_bytes": 3504,
+   "verified": 19
+  },
+  {
+   "name": "interface, game, objects (early), HaloScript core",
+   "functions": 530,
+   "bytes": 196776,
+   "replaced": 16,
+   "replaced_bytes": 1800,
+   "verified": 15
+  },
+  {
+   "name": "players, sound, camera, game_engine, campaign",
+   "functions": 612,
+   "bytes": 167736,
+   "replaced": 10,
+   "replaced_bytes": 1784,
+   "verified": 7
+  },
+  {
+   "name": "AI (squads, actors), UI mission list",
+   "functions": 428,
+   "bytes": 151512,
+   "replaced": 8,
+   "replaced_bytes": 1408,
+   "verified": 2
+  },
+  {
+   "name": "AI (part), physics, cinematics, effects",
+   "functions": 491,
+   "bytes": 139120,
+   "replaced": 6,
+   "replaced_bytes": 1304,
+   "verified": 3
+  },
+  {
+   "name": "AI (rest), CRT",
+   "functions": 1231,
+   "bytes": 330584,
+   "replaced": 5,
+   "replaced_bytes": 904,
+   "verified": 3
+  },
+  {
+   "name": "rasterizer (Xenon), textures",
+   "functions": 467,
+   "bytes": 155232,
+   "replaced": 5,
+   "replaced_bytes": 600,
+   "verified": 0
+  },
+  {
+   "name": "rasterizer present, main loop",
+   "functions": 311,
+   "bytes": 102376,
+   "replaced": 5,
+   "replaced_bytes": 2240,
+   "verified": 2
+  },
+  {
+   "name": "saved games, content catalogue, storage",
+   "functions": 442,
+   "bytes": 114736,
+   "replaced": 4,
+   "replaced_bytes": 432,
+   "verified": 0
+  },
+  {
+   "name": "campaign progress, HUD, GUI screens, profiles",
+   "functions": 1017,
+   "bytes": 307392,
+   "replaced": 3,
+   "replaced_bytes": 320,
+   "verified": 2
+  },
+  {
+   "name": "sound (XMA voices), rasterizer sync, particles",
+   "functions": 184,
+   "bytes": 65656,
+   "replaced": 3,
+   "replaced_bytes": 312,
+   "verified": 3
+  },
+  {
+   "name": "networking (online, sessions, statistics), saved films",
+   "functions": 2435,
+   "bytes": 687856,
+   "replaced": 0,
+   "replaced_bytes": 0,
+   "verified": 0
+  },
+  {
+   "name": "XMA / XAudio",
+   "functions": 2116,
+   "bytes": 388708,
+   "replaced": 0,
+   "replaced_bytes": 0,
+   "verified": 0
+  },
+  {
+   "name": "Havok physics",
+   "functions": 1958,
+   "bytes": 574088,
+   "replaced": 0,
+   "replaced_bytes": 0,
+   "verified": 0
+  },
+  {
+   "name": "game, game time, saved films",
+   "functions": 555,
+   "bytes": 208424,
+   "replaced": 0,
+   "replaced_bytes": 0,
+   "verified": 0
+  },
+  {
+   "name": "XAPI fibers, XMemCpy, Direct3D 9 (static lib)",
+   "functions": 489,
+   "bytes": 98544,
+   "replaced": 0,
+   "replaced_bytes": 0,
+   "verified": 0
+  }
+ ],
+ "history": [
+  {
+   "date": "2026-10-14",
+   "replaced": 1,
+   "verified": null,
+   "subsystems": {
+    "interface, game, objects (early), HaloScript core": 1,
+    "other": 0,
+    "objects, units, players": 0,
+    "sound (XMA voices), rasterizer sync, particles": 0,
+    "rasterizer present, main loop": 0,
+    "game, game time, saved films": 0,
+    "players, sound, camera, game_engine, campaign": 0,
+    "AI (part), physics, cinematics, effects": 0,
+    "HaloScript handlers (hs_*)": 0,
+    "saved games, content catalogue, storage": 0,
+    "cinematics, objects, units, vehicles, devices, scenery, weapons": 0,
+    "networking (online, sessions, statistics), saved films": 0,
+    "rasterizer (Xenon), textures": 0,
+    "campaign progress, HUD, GUI screens, profiles": 0,
+    "AI (squads, actors), UI mission list": 0,
+    "AI (rest), CRT": 0,
+    "XAPI fibers, XMemCpy, Direct3D 9 (static lib)": 0,
+    "Havok physics": 0,
+    "XMA / XAudio": 0
+   }
+  },
+  {
+   "date": "2026-10-15",
+   "replaced": 15,
+   "verified": null,
+   "subsystems": {
+    "interface, game, objects (early), HaloScript core": 4,
+    "other": 3,
+    "objects, units, players": 2,
+    "sound (XMA voices), rasterizer sync, particles": 0,
+    "rasterizer present, main loop": 2,
+    "game, game time, saved films": 0,
+    "players, sound, camera, game_engine, campaign": 0,
+    "AI (part), physics, cinematics, effects": 0,
+    "HaloScript handlers (hs_*)": 3,
+    "saved games, content catalogue, storage": 0,
+    "cinematics, objects, units, vehicles, devices, scenery, weapons": 1,
+    "networking (online, sessions, statistics), saved films": 0,
+    "rasterizer (Xenon), textures": 0,
+    "campaign progress, HUD, GUI screens, profiles": 0,
+    "AI (squads, actors), UI mission list": 0,
+    "AI (rest), CRT": 0,
+    "XAPI fibers, XMemCpy, Direct3D 9 (static lib)": 0,
+    "Havok physics": 0,
+    "XMA / XAudio": 0
+   }
+  },
+  {
+   "date": "2026-10-25",
+   "replaced": 17,
+   "verified": null,
+   "subsystems": {
+    "interface, game, objects (early), HaloScript core": 4,
+    "other": 3,
+    "objects, units, players": 3,
+    "sound (XMA voices), rasterizer sync, particles": 0,
+    "rasterizer present, main loop": 2,
+    "game, game time, saved films": 0,
+    "players, sound, camera, game_engine, campaign": 0,
+    "AI (part), physics, cinematics, effects": 0,
+    "HaloScript handlers (hs_*)": 3,
+    "saved games, content catalogue, storage": 0,
+    "cinematics, objects, units, vehicles, devices, scenery, weapons": 2,
+    "networking (online, sessions, statistics), saved films": 0,
+    "rasterizer (Xenon), textures": 0,
+    "campaign progress, HUD, GUI screens, profiles": 0,
+    "AI (squads, actors), UI mission list": 0,
+    "AI (rest), CRT": 0,
+    "XAPI fibers, XMemCpy, Direct3D 9 (static lib)": 0,
+    "Havok physics": 0,
+    "XMA / XAudio": 0
+   }
+  },
+  {
+   "date": "2026-11-16",
+   "replaced": 17,
+   "verified": null,
+   "subsystems": {
+    "interface, game, objects (early), HaloScript core": 4,
+    "other": 3,
+    "objects, units, players": 3,
+    "sound (XMA voices), rasterizer sync, particles": 0,
+    "rasterizer present, main loop": 2,
+    "game, game time, saved films": 0,
+    "players, sound, camera, game_engine, campaign": 0,
+    "AI (part), physics, cinematics, effects": 0,
+    "HaloScript handlers (hs_*)": 3,
+    "saved games, content catalogue, storage": 0,
+    "cinematics, objects, units, vehicles, devices, scenery, weapons": 2,
+    "networking (online, sessions, statistics), saved films": 0,
+    "rasterizer (Xenon), textures": 0,
+    "campaign progress, HUD, GUI screens, profiles": 0,
+    "AI (squads, actors), UI mission list": 0,
+    "AI (rest), CRT": 0,
+    "XAPI fibers, XMemCpy, Direct3D 9 (static lib)": 0,
+    "Havok physics": 0,
+    "XMA / XAudio": 0
+   }
+  },
+  {
+   "date": "2026-11-17",
+   "replaced": 17,
+   "verified": null,
+   "subsystems": {
+    "interface, game, objects (early), HaloScript core": 4,
+    "other": 3,
+    "objects, units, players": 3,
+    "sound (XMA voices), rasterizer sync, particles": 0,
+    "rasterizer present, main loop": 2,
+    "game, game time, saved films": 0,
+    "players, sound, camera, game_engine, campaign": 0,
+    "AI (part), physics, cinematics, effects": 0,
+    "HaloScript handlers (hs_*)": 3,
+    "saved games, content catalogue, storage": 0,
+    "cinematics, objects, units, vehicles, devices, scenery, weapons": 2,
+    "networking (online, sessions, statistics), saved films": 0,
+    "rasterizer (Xenon), textures": 0,
+    "campaign progress, HUD, GUI screens, profiles": 0,
+    "AI (squads, actors), UI mission list": 0,
+    "AI (rest), CRT": 0,
+    "XAPI fibers, XMemCpy, Direct3D 9 (static lib)": 0,
+    "Havok physics": 0,
+    "XMA / XAudio": 0
+   }
+  },
+  {
+   "date": "2026-11-24",
+   "replaced": 17,
+   "verified": null,
+   "subsystems": {
+    "interface, game, objects (early), HaloScript core": 4,
+    "other": 3,
+    "objects, units, players": 3,
+    "sound (XMA voices), rasterizer sync, particles": 0,
+    "rasterizer present, main loop": 2,
+    "game, game time, saved films": 0,
+    "players, sound, camera, game_engine, campaign": 0,
+    "AI (part), physics, cinematics, effects": 0,
+    "HaloScript handlers (hs_*)": 3,
+    "saved games, content catalogue, storage": 0,
+    "cinematics, objects, units, vehicles, devices, scenery, weapons": 2,
+    "networking (online, sessions, statistics), saved films": 0,
+    "rasterizer (Xenon), textures": 0,
+    "campaign progress, HUD, GUI screens, profiles": 0,
+    "AI (squads, actors), UI mission list": 0,
+    "AI (rest), CRT": 0,
+    "XAPI fibers, XMemCpy, Direct3D 9 (static lib)": 0,
+    "Havok physics": 0,
+    "XMA / XAudio": 0
+   }
+  },
+  {
+   "date": "2026-11-26",
+   "replaced": 193,
+   "verified": 132,
+   "subsystems": {
+    "interface, game, objects (early), HaloScript core": 16,
+    "other": 58,
+    "objects, units, players": 21,
+    "sound (XMA voices), rasterizer sync, particles": 3,
+    "rasterizer present, main loop": 5,
+    "game, game time, saved films": 0,
+    "players, sound, camera, game_engine, campaign": 10,
+    "AI (part), physics, cinematics, effects": 6,
+    "HaloScript handlers (hs_*)": 22,
+    "saved games, content catalogue, storage": 4,
+    "cinematics, objects, units, vehicles, devices, scenery, weapons": 27,
+    "networking (online, sessions, statistics), saved films": 0,
+    "rasterizer (Xenon), textures": 5,
+    "campaign progress, HUD, GUI screens, profiles": 3,
+    "AI (squads, actors), UI mission list": 8,
+    "AI (rest), CRT": 5,
+    "XAPI fibers, XMemCpy, Direct3D 9 (static lib)": 0,
+    "Havok physics": 0,
+    "XMA / XAudio": 0
+   }
+  }
+ ]
+}
