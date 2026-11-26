@@ -263,10 +263,15 @@ subsystems with the best references first.
       reference checksums per film). So far one film per campaign mission
       and one multiplayer film (Oddball, recorded with the 60 Hz fixes;
       `tools/films/README.md`)
-- [ ] Function-level traces: record a function's calls in a real run
-      (arguments, the guest memory it reads, its writes and result) and
-      replay them against the replacement, so a mismatch points at the
-      exact call rather than a tick
+- [x] Function-level traces (2026-11-26): a recording build
+      (`-DH3_RECORD_CALLS=ON`) saves guest memory at a few ticks per film
+      and every function's distinct calls in those ticks
+      (`tools/films/record_calls.sh`); the replay runs each registered
+      replacement and its original on the same snapshot with the recorded
+      arguments and compares them (`tools/films/replay_calls.sh`, seconds
+      instead of hours), so a mismatch points at the exact call. This is
+      the check while porting; the film library is the check for a
+      finished subsystem
 - [~] Differential mode: run both versions of a function on copies of
       the state and compare (for pure and nearly pure functions). Started:
       `H3_CHECK_NATIVE` runs both on every call and compares results and

@@ -17,6 +17,16 @@
 
 #pragma once
 
+namespace h3::native::tags
+{
+    // A map's tags finished loading / are being unloaded (the decompiled
+    // tag load, cache/cache_file_tags.cpp; also the call replay,
+    // debug/call_record.cpp, after loading a memory snapshot). Present
+    // without the generated layouts too (they do nothing then).
+    void OnTagsLoaded();
+    void OnTagsUnloaded();
+}
+
 #ifdef H3_HAVE_TAG_LAYOUTS
 
 #include "tags/generated/tag_host.h"

@@ -39,6 +39,14 @@ if (H3_TRACE_FIRST_CALLS)
     target_compile_options(H3RecompLib PRIVATE "SHELL:${H3_FORCE_INCLUDE}${CMAKE_CURRENT_SOURCE_DIR}/debug/first_calls.h")
 endif()
 
+option(H3_RECORD_CALLS "Record functions' entry registers in H3_RECORD_CALLS windows, for replaying them against decompiled replacements (docs/ROADMAP.md 6.1)" OFF)
+if (H3_RECORD_CALLS)
+    if (H3_TRACE_FIRST_CALLS)
+        message(FATAL_ERROR "H3_RECORD_CALLS and H3_TRACE_FIRST_CALLS both define the function prologue")
+    endif()
+    target_compile_options(H3RecompLib PRIVATE "SHELL:${H3_FORCE_INCLUDE}${CMAKE_CURRENT_SOURCE_DIR}/debug/record_calls.h")
+endif()
+
 # --- DLLs the game loads with XexLoadImage ----------------------------------
 #
 # Each one is recompiled separately into modules/<name>/ (tools/recompile.sh)

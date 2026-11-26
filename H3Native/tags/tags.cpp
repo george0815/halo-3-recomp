@@ -28,6 +28,7 @@
 #include "cache/cache_file.h"
 #include "config/env.h"
 #include "native.h"
+#include "replace.h"
 #include "kernel/vfs.h"
 #include "memory.h"
 
@@ -179,6 +180,7 @@ namespace h3::native::tags
 
 // tag_get (r3 = group tag, r4 = datum index; returns the data address).
 PPC_FUNC_IMPL(__imp__sub_82087AF0);
+static h3::native::Registration h3_registration_82087AF0(0x82087AF0, "tag_get");
 PPC_FUNC(sub_82087AF0)
 {
     using namespace h3::native::tags;

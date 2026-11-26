@@ -9,6 +9,7 @@
 
 #include "memory.h"
 #include "config/settings.h"
+#include "debug/call_record.h"
 #include "gpu/command_processor.h"
 #include "apu/xma_decoder.h"
 #include "gpu/renderer.h"
@@ -129,6 +130,12 @@ int main(int argc, char* argv[])
         fprintf(stderr, "Failed to reserve guest memory\n");
         return 1;
     }
+
+    // H3Recomp <xex> --replay-calls <dir> [<names>]: check the decompiled
+    // replacements against recorded calls (debug/call_record.h), then exit.
+    for (int i = 2; i < argc; i++)
+        if (std::string(argv[i]) == "--replay-calls" && i + 1 < argc)
+            return h3::debug::ReplayCalls(argv[i + 1], i + 2 < argc ? argv[i + 2] : "");
 
     // The window owns the SDL_GPU device the renderer draws with, so it comes
     // before the GPU. The XMA decoder must be ready before the game first

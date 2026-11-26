@@ -41,4 +41,23 @@ H3_REPLACE_INT(82327B38, unit_seat_test_flag, {
     return (unit->seats[seat].flags & bit) ? 1u : 0u;
 })
 
+// unit_find_driver_seat(r3 unit object) -> s16: the index of the unit
+// definition's first seat with the Driver flag, or NONE (-1).
+H3_REPLACE_INT(82327AB0, unit_find_driver_seat, {
+    const host::unit_struct_definition* unit = UnitDefinition(ctx, ctx.r3.u32);
+    if (!unit)
+        return std::nullopt;
+    constexpr uint32_t kSeatDriver = 1u << 2;
+    const auto& seats = unit->seats;
+    if (seats.storedCount <= 0)
+        return 0xFFFFFFFFu;
+    if (seats.storedCount > seats.count)
+        return std::nullopt;
+    // The original counts with a 16-bit index: fine for any real block.
+    for (int32_t i = 0; i < seats.count; i++)
+        if (seats[i].flags & kSeatDriver)
+            return uint32_t(i);
+    return 0xFFFFFFFFu;
+})
+
 #endif

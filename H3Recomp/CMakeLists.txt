@@ -36,6 +36,7 @@ add_library(H3Runtime STATIC
     gpu/texture.cpp
     input/input.cpp
     net/link.cpp
+    debug/call_record.cpp
     debug/first_calls.cpp
     debug/profiler.cpp
     debug/state_hash.cpp

@@ -23,6 +23,7 @@
 #include "guest_call.h"
 #include "memory.h"
 #include "native.h"
+#include "tags/tag_cache.h"
 
 #include <ppc_recomp_shared.h>
 
@@ -50,12 +51,6 @@ PPC_EXTERN_FUNC(sub_8219F1D0);  // rsa_verify(digest, signature) -> bool
 PPC_EXTERN_FUNC(sub_8219F3B0);  // error report: begin (on a stack buffer)
 PPC_EXTERN_FUNC(sub_8219F408);  // error report: end
 PPC_EXTERN_FUNC(sub_82084310);  // closes what the previous map left open (unknown yet)
-
-namespace h3::native::tags
-{
-    void OnTagsLoaded();    // tag_cache.cpp
-    void OnTagsUnloaded();  // tag_cache.cpp
-}
 
 namespace h3::native::cache
 {

@@ -9,6 +9,7 @@
 
 #include "memory.h"
 #include "replace.h"
+#include "structures/structure_bsps.h"
 #include "tags/tag_cache.h"
 
 namespace
@@ -16,28 +17,8 @@ namespace
     namespace host = h3::native::tags::host;
     using h3::GuestRef;
 
-    constexpr uint32_t kActiveBspMask = 0x828A1ECC;  // u32: bit i = structure BSP i is loaded
-    constexpr uint32_t kMaxMaskedBsps = 16;
-
-    // Whether structure BSP index is loaded (bits past the mask's 16 read
-    // as not loaded).
-    bool BspActive(int32_t index)
-    {
-        uint32_t mask = GuestRef<uint32_t>(kActiveBspMask);
-        return uint32_t(index) < kMaxMaskedBsps && (mask & (1u << index));
-    }
-
-    // The scenario's BSP at index (no checks beyond the block's bounds,
-    // like the callers' own checks before it), or nullptr if the host copy
-    // can't say.
-    const host::scenario_structure_bsp_tag* ScenarioBsp(int32_t index)
-    {
-        const host::scenario_tag* scenario = h3::native::tags::GlobalScenario();
-        if (!scenario || index < 0 || index >= scenario->scenario.structure_bsps.count)
-            return nullptr;
-        uint32_t datum = scenario->scenario.structure_bsps[index].structure_bsp.datum;
-        return h3::native::tags::TagBySlotOf<host::scenario_structure_bsp_tag>(datum & 0xFFFF);
-    }
+    using h3::native::structures::BspActive;
+    using h3::native::structures::ScenarioBsp;
 }
 
 // structure_bsp_get_pathfinding_data(s16 bsp index): the active BSP's
@@ -79,4 +60,64 @@ H3_REPLACE_INT(820B36B8, pathfinding_sector_reference_valid, {
     return sector < sectors ? 1u : 0u;
 })
 
+#endif
+
+#ifdef H3_HAVE_TAG_LAYOUTS
+// structure_bsp_leaf_get_cluster_reference(r3 bsp index, r4 leaf index) ->
+// the cluster reference {u8 bsp index, s8 cluster} as a halfword (bsp in
+// the high byte), or NONE (-1) for leaf NONE. No bounds checks, like the
+// original (callers pass valid leaves).
+H3_REPLACE_INT(8209E788, structure_bsp_leaf_get_cluster_reference, {
+    int32_t leaf = int32_t(ctx.r4.u32);
+    if (leaf == -1)
+        return 0xFFFFFFFFu;
+    const host::scenario_structure_bsp_tag* bsp = ScenarioBsp(int32_t(ctx.r3.u32));
+    if (!bsp)
+        return std::nullopt;
+    const auto& leaves = bsp->scenario_structure_bsp.leaves;
+    if (leaf < 0 || leaf >= leaves.count)
+        return std::nullopt;
+    uint8_t cluster = uint8_t(leaves[leaf].cluster);
+    return ((ctx.r3.u32 & 0xFF) << 8) | cluster;
+})
+// structure_clusters_have_pvs_bound_object(r3 cluster bits, r4 cluster
+// bits, r5 {s16 object index, u16 scenario object index}) -> bool: some
+// cluster set in both bit vectors (8 words per BSP, a bit per cluster
+// index modulo 256) of a loaded BSP lists that object in its PVS Bound
+// Object References. Walks every bit of the loaded-BSP mask (all 32, not
+// just BspActive's 16), lowest first.
+H3_REPLACE_INT(823185E8, structure_clusters_have_pvs_bound_object, {
+    constexpr uint32_t kWordsPerBsp = 8;
+    uint32_t mask = GuestRef<uint32_t>(h3::native::structures::kActiveBspMask);
+    int32_t objectIndex = int16_t(uint16_t(GuestRef<uint16_t>(ctx.r5.u32)));
+    uint16_t scenarioObjectIndex = GuestRef<uint16_t>(ctx.r5.u32 + 2);
+    for (uint32_t index = 0; index < 32; index++)
+    {
+        if (!(mask & (1u << index)))
+            continue;
+        const host::scenario_structure_bsp_tag* bsp = ScenarioBsp(int32_t(index));
+        if (!bsp)
+            return std::nullopt;
+        const auto& clusters = bsp->scenario_structure_bsp.clusters;
+        if (clusters.storedCount > clusters.count)
+            return std::nullopt;
+        for (int32_t cluster = 0; cluster < clusters.storedCount; cluster++)
+        {
+            uint32_t bit = uint32_t(cluster) & 0xFF;
+            uint32_t word = (index * kWordsPerBsp + (bit >> 5)) * 4;
+            uint32_t flag = 1u << (bit & 31);
+            if (!(uint32_t(GuestRef<uint32_t>(ctx.r4.u32 + word)) & flag) ||
+                !(uint32_t(GuestRef<uint32_t>(ctx.r3.u32 + word)) & flag))
+                continue;
+            const auto& references = clusters[cluster].pvs_bound_object_references;
+            if (references.storedCount > references.count)
+                return std::nullopt;
+            for (int32_t i = 0; i < references.storedCount; i++)
+                if (references[i].object_index == objectIndex &&
+                    uint16_t(references[i].scenario_object_index) == scenarioObjectIndex)
+                    return 1u;
+        }
+    }
+    return 0u;
+})
 #endif

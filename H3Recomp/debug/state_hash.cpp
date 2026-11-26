@@ -64,6 +64,7 @@
 // handles.
 
 #include "debug/state_hash.h"
+#include "debug/call_record.h"
 
 #include <atomic>
 #include "config/env.h"
@@ -411,6 +412,8 @@ void h3::debug::OnGameStateCopy(const uint8_t* state, uint32_t bytes, uint32_t a
         levelTime++;
     lastTick = tick;
     g_levelTime.store(inLevel ? levelTime : 0);
+    if (inLevel && !held)
+        OnRecordTick(levelTime);  // H3_RECORD_CALLS windows (call_record.h)
     static const std::vector<std::pair<uint32_t, uint32_t>> recordSpans = [] {
         std::vector<std::pair<uint32_t, uint32_t>> spans;
         const char* spec = EnvString("H3_STATE_RECORD_TICKS");

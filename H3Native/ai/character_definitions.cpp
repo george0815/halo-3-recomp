@@ -97,6 +97,7 @@ namespace h3::native::ai
 
 // character_get_general_properties (r3 = character datum).
 PPC_FUNC_IMPL(__imp__sub_820ADCF0);
+static h3::native::Registration h3_registration_820ADCF0(0x820ADCF0, "character_get_general_properties");
 PPC_FUNC(sub_820ADCF0)
 {
     static h3::native::NativeCheck checker("character_get_general_properties");
@@ -106,6 +107,7 @@ PPC_FUNC(sub_820ADCF0)
 
 // character_get_movement_properties (r3 = character datum).
 PPC_FUNC_IMPL(__imp__sub_820AE150);
+static h3::native::Registration h3_registration_820AE150(0x820AE150, "character_get_movement_properties");
 PPC_FUNC(sub_820AE150)
 {
     static h3::native::NativeCheck checker("character_get_movement_properties");
@@ -118,6 +120,7 @@ PPC_FUNC(sub_820AE150)
 #ifdef H3_HAVE_TAG_LAYOUTS
 // character_get_vitality_properties (r3 = character datum).
 PPC_FUNC_IMPL(__imp__sub_820E9A90);
+static h3::native::Registration h3_registration_820E9A90(0x820E9A90, "character_get_vitality_properties");
 PPC_FUNC(sub_820E9A90)
 {
     static h3::native::NativeCheck checker("character_get_vitality_properties");
@@ -127,6 +130,7 @@ PPC_FUNC(sub_820E9A90)
 
 // character_get_morph_properties (r3 = character datum).
 PPC_FUNC_IMPL(__imp__sub_82518ED8);
+static h3::native::Registration h3_registration_82518ED8(0x82518ED8, "character_get_morph_properties");
 PPC_FUNC(sub_82518ED8)
 {
     static h3::native::NativeCheck checker("character_get_morph_properties");
@@ -159,6 +163,45 @@ H3_REPLACE_INT(820C0430, character_get_weapon_properties, {
         for (int32_t i = 0; i < weapons.count; i++)
             if (weapons[i].weapon.datum == weapon)
                 return weapons.address + uint32_t(i) * kCharacterWeaponBytes;
+        datum = tag->character.parent_character.datum;
+    }
+    return datum == host::kNone ? std::optional<uint32_t>(0u) : std::nullopt;
+})
+#endif
+
+#ifdef H3_HAVE_TAG_LAYOUTS
+#include "objects/object_access.h"
+
+namespace
+{
+    // The actors data array (TLS slot 92, 2700-byte actors); +92 is the
+    // actor's character definition datum.
+    constexpr uint32_t kTlsActors = 92;
+    constexpr uint32_t kActorBytes = 2700;
+    constexpr uint32_t kActorCharacter = 92;
+    constexpr uint32_t kCharacterVehicleBytes = 0xD0;
+}
+
+// actor_get_vehicle_properties(r3 actor, r4 vehicle definition datum) ->
+// guest address of the first vehicle-properties entry of the actor's
+// character for that vehicle (its Unit reference), looking through parent
+// characters; 0 if none.
+H3_REPLACE_INT(820B6668, actor_get_vehicle_properties, {
+    uint32_t actor = h3::native::objects::DataArrayElement(ctx, kTlsActors, ctx.r3.u32, kActorBytes);
+    uint32_t datum = h3::native::objects::Load32(actor + kActorCharacter);
+    uint32_t vehicle = ctx.r4.u32;
+    for (int depth = 0; depth < 64 && datum != host::kNone; depth++)
+    {
+        const host::character_tag* tag = h3::native::tags::TagBySlotOf<host::character_tag>(datum & 0xFFFF);
+        if (!tag)
+            return std::nullopt;
+        const auto& vehicles = tag->character.vehicle_properties;
+        if (vehicles.storedCount > vehicles.count)
+            return std::nullopt;
+        // The original counts with a 16-bit index: fine for any real block.
+        for (int32_t i = 0; i < vehicles.count; i++)
+            if (vehicles[i].unit.datum == vehicle)
+                return vehicles.address + uint32_t(i) * kCharacterVehicleBytes;
         datum = tag->character.parent_character.datum;
     }
     return datum == host::kNone ? std::optional<uint32_t>(0u) : std::nullopt;

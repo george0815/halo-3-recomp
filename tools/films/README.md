@@ -32,6 +32,9 @@ fails at that tick.
 - `run_library.sh <out dir> [--native]`: every film in
   `private/films/library.txt` against its reference (and with
   `H3_CHECK_NATIVE`): the regression test for a changed build.
+- `record_calls.sh <out dir> [--only <films>] [--points n]` and
+  `replay_calls.sh <out dir> [<replacements>]`: the fast check for
+  decompiled functions (below, "Checking replacements by recorded calls").
 - Multiplayer films: Theater category 4. A film recorded with the 60 Hz
   content fixes on (any game played at 60 Hz) must replay with them:
   `learn_film.sh --category 4 --fixes`, and `category=4 fixes` after the
@@ -42,6 +45,39 @@ A snapshot of the references and masks is kept in `references/`.
 Test runs use `H3_FILM_DATA` (`private/films_data`: links to the game files
 plus a copy of `hdd/`), so they never write to the real save data. A run
 stops by itself when the film is over (the tick stops advancing).
+
+## Checking replacements by recorded calls
+
+The film library takes hours with `--native`; it's the check for a
+finished subsystem. While porting, functions are checked against recorded
+calls instead (docs/ROADMAP.md 6.1, `H3Recomp/debug/call_record.h`):
+
+```sh
+# Once (and again only after re-running the recompiler): a recording build
+cmake -S . -B build/record -G Ninja -DCMAKE_BUILD_TYPE=Release -DH3_RECORD_CALLS=ON
+cmake --build build/record --target H3Recomp
+# play library films with every replacement off; at a few ticks per film
+# save guest memory and the distinct calls of every function
+tools/films/record_calls.sh private/calls --points 6
+# after each change: every replacement against its original, on those
+# snapshots, in seconds
+tools/films/replay_calls.sh private/calls [<name|address>,...]
+```
+
+Every recompiled function's prologue records its entry registers (r0-r13,
+f0-f13) while a recording window is open, up to 64 distinct calls per
+function per window, so a recording covers functions not ported yet: no new
+recording is needed for the next port. The replay loads a snapshot, rebuilds
+the host tag cache from it, and calls each registered replacement with each
+recorded call under `H3_CHECK_NATIVE` (one child process per function): the
+native body and the original run on the same memory and their results (and
+stores) are compared, so the original is the reference. A replacement with
+no recorded calls is listed as such: a film that reaches it is needed (or
+more points). Limits: calls are replayed on the memory as it was at the
+start of their tick (both versions see the same, so a mismatch is still
+real, but a call made with state from later in the tick may take paths the
+game never takes); vector-register arguments aren't recorded; Linux only.
+Snapshots are sparse files of about 1 GB of data each.
 
 ## Why replays need help to match
 
