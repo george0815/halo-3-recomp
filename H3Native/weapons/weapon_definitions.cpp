@@ -47,13 +47,15 @@ H3_REPLACE_INT(8234B158, weapon_can_be_dual_wielded, {
 })
 
 // weapon_definition_can_run_out(r3 weapon definition datum) -> bool: it
-// has magazines, or a barrel that ages the weapon per round (Age or
-// CAMPAIGN Age Generated Per Round above 0: a battery).
+// has NO magazines (the original's beq on the Magazines count), or it has
+// magazines and a barrel that ages the weapon per round (Age or CAMPAIGN
+// Age Generated Per Round above 0). The name predates reading it right:
+// the meaning of "no magazines -> true" is unconfirmed.
 H3_REPLACE_INT(8234B8C0, weapon_definition_can_run_out, {
     const host::weapon* weapon = h3::native::tags::TagPartBySlot<host::weapon>(ctx.r3.u32 & 0xFFFF, kWeaponGroup);
     if (!weapon)
         return std::nullopt;
-    if (weapon->magazines.storedCount != 0)
+    if (weapon->magazines.storedCount == 0)
         return 1u;
     const auto& barrels = weapon->barrels;
     if (barrels.storedCount <= 0)

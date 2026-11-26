@@ -302,4 +302,55 @@ H3_REPLACE_INT(8227DDC0, multiplayer_get_weapon_spawn_influence, {
     return 0u;
 })
 
+// multiplayer_get_equipment_spawn_influence(r3 object) -> guest address of
+// the equipment spawn influencer for the object's definition: the
+// scenario's own first, then the multiplayer constants' Equipment
+// Influencers; 0 if neither has one. The original doesn't check the object
+// for NONE.
+H3_REPLACE_INT(8227E148, multiplayer_get_equipment_spawn_influence, {
+    constexpr uint32_t kInfluenceBytes = 0x14;
+    uint32_t object = ctx.r3.u32;
+    if (object == kNone)
+        return std::nullopt;
+    uint32_t definition = h3::native::objects::ObjectDefinition(ctx, object);
+    const host::scenario_tag* scenario = h3::native::tags::GlobalScenario();
+    if (!scenario)
+        return std::nullopt;
+    const auto& own = scenario->scenario.equipment_spawn_influencers;
+    if (own.storedCount > own.count)
+        return std::nullopt;
+    for (int32_t i = 0; i < own.count; i++)
+        if (own[i].equipment.datum == definition)
+            return own.address + uint32_t(i) * kInfluenceBytes;
+
+    const host::globals_tag* globals = h3::native::tags::GlobalGameGlobals();
+    if (!globals)
+        return 0u;
+    uint32_t datum = globals->globals.multiplayer_globals.datum;
+    if (datum == kNone)
+        return 0u;
+    if (!h3::native::tags::TagSlotAddress(datum & 0xFFFF))
+        return std::nullopt;  // the original returns 0 for an empty slot; past the table it reads garbage
+    const auto* multiplayer = h3::native::tags::TagBySlotOf<host::multiplayer_globals_tag>(datum & 0xFFFF);
+    if (!multiplayer)
+        return std::nullopt;
+    const auto& runtime = multiplayer->multiplayer_globals.runtime;
+    if (runtime.storedCount <= 0 || !runtime.address)
+        return 0u;
+    if (runtime.count <= 0)
+        return std::nullopt;
+    const auto& constants = runtime[0].multiplayer_constants;
+    if (!constants.address)
+        return 0u;
+    if (constants.count <= 0)
+        return std::nullopt;  // the original reads the first element regardless
+    const auto& influencers = constants[0].equipment_influencers;
+    if (influencers.storedCount > influencers.count)
+        return std::nullopt;
+    for (int32_t i = 0; i < influencers.count; i++)
+        if (influencers[i].equipment.datum == definition)
+            return influencers.address + uint32_t(i) * kInfluenceBytes;
+    return 0u;
+})
+
 #endif

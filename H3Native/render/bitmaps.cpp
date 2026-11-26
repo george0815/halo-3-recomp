@@ -6,8 +6,11 @@
 
 #ifdef H3_HAVE_TAG_LAYOUTS
 
+#include "guest_call.h"
 #include "replace.h"
 #include "tags/tag_cache.h"
+
+PPC_EXTERN_FUNC(sub_822A5F40);  // bitmap_get_sequence_bitmap_index (below)
 
 namespace
 {
@@ -73,6 +76,25 @@ H3_REPLACE_INT(822A5EB8, bitmap_get_sequence_sprite_bounds, {
         return 0u;
     int32_t frame = int32_t(int16_t(ctx.r5.u32)) % sprites.storedCount;
     return sprites.address + uint32_t(frame) * kSpriteBytes + kSpriteBounds;  // address only, unchecked like the original
+})
+
+// bitmap_get_sequence_image(r3 bitmap datum, s16 sequence, s16 frame) ->
+// guest address of the bitmap (image) that frame of the sequence shows
+// (bitmap_get_sequence_bitmap_index), or 0 when that index is NONE or
+// outside the bitmap's Bitmaps block (name unconfirmed).
+H3_REPLACE_INT(822A6000, bitmap_get_sequence_image, {
+    constexpr uint32_t kImageBytes = 48;
+    uint32_t bitmap = ctx.r3.u32;
+    int32_t index = int32_t(h3::native::Call(ctx, base, sub_822A5F40, bitmap, ctx.r4.u32, ctx.r5.u32));
+    if (index == -1 || index < 0)
+        return 0u;
+    const host::bitmap_tag* tag = h3::native::tags::TagBySlotOf<host::bitmap_tag>(bitmap & 0xFFFF);
+    if (!tag)
+        return std::nullopt;
+    const auto& images = tag->bitmap.bitmaps;
+    if (index >= images.storedCount)
+        return 0u;
+    return images.address + uint32_t(index) * kImageBytes;
 })
 
 #endif

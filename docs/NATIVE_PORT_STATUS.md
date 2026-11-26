@@ -26,7 +26,9 @@ aren't in the repository.
    [tools/films/README.md](https://github.com/george0815/halo-3-recomp/blob/main/tools/films/README.md)).
    The full film library with `--native` is the final check once a
    subsystem is done, and before merging into main.
-3. **Tag readers (6.3).** 27 of ~1,590 ported. Continue with the leaf,
+3. **Tag readers (6.3).** 171 of ~1,590 ported (`H3_REPLACE` readers plus
+   the decompiled tag system); 132 checked by call replay (10 films +
+   2 wide-window recordings), 0 differed. Continue with the leaf,
    result-only ones: `tools/re/tag_readers.py <defs> --list
    --leaf-pure`, most-called first. Workflow below.
 4. Then the roadmap's next items (6.2 foundations / 6.4 simulation), with
@@ -45,7 +47,7 @@ aren't in the repository.
 | Decompiled tag system | `H3Native/tags/tags.cpp` (`tag_get` 82087AF0), `H3Native/cache/cache_file_tags.cpp` (load 821A11D0 / unload 821A17E8) | `H3_ORIGINAL=tag_get`, `=cache_file_tags` |
 | Calling recompiled code | `H3Native/guest_call.h` | `Call`, `CallIndirect`, `GuestFrame` |
 | Replacements | `H3Native/replace.h`, `H3Native/native.h` | `H3_REPLACE_INT/FLOAT(address, name, { body })`: body returns optional (nullopt = run the original) |
-| Readers | `H3Native/ai/character_definitions.cpp`, `structures/structure_bsp_queries.cpp`, `sound/sound_classes.cpp`, `game/multiplayer_globals.cpp`, `game/players.cpp`, `units/unit_definitions.cpp`, `objects/object_definitions.cpp`, `objects/object_access.h`, `vehicles/vehicle_definitions.cpp`, `items/equipment_definitions.cpp`, `weapons/weapon_definitions.cpp`, `weapons/weapon_barrels.cpp` | 27 functions |
+| Readers | `H3Native/{ai,cinematics,effects,game,interface,items,objects,render,scenario,sound,structures,units,vehicles,weapons}/` (`objects/object_access.h`, `objects/object_reads.h`: shared guest reads) | 171 functions |
 | RE tools | `tools/re/tag_readers.py` (annotates a function's tag reads), `tools/re/layout_query.py` (which groups have a field at an offset); names in `private/re/curated.csv` | |
 
 All of `H3Native/*.cpp` is globbed into the game (H3Recomp/CMakeLists.txt),
@@ -78,9 +80,11 @@ except `cache/cache_file.cpp` (H3NativeCache library) and
   reproduced since. Recompiled indirect calls now abort with
   `[recomp] indirect call to ... lookup entry is null; entries ... are zero`
   if the function table was overwritten: that message tells which.
-- Unverified readers (the Sierra film doesn't call them):
-  pathfinding_sector_reference_valid, multiplayer_weapon_selection_get_name,
-  multiplayer_globals_get_constants (multiplayer films will cover them).
+- Unverified readers: 39 have no calls in the 10 recorded films (all
+  `multiplayer_*` globals readers among them: oddball_lr's snapshots are
+  mid-game; the readers probably run at map load). Record a point at map load, or
+  check them with `tools/films/check_native.sh`. List:
+  `tools/films/replay_calls.sh private/calls | grep 'no recorded'`.
 - Runtime-change check (game writing tag memory) only ran on mainmenu and
   Sierra 117; run `H3_CHECK_TAGS=1` on the new films.
 - XenonRecomp submodule has local patches (incl. the `be<T>` change):

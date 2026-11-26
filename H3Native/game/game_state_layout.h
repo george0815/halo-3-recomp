@@ -1,7 +1,8 @@
 // Game state layout: TLS slots, data array headers and object fields, for
 // decompiled code reading the game state in guest memory (stage
 // "decompiled in place"). Only fields confirmed by the retail code are
-// here (tools/re/data_arrays.py lists the slots of a recorded snapshot).
+// here (tools/re/data_arrays.py lists the slots of a recorded snapshot),
+// cross-checked against the x64 builds' allocations where noted.
 //
 // The game state is reached through the thread block: the word at r13 + 0
 // points at the TLS array, one guest address per slot (the slot is the
@@ -41,6 +42,55 @@ namespace h3::native::game
         constexpr uint32_t kGameTimeGlobals = 188;       // "game time globals", 44
         constexpr uint32_t kPlayerMappingGlobals = 216;  // "player mapping globals", 232
         constexpr uint32_t kPhysicsConstants = 228;      // "physics constants"
+        constexpr uint32_t kObjectBroadphase = 192;      // "object_broadphase"
+        constexpr uint32_t kGameStateTiming = 208;       // "timing samples" (game state), 20
+        constexpr uint32_t kChudUserData = 220;          // "persistent user data", 4 x 10368
+        constexpr uint32_t kCortanaEffect = 248;         // "cortana effect", 16
+        constexpr uint32_t kRasterizerGameStates = 284;  // "rasterizer game states", 520
+        constexpr uint32_t kImpactGlobals = 316;         // "impact globals", 140
+        constexpr uint32_t kChudGlobalData = 348;        // "persistent global data", 432
+        constexpr uint32_t kLocalGameEngineGlobals = 376;// "local game engine globals", 196
+        constexpr uint32_t kImplicitGeometry = 468;      // "implicit geometry data", 0x2104
+        constexpr uint32_t kRenderTiming = 472;          // "timing samples" (render), 20
+        constexpr uint32_t kActorFiringPositions = 576;  // actor firing-position owners, 0x2040
+        constexpr uint32_t kDirectorScripting = 604;     // "director scripting", 1
+        constexpr uint32_t kBinkGameState = 608;         // "bink game state", 8
+        constexpr uint32_t kParticleEmitterStorage = 664;// GPU particle emitters storage, 0x8C000
+        constexpr uint32_t kContrailStorage = 668;       // GPU contrails storage, 0x28000
+        constexpr uint32_t kSoundDeterministic = 720;    // "deterministic game sound globals", 0x1300
+        constexpr uint32_t kLightData = 736;             // "nondet_light_data", 0x2580
+
+        // Other slots.
+        constexpr uint32_t kObjectPool = 8;              // "objects" memory pool, 0x180054
+        constexpr uint32_t kCollideableClusterFirst = 20;    // cluster partition first references, 0x4000
+        constexpr uint32_t kNoncollideableClusterFirst = 32; // (each before its two data arrays)
+        constexpr uint32_t kLightClusterFirst = 44;
+        constexpr uint32_t kHeapBases = 48;              // TLS[48 + 4 * heap]: game state heap 0..3 base (2 null on the main thread)
+        constexpr uint32_t kThreadIndex = 116;           // registered thread index, main thread = 1
+    }
+
+    // Cache file globals (fixed address).
+    namespace cache_file
+    {
+        constexpr uint32_t kGlobals = 0x82945F50;
+        constexpr uint32_t kHeader = 0x10;       // 0x3000-byte cache file header ('head')
+        constexpr uint32_t kTagsHeader = 0x3010; // guest address of the tags header
+    }
+
+    // Game globals (TLS kGameGlobals).
+    namespace game_globals
+    {
+        constexpr uint32_t kOptions = 16;               // game options; +0 s32 game mode
+        constexpr uint32_t kCampaignDifficulty = 332;   // s16
+        constexpr int32_t kGameModeCampaign = 1;
+        constexpr int32_t kGameModeMultiplayer = 2;
+    }
+
+    // Player mapping globals (TLS kPlayerMappingGlobals).
+    namespace player_mapping
+    {
+        constexpr uint32_t kActiveOutputUserCount = 180;  // s16
+        constexpr uint32_t kOutputUserPlayers = 184;      // player datum per output user
     }
 
     // Data array header (any TLS data array).
@@ -104,7 +154,8 @@ namespace h3::native::game
     // Actor (TLS kActors element).
     namespace actor
     {
-        constexpr uint32_t kCharacter = 92;  // 'char' tag datum
+        constexpr uint32_t kCharacter = 92;            // 'char' tag datum
+        constexpr uint32_t kLastGuardianSurge = 760;   // s32 game time, -1 if never
     }
 
     // Game time globals (TLS kGameTimeGlobals).

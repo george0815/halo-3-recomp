@@ -63,3 +63,65 @@ H3_REPLACE_INT(82240F28, cinematic_get_shot_music, {
 })
 
 #endif
+
+#ifdef H3_HAVE_TAG_LAYOUTS
+// cinematic_get_scene(r3 cinematic index or cortana effect datum, r4 scene)
+// -> guest address of the scene tag ('cisc', group unchecked), or 0: for a
+// scenario cinematic in range, its scenes entry (0 for an out-of-range
+// scene or a NONE reference); otherwise 0 for NONE and indexes 0-1000,
+// and for any other value the 'crte' tag it names (else 0) gives its
+// Cinematic Scene.
+H3_REPLACE_INT(82301180, cinematic_get_scene, {
+    constexpr uint32_t kCortanaEffectGroup = host::cortana_effect_definition_tag::kGroup;
+    const host::scenario_tag* scenario = h3::native::tags::GlobalScenario();
+    if (!scenario)
+        return std::nullopt;
+    int32_t index = int32_t(ctx.r3.u32);
+    const auto& cinematics = scenario->scenario.cinematics;
+    uint32_t scene = kNone;
+    bool fromCinematic = false;
+    if (index >= 0 && index < cinematics.storedCount)
+    {
+        if (index >= cinematics.count)
+            return std::nullopt;
+        uint32_t datum = cinematics[index].name.datum;
+        if (datum != kNone)
+        {
+            if (!h3::native::tags::TagSlotAddress(datum & 0xFFFF))
+                return std::nullopt;  // (0 would take the fallback; can't tell an empty slot from one past the table)
+            const host::cinematic_tag* cinematic = h3::native::tags::TagBySlotOf<host::cinematic_tag>(datum & 0xFFFF);
+            if (!cinematic)
+                return std::nullopt;
+            int32_t sceneIndex = int32_t(ctx.r4.u32);
+            const auto& scenes = cinematic->cinematic.scenes;
+            if (sceneIndex < 0 || sceneIndex >= scenes.storedCount)
+                return 0u;
+            if (sceneIndex >= scenes.count)
+                return std::nullopt;
+            scene = scenes[sceneIndex].scene.datum;
+            fromCinematic = true;
+        }
+    }
+    if (!fromCinematic)
+    {
+        if (index == -1 || (index >= 0 && index <= 1000))
+            return 0u;
+        if (ctx.r3.u32 & 0x8000)
+            return std::nullopt;  // the original indexes the tag table with a negative short
+        uint32_t slot = ctx.r3.u32 & 0xFFFF;
+        uint32_t group = h3::native::tags::SlotGroupTag(slot);
+        if (group == 0)
+            return std::nullopt;  // empty slot: the original reads the group table at -1
+        if (group != kCortanaEffectGroup)
+            return 0u;
+        const auto* effect = h3::native::tags::TagBySlotOf<host::cortana_effect_definition_tag>(slot);
+        if (!effect)
+            return std::nullopt;
+        scene = effect->cortana_effect_definition.cinematic_scene.datum;
+    }
+    if (scene == kNone)
+        return 0u;
+    uint32_t address = h3::native::tags::TagSlotAddress(scene & 0xFFFF);
+    return address ? std::optional<uint32_t>(address) : std::nullopt;
+})
+#endif

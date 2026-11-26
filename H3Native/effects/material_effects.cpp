@@ -7,6 +7,7 @@
 
 #ifdef H3_HAVE_TAG_LAYOUTS
 
+#include "memory.h"
 #include "replace.h"
 #include "tags/tag_cache.h"
 
@@ -60,6 +61,70 @@ H3_REPLACE_INT(8225E3B0, material_effects_find_type, {
         type = FallbackType(type);
     }
     return uint32_t(kNone);
+})
+
+// material_effects_find_material(r3 material effects datum, r4 type, r5
+// effects (else sounds), r6 s16 global material index) -> guest address
+// of the sounds (or effects) element of the type (or its fallback, as
+// material_effects_find_type) whose runtime material index is the
+// material's, else its parent material's and so on up the game globals'
+// Materials; 0 if there's no such type or element. Runtime material
+// indexes ('!') come from guest memory.
+H3_REPLACE_INT(820F6900, material_effects_find_material, {
+    constexpr uint32_t kMaterialBytes = 40;
+    constexpr uint32_t kMaterialRuntimeIndex = 36;  // s16
+    constexpr uint32_t kGlobalMaterialBytes = 368;
+    constexpr uint32_t kGlobalMaterialParentIndex = 8;  // s16
+    using h3::GuestRef;
+    uint32_t datum = ctx.r3.u32;
+    bool wantEffects = ctx.r5.u32 != 0;
+    int32_t requested = int32_t(ctx.r4.u32);
+    int32_t material = int16_t(uint16_t(ctx.r6.u32));
+    if (requested == kNone)
+        return 0u;
+    if (datum == 0xFFFFFFFFu)
+        return std::nullopt;
+    const host::material_effects_tag* tag = h3::native::tags::TagBySlotOf<host::material_effects_tag>(datum & 0xFFFF);
+    if (!tag)
+        return std::nullopt;
+    const auto& effects = tag->material_effects.effects;
+    // material_effects_find_type, as above.
+    int32_t type = requested;
+    while (type != kNone)
+    {
+        if (type < effects.storedCount)
+        {
+            if (type < 0 || type >= effects.count)
+                return std::nullopt;
+            const auto& entry = effects[type];
+            if ((wantEffects ? entry.effects.storedCount : entry.sounds.storedCount) > 0)
+                break;
+        }
+        type = FallbackType(type);
+    }
+    if (type == kNone)
+        return 0u;
+    const auto& list = wantEffects ? effects[type].effects : effects[type].sounds;
+    const host::globals_tag* globals = h3::native::tags::GlobalGameGlobals();
+    if (!globals)
+        return std::nullopt;
+    const auto& materials = globals->globals.materials;
+    for (int depth = 0; depth < 4096; depth++)
+    {
+        if (material == kNone || material < 0 || material >= materials.storedCount)
+            return 0u;
+        uint32_t global = materials.address + uint32_t(material) * kGlobalMaterialBytes;
+        if (global == 0)
+            return 0u;
+        for (int32_t i = 0; i < list.storedCount; i++)
+        {
+            uint32_t element = list.address + uint32_t(i) * kMaterialBytes;
+            if (int16_t(uint16_t(GuestRef<uint16_t>(element + kMaterialRuntimeIndex))) == material)
+                return element;
+        }
+        material = int16_t(uint16_t(GuestRef<uint16_t>(global + kGlobalMaterialParentIndex)));
+    }
+    return std::nullopt;
 })
 
 #endif

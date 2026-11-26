@@ -3,6 +3,7 @@
 
 #ifdef H3_HAVE_TAG_LAYOUTS
 
+#include "guest_call.h"
 #include "replace.h"
 #include "tags/tag_cache.h"
 
@@ -33,6 +34,48 @@ H3_REPLACE_INT(82141348, scenario_lightmap_get_bsp_data, {
         if (int32_t(bsps[i].bsp_reference_index) == bsp)
             return bsps.address + uint32_t(i) * kLightmapBspBytes;
     return 0u;
+})
+
+// scenario_structure_bsp_lightmap_valid(r3 scenario datum, r4 bsp index)
+// -> bool: the scenario's Lightmaps tag has an entry for the structure
+// bsp (scenario_lightmap_get_bsp_data) whose structure BSP import
+// checksum and imported mesh count match the bsp's Import Info Checksum
+// and mesh count, and which has both its lightprobe and dominant light
+// intensity textures (name unconfirmed). No range check on the bsp index.
+H3_REPLACE_INT(8215F880, scenario_structure_bsp_lightmap_valid, {
+    uint32_t bspIndex = ctx.r4.u32;
+    const auto* scenario = h3::native::tags::TagBySlotOf<host::scenario_tag>(ctx.r3.u32 & 0xFFFF);
+    if (!scenario)
+        return std::nullopt;
+    uint32_t lightmap = scenario->scenario.lightmaps.datum;
+    if (lightmap == kNone)
+        return 0u;
+    uint32_t entry = h3::native::Call(ctx, base, sub_82141348, lightmap, bspIndex);
+    if (entry == 0)
+        return 0u;
+    const auto* lightmapTag = h3::native::tags::TagBySlotOf<host::scenario_lightmap_tag>(lightmap & 0xFFFF);
+    if (!lightmapTag)
+        return std::nullopt;
+    const auto& entries = lightmapTag->scenario_lightmap.lightmap_bsp_s;
+    uint32_t offset = entry - entries.address;
+    if (offset % kLightmapBspBytes != 0 || int32_t(offset / kLightmapBspBytes) >= entries.count)
+        return std::nullopt;
+    const auto& data = entries[int32_t(offset / kLightmapBspBytes)];
+    const auto& bsps = scenario->scenario.structure_bsps;
+    int32_t index = int32_t(bspIndex);
+    if (index < 0 || index >= bsps.count)
+        return std::nullopt;
+    const auto* bsp =
+        h3::native::tags::TagBySlotOf<host::scenario_structure_bsp_tag>(bsps[index].structure_bsp.datum & 0xFFFF);
+    if (!bsp)
+        return std::nullopt;
+    if (data.structure_bsp_import_checksum != bsp->scenario_structure_bsp.import_info_checksum)
+        return 0u;
+    if (data.imported_geometry.meshes.storedCount != bsp->scenario_structure_bsp.meshes_2.storedCount)
+        return 0u;
+    if (data.lightprobe_texture_reference.datum == kNone)
+        return 0u;
+    return data.dominant_light_intensity_texture_reference.datum != kNone ? 1u : 0u;
 })
 
 #endif

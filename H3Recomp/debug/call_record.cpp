@@ -328,7 +328,8 @@ namespace h3::debug
         // Totals per replacement over all snapshots.
         struct Totals
         {
-            uint64_t calls = 0, differed = 0;
+            uint64_t recorded = 0;  // calls replayed
+            uint64_t calls = 0, differed = 0;  // of them, answered natively (not nullopt) and compared
             bool hung = false, crashed = false;
         };
 
@@ -426,6 +427,7 @@ namespace h3::debug
                 int status = 0;
                 waitpid(child, &status, 0);
                 Totals& t = totals[r.address];
+                t.recorded += found->second.size();
                 if (got == ssize_t(sizeof(result)))
                 {
                     t.calls += result.calls;
@@ -451,9 +453,19 @@ namespace h3::debug
                 continue;
             }
             const Totals& t = found->second;
-            const char* verdict = t.hung ? "HUNG" : t.crashed ? "CRASHED" : t.differed ? "DIFFERS" : "ok";
-            printf("  %-48s %6llu calls, %llu differed  %s\n", r.name, (unsigned long long)t.calls,
+            // A call the native body declines (nullopt) runs the original
+            // and isn't compared: "fell back". All of them falling back
+            // means the replacement never answered, so it isn't verified.
+            const char* verdict = t.hung      ? "HUNG"
+                : t.crashed                   ? "CRASHED"
+                : t.differed                  ? "DIFFERS"
+                : t.calls == 0                ? "ALL FELL BACK (unverified)"
+                                              : "ok";
+            printf("  %-48s %6llu calls, %llu differed  %s", r.name, (unsigned long long)t.calls,
                 (unsigned long long)t.differed, verdict);
+            if (t.recorded > t.calls)
+                printf(" (%llu fell back)", (unsigned long long)(t.recorded - t.calls));
+            printf("\n");
             failed += t.hung || t.crashed || t.differed;
         }
         printf("[replay] %zu snapshots, %.1f s; %d replacement(s) failed\n", snapshots.size(), seconds, failed);
