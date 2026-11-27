@@ -11,7 +11,7 @@ body {
   font-size: 16px;
   background: #07111e;
 }
-// The backdrop: a navy to sky blue glow and scanlines.
+// The backdrop: a navy to blue gradient, a faint glow bottom right, and scanlines.
 body::before, body::after {
   content: "";
   position: fixed;
@@ -21,7 +21,6 @@ body::before, body::after {
 }
 body::before {
   background:
-    radial-gradient(900px 600px at 82% 30%, rgba(120, 175, 225, 0.30), transparent 65%),
     radial-gradient(700px 500px at 100% 100%, rgba(60, 110, 170, 0.25), transparent 70%),
     linear-gradient(110deg, #050d18 0%, #0a1a2d 45%, #14304d 100%);
 }
