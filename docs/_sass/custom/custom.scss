@@ -1,7 +1,6 @@
 // The site in the launcher's style (H3Launcher): navy fading to sky blue,
 // scanlines, condensed uppercase menus, a soft blue selection bar with a
 // bright left edge, a thin rule under titles, key hints in the footer.
-// Our own drawing (no game art): the ring is assets/ring.svg.
 
 $sky: #9ccaf0;
 $rule: rgba(156, 202, 240, 0.32);
@@ -12,7 +11,7 @@ body {
   font-size: 16px;
   background: #07111e;
 }
-// The backdrop: a navy to sky blue glow with a ring, and scanlines.
+// The backdrop: a navy to sky blue glow and scanlines.
 body::before, body::after {
   content: "";
   position: fixed;
@@ -22,7 +21,6 @@ body::before, body::after {
 }
 body::before {
   background:
-    url("../ring.svg") no-repeat right -12vw top -18vh / min(1100px, 95vw) auto,
     radial-gradient(900px 600px at 82% 30%, rgba(120, 175, 225, 0.30), transparent 65%),
     radial-gradient(700px 500px at 100% 100%, rgba(60, 110, 170, 0.25), transparent 70%),
     linear-gradient(110deg, #050d18 0%, #0a1a2d 45%, #14304d 100%);
