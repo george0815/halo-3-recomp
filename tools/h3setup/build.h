@@ -29,6 +29,10 @@ namespace h3setup
     // appended to log. Returns its exit status (-1 if it couldn't start).
     int RunProgram(const std::vector<std::string>& args, const std::filesystem::path& log);
 
+    // Locks <install> against a second h3setup working in it at the same
+    // time; false (with the error printed) if one already is.
+    bool LockInstall(const std::filesystem::path& install);
+
     // The C++ compiler to use: $CXX, else (Windows) the package's
     // toolchain/llvm, else clang++ (clang-cl on Windows) on the PATH.
     // Empty if none.

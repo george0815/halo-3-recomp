@@ -398,12 +398,12 @@ int main(int argcNarrow, char** argvNarrow)
             positional.push_back(FromUtf8(arg));
     }
     if (command == "build" && positional.size() == 1)
-        return h3setup::Build(positional[0], package, jobs);
+        return h3setup::LockInstall(positional[0]) ? h3setup::Build(positional[0], package, jobs) : 1;
     if (command == "sdk" && positional.size() == 1)
-        return h3setup::FetchSdk(positional[0], package, acceptMicrosoft);
+        return h3setup::LockInstall(positional[0]) ? h3setup::FetchSdk(positional[0], package, acceptMicrosoft) : 1;
     if (command == "install" && positional.size() == 2)
     {
-        if (!OpenIso(iso, positional[0]) || !Check(iso))
+        if (!h3setup::LockInstall(positional[1]) || !OpenIso(iso, positional[0]) || !Check(iso))
             return 1;
 #ifdef _WIN32
         // First, so a missing license acceptance stops before the 6 GB copy.

@@ -23,6 +23,7 @@
 #else
 #include <fcntl.h>
 #include <spawn.h>
+#include <sys/file.h>
 #include <sys/wait.h>
 #include <unistd.h>
 extern char** environ;
@@ -208,7 +209,10 @@ namespace h3setup
     int FetchSdk(const fs::path& install, const fs::path& package, bool accepted)
     {
         fs::path sdk = SdkDirectory(install);
-        if (fs::exists(sdk / "crt" / "include") && fs::exists(sdk / "sdk" / "lib"))
+        // Written only after xwin succeeds: a failed run can leave crt/ and
+        // sdk/ half filled, which must not count as installed.
+        fs::path complete = sdk / ".complete";
+        if (fs::exists(complete))
         {
             printf("Microsoft's C runtime and Windows SDK: already in %s\n", Utf8(sdk).c_str());
             return 0;
@@ -236,18 +240,56 @@ namespace h3setup
         fs::create_directories(sdk.parent_path(), ec);
         printf("progress sdk 0\ndownloading Microsoft's C runtime and Windows SDK (about 1 GB, once)\n");
         fflush(stdout);
-        fs::path cache = sdk.parent_path() / "xwin-cache";
-        int status = RunProgram({ Utf8(xwin), "--accept-license", "--arch", "x86_64", "--cache-dir", Utf8(cache), "splat", "--output",
-                                    Utf8(sdk) },
-            sdk.parent_path() / "xwin.log");
+        fs::path cache = sdk.parent_path() / "xwin-cache", log = sdk.parent_path() / "xwin.log";
+        // Leftovers of an earlier failed run (a half-unpacked cache, a
+        // half-filled sdk/) make xwin fail again: start clean. The second
+        // attempt copies out of the unpack directories instead of moving, in
+        // case something (an antivirus scan) held or removed a file mid-move.
+        int status = -1;
+        for (int attempt = 0; attempt < 2 && status != 0; attempt++)
+        {
+            fs::remove_all(cache / "unpack", ec);
+            fs::remove_all(sdk, ec);
+            std::vector<std::string> args = { Utf8(xwin), "--accept-license", "--arch", "x86_64", "--cache-dir", Utf8(cache), "splat",
+                "--output", Utf8(sdk) };
+            if (attempt > 0)
+            {
+                printf("xwin failed (%d); retrying once from a clean cache\n", status);
+                fflush(stdout);
+                args.push_back("--copy");
+            }
+            status = RunProgram(args, log);
+        }
         if (status != 0)
         {
-            fprintf(stderr, "error: xwin failed (%d); see %s\n", status, Utf8(sdk.parent_path() / "xwin.log").c_str());
+            fprintf(stderr, "error: xwin failed (%d); see %s\n", status, Utf8(log).c_str());
             return 1;
         }
+        std::ofstream(complete) << "xwin splat done\n";
         fs::remove_all(cache, ec);  // the downloads, no longer needed
         printf("progress sdk 100\n");
         return 0;
+    }
+
+    // Held for the rest of the process (the OS drops it if h3setup dies), so
+    // a second install into the same directory (a second launcher window)
+    // stops instead of sharing xwin's cache and the build directory.
+    bool LockInstall(const fs::path& install)
+    {
+        std::error_code ec;
+        fs::create_directories(install, ec);
+        fs::path path = fs::absolute(install) / "h3setup.lock";
+#ifdef _WIN32
+        HANDLE lock = CreateFileW(path.wstring().c_str(), GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+        bool locked = lock != INVALID_HANDLE_VALUE;
+#else
+        int lock = open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+        bool locked = lock >= 0 && flock(lock, LOCK_EX | LOCK_NB) == 0;
+#endif
+        if (!locked)
+            fprintf(stderr, "error: another install is already running in %s\n", Utf8(fs::absolute(install)).c_str());
+        return locked;
     }
 
     // Starts a program directly (CreateProcessW on Windows, posix_spawnp

@@ -28,6 +28,10 @@ its own); every step can be rerun and continues where it stopped.
    hash `default.xex`, compare with the supported builds.
 2. **sdk** (Windows only, before the 6 GB copy): xwin downloads Microsoft's
    CRT and Windows SDK once the player accepts Microsoft's terms (below).
+   Done once `toolchain/sdk/.complete` exists (written only when xwin
+   succeeds); a failed run is retried once from a clean cache with xwin's
+   `--copy`. An install holds `h3setup.lock`, so a second one into the same
+   folder stops at once instead of sharing xwin's cache.
 3. **extract**: copy the disc's files into the install's `game/` folder
    (maps, bink, the DLLs; about 6 GB, about 25 s on a fast drive). Files
    already there are kept.
